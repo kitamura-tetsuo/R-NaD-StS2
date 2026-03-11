@@ -26,18 +26,16 @@ impl AiBridge {
         let state_str = state_json.to_string();
 
         let result = Python::with_gil(|py| -> PyResult<String> {
-            let my_ai_module = PyModule::from_code(
-                py,
-                r#"
-def predict(state_json):
-    print(f"Python received state: {state_json}")
-    return '{"action": "test"}'
-"#,
-                "ai_logic.py",
-                "ai_logic",
-            )?;
+            let sys = py.import("sys")?;
+            let path = sys.getattr("path")?;
+            
+            // Add paths where the python module might be located
+            path.call_method1("append", ("./R-NaD",))?;
+            path.call_method1("append", ("/home/ubuntu/src/R-NaD-StS2/R-NaD",))?;
+            
+            let my_ai_module = py.import("rnad_bridge")?;
 
-            let predict_fn = my_ai_module.getattr("predict")?;
+            let predict_fn = my_ai_module.getattr("predict_action")?;
             let args = (state_str,);
             let action_json: String = predict_fn.call1(args)?.extract()?;
             
