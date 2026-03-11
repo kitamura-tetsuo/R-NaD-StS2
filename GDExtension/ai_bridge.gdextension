@@ -1,0 +1,11 @@
+[configuration]
+entry_symbol = "gdextension_entry"
+compatibility_minimum = 4.1
+
+[libraries]
+linux.debug.x86_64 = "res://bin/libai_bridge.so"
+linux.release.x86_64 = "res://bin/libai_bridge.so"
+windows.debug.x86_64 = "res://bin/ai_bridge.dll"
+windows.release.x86_64 = "res://bin/ai_bridge.dll"
+macos.debug = "res://bin/libai_bridge.dylib"
+macos.release = "res://bin/libai_bridge.dylib"
