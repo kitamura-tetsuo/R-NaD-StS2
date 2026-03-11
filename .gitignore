@@ -2,3 +2,5 @@
 GDExtension/target/
 
 R-NaD/venv/
+communication-mod/communication-mod.pck
+R-NaD/__pycache__/

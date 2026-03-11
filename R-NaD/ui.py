@@ -30,6 +30,16 @@ def toggle_learning(start: bool):
     except requests.exceptions.RequestException as e:
         st.error(f"Failed to communicate with Godot Python Backend: {e}")
 
+def start_new_game():
+    try:
+        response = requests.get(f"{SERVER_URL}/new_game")
+        if response.status_code == 200:
+            st.success("New game command sent to Slay the Spire 2!")
+        else:
+            st.error(f"Failed to send command. Server responded with {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        st.error(f"Failed to communicate with Godot Python Backend: {e}")
+
 # Fetch current status
 current_status = get_status()
 
@@ -50,6 +60,10 @@ else:
         if st.button("Stop Learning", disabled=not current_status, use_container_width=True):
             toggle_learning(False)
             st.rerun()
+
+    st.divider()
+    if st.button("🚀 Start New Game", use_container_width=True):
+        start_new_game()
 
 st.divider()
 st.info("The learning state is communicated to the running Godot instance via HTTP.")

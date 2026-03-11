@@ -7,6 +7,7 @@ from urllib.parse import urlparse, parse_qs
 
 # Global state
 learning_active = False
+command_queue = []
 
 import random
 
@@ -15,9 +16,15 @@ def predict_action(state_json):
     Called from Rust (GDExtension).
     state_json is the JSON serialized game state from C#.
     """
-    global learning_active
+    global learning_active, command_queue
     
     try:
+        # Check for pending commands first
+        if command_queue:
+            cmd = command_queue.pop(0)
+            print(f"[Python] Sending command to game: {cmd}")
+            return json.dumps({"action": "command", "command": cmd})
+
         state = json.loads(state_json)
         hand = state.get("hand", [])
         
@@ -43,7 +50,7 @@ def predict_action(state_json):
 
 class CommandHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        global learning_active
+        global learning_active, command_queue
         parsed_path = urlparse(self.path)
         
         if parsed_path.path == "/status":
@@ -67,6 +74,14 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "stopped"}).encode())
+
+        elif parsed_path.path == "/new_game":
+            command_queue.append("start_game")
+            print("[Python] New game requested!")
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "queued", "command": "start_game"}).encode())
             
         else:
             self.send_response(404)
