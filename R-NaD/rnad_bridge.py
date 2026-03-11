@@ -8,6 +8,8 @@ from urllib.parse import urlparse, parse_qs
 # Global state
 learning_active = False
 
+import random
+
 def predict_action(state_json):
     """
     Called from Rust (GDExtension).
@@ -15,19 +17,27 @@ def predict_action(state_json):
     """
     global learning_active
     
-    # Process the state...
-    print(f"[Python] predict_action called with state: {state_json[:100]}...")
-    
-    # If learning is active, we might do something different
-    if learning_active:
-        print("[Python] (Learning mode active)")
-    
-    # For now, just return a dummy action
-    action = {
-        "action": "play_card",
-        "card_id": "strike",
-        "learning": learning_active
-    }
+    try:
+        state = json.loads(state_json)
+        hand = state.get("hand", [])
+        
+        print(f"[Python] predict_action called with {len(hand)} cards in hand.")
+        
+        if hand:
+            # Pick a random card from hand as requested
+            chosen_card = random.choice(hand)
+            action = {
+                "action": "play_card",
+                "card_id": chosen_card,
+                "learning": learning_active
+            }
+        else:
+            action = {"action": "wait"}
+            
+    except Exception as e:
+        print(f"[Python] Error in predict_action: {e}")
+        action = {"action": "error", "message": str(e)}
+        
     return json.dumps(action)
 
 
