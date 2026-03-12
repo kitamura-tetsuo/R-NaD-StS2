@@ -30,10 +30,10 @@
 
     <!-- Linux -->
     <PropertyGroup Condition="'$(IsLinux)' == 'true'">
-        <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">$(HOME)/.steam/debian-installation/steamapps/</SteamLibraryPath>
+        <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">$(HOME)/.local/share/Steam/steamapps/</SteamLibraryPath>
         <Sts2Path Condition="'$(Sts2Path)' == ''">$(SteamLibraryPath)/common/Slay the Spire 2</Sts2Path>
         <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Path)/data_sts2_linuxbsd_x86_64</Sts2DataDir>
-        <GodotPath Condition="'$(GodotPath)' == ''">$(HOME)/megadot/MegaDot_v4.5.1-stable_mono_linux.x86_64</GodotPath>
+        <GodotPath Condition="'$(GodotPath)' == ''">$(HOME)/.local/share/megadot/MegaDot_v4.5.1-stable_mono_linux.x86_64</GodotPath>
     </PropertyGroup>
     <!-- // NOTE: Megadot is version 4.5.1, and the game won't load pck if godot is newer. -->
 

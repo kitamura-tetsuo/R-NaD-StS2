@@ -1,6 +1,6 @@
 {
-  "pck_name": "communication-mod",
-  "name": "communication-mod",
+  "pck_name": "communication_mod",
+  "name": "communication_mod",
   "author": "kitamura.tetsuo@gmail.com",
   "description": "Slay the Spire 2 mod created from a template for use with BaseLib",
   "version": "v0.0"

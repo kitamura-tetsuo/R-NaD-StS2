@@ -1,6 +1,6 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "communication-mod", "communication-mod.csproj", "{E8879874-3202-40CA-BCA3-4295E497D161}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "communication_mod", "communication_mod.csproj", "{E8879874-3202-40CA-BCA3-4295E497D161}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
