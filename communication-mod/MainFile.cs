@@ -33,6 +33,7 @@ public partial class MainFile : Node
     public static void Initialize()
     {
         Logger.Info("[AutoAI] MainFile.Initialize called");
+        Engine.TimeScale = 10.0f;
 
         _instance = new MainFile();
         _instance.Name = "R_NaD_Controller";

@@ -36,7 +36,7 @@ def test_random_play(max_turns=50):
     # 1. Launch Slay the Spire 2
     print("[Test] Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
-    cmd = ["./SlayTheSpire2", "--verbose"]
+    cmd = ["./SlayTheSpire2", "--verbose", "--fastmp"]
     
     # Run in headed mode as requested
     process = subprocess.Popen(
@@ -48,8 +48,8 @@ def test_random_play(max_turns=50):
     
     try:
         # Wait for game to initialize
-        print("[Test] Waiting for game to initialize (30s)...")
-        time.sleep(30)
+        print("[Test] Waiting for game to initialize (5s)...")
+        time.sleep(5)
         
         # 2. Trigger New Game
         print("[Test] Requesting new game...")
