@@ -1,0 +1,29 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(314,40): error CS0234: The type or namespace name 'NClickableControl' does not exist in the namespace 'MegaCrit.Sts2.Core.Nodes.CommonUi' (are you missing an assembly reference?) [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(228,26): warning CS8600: Converting null literal or possible null value to non-nullable type. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(235,28): warning CS8602: Dereference of a possibly null reference. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(235,28): warning CS8602: Dereference of a possibly null reference. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(243,34): warning CS8602: Dereference of a possibly null reference. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(253,38): warning CS8604: Possible null reference argument for parameter 'player' in 'void CombatManager.SetReadyToEndTurn(Player player, bool canBackOut, Func<Task>? actionDuringEnemyTurn = null)'. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(276,42): warning CS8602: Dereference of a possibly null reference. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(417,26): warning CS8600: Converting null literal or possible null value to non-nullable type. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(25,25): warning CS0414: The field 'MainFile._diagnosed' is assigned but its value is never used [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+CSC : warning STS002: Localization files must be added as additional files for analysis [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+
+Build FAILED.
+
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(228,26): warning CS8600: Converting null literal or possible null value to non-nullable type. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(235,28): warning CS8602: Dereference of a possibly null reference. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(235,28): warning CS8602: Dereference of a possibly null reference. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(243,34): warning CS8602: Dereference of a possibly null reference. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(253,38): warning CS8604: Possible null reference argument for parameter 'player' in 'void CombatManager.SetReadyToEndTurn(Player player, bool canBackOut, Func<Task>? actionDuringEnemyTurn = null)'. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(276,42): warning CS8602: Dereference of a possibly null reference. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(417,26): warning CS8600: Converting null literal or possible null value to non-nullable type. [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(25,25): warning CS0414: The field 'MainFile._diagnosed' is assigned but its value is never used [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+CSC : warning STS002: Localization files must be added as additional files for analysis [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+/home/ubuntu/src/R-NaD-StS2/communication-mod/MainFile.cs(314,40): error CS0234: The type or namespace name 'NClickableControl' does not exist in the namespace 'MegaCrit.Sts2.Core.Nodes.CommonUi' (are you missing an assembly reference?) [/home/ubuntu/src/R-NaD-StS2/communication-mod/communication_mod.csproj]
+    9 Warning(s)
+    1 Error(s)
+
+Time Elapsed 00:00:01.41

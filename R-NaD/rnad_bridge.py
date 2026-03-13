@@ -26,20 +26,78 @@ def predict_action(state_json):
             return json.dumps({"action": "command", "command": cmd})
 
         state = json.loads(state_json)
-        hand = state.get("hand", [])
+        state_type = state.get("type", "unknown")
         
-        print(f"[Python] predict_action called with {len(hand)} cards in hand.")
-        for card in hand:
-            print(f"  - Card: {card.get('name')} (ID: {card.get('id')}, Cost: {card.get('cost')})")
+        print(f"[Python] predict_action called for state type: {state_type}")
+
+        if state_type == "combat":
+            hand = state.get("hand", [])
+            playable_cards = [c for c in hand if c.get("isPlayable")]
+            if playable_cards:
+                chosen_card = random.choice(playable_cards)
+                action = {
+                    "action": "play_card",
+                    "card_id": chosen_card.get("id")
+                }
+            else:
+                action = {"action": "end_turn"}
         
-        if hand:
-            # Pick a random card from hand as requested
-            chosen_card = random.choice(hand)
-            action = {
-                "action": "play_card",
-                "card_id": chosen_card,
-                "learning": learning_active
-            }
+        elif state_type == "map":
+            next_nodes = state.get("next_nodes", [])
+            if next_nodes:
+                chosen_node = random.choice(next_nodes)
+                action = {
+                    "action": "select_map_node",
+                    "row": chosen_node.get("row"),
+                    "col": chosen_node.get("col")
+                }
+            else:
+                action = {"action": "wait"}
+
+        elif state_type == "event":
+            options = state.get("options", [])
+            available_options = [o for o in options if not o.get("is_locked")]
+            if available_options:
+                chosen_option = random.choice(available_options)
+                action = {
+                    "action": "select_event_option",
+                    "index": chosen_option.get("index")
+                }
+            else:
+                action = {"action": "wait"}
+
+        elif state_type == "rewards":
+            rewards = state.get("rewards", [])
+            if rewards:
+                chosen_reward = random.choice(rewards)
+                action = {
+                    "action": "select_reward",
+                    "index": chosen_reward.get("index")
+                }
+            elif state.get("can_proceed"):
+                action = {"action": "proceed"}
+            else:
+                action = {"action": "wait"}
+
+        elif state_type == "card_reward":
+            cards = state.get("cards", [])
+            buttons = state.get("buttons", [])
+            if cards:
+                chosen_card = random.choice(cards)
+                action = {
+                    "action": "select_reward_card",
+                    "index": chosen_card.get("index")
+                }
+            elif buttons:
+                # If no cards left (e.g. they were all selected), click the first button
+                # (likely "Skip" or "Done" or "Back")
+                action = {
+                    "action": "click_reward_button",
+                    "index": 0
+                }
+            else:
+                action = {"action": "wait"}
+
         else:
             action = {"action": "wait"}
             
@@ -50,7 +108,7 @@ def predict_action(state_json):
     # Write last state to a file for E2E testing
     try:
         with open("/tmp/rnad_last_state.json", "w") as f:
-            f.write(state_json)
+            f.write(str(state_json))
     except:
         pass
 

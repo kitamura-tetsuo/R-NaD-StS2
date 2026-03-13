@@ -6,8 +6,28 @@ import os
 import signal
 import argparse
 
+def cleanup_processes():
+    print("[Test] Cleaning up existing processes...")
+    try:
+        # Kill the game
+        subprocess.run(["pkill", "-9", "SlayTheSpire2"], stderr=subprocess.DEVNULL)
+        # Kill other python test scripts, but not ourselves
+        current_pid = os.getpid()
+        result = subprocess.run(["pgrep", "-f", "e2e_"], stdout=subprocess.PIPE, text=True)
+        for line in result.stdout.splitlines():
+            pid = int(line.strip())
+            if pid != current_pid:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        time.sleep(1)
+    except Exception:
+        pass
+
 def test_hand_extraction(headless=False):
     print(f"=== Starting E2E Hand Extraction Test {'(Headless)' if headless else ''} ===")
+    cleanup_processes()
     
     # Path to the last state file
     last_state_path = "/tmp/rnad_last_state.json"
