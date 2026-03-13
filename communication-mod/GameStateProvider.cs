@@ -12,12 +12,12 @@ public partial class MainFile : Node
     {
         var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
         var runState = rm.DebugOnlyGetState();
-        if (runState == null) return "{\"type\":\"none\"}";
+        if (runState == null) return "{\"type\":\"none\", \"floor\": 0}";
 
         if (runState.IsGameOver)
         {
             Logger.Info("[AutoAI] RunState.IsGameOver is true. Reporting game_over state.");
-            return "{\"type\":\"game_over\"}";
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor }, JsonOptions);
         }
 
         var currentRoom = runState.CurrentRoom;
@@ -63,7 +63,7 @@ public partial class MainFile : Node
         if (currentRoom == null)
         {
              Logger.Info($"[AutoAI] currentRoom is null. mapScreenExists={mapScreenExists}, mapScreenOpen={mapScreenOpen}");
-             return System.Text.Json.JsonSerializer.Serialize(new { type = "unknown", error = "currentRoom is null" }, JsonOptions);
+             return System.Text.Json.JsonSerializer.Serialize(new { type = "unknown", floor = runState.TotalFloor, error = "currentRoom is null" }, JsonOptions);
         }
 
         if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen rs)
@@ -103,6 +103,7 @@ public partial class MainFile : Node
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "rewards",
+                floor = runState.TotalFloor,
                 rewards = rewards,
                 has_open_potion_slots = hasOpenPotionSlots,
                 can_proceed = MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState)
@@ -158,13 +159,14 @@ public partial class MainFile : Node
                 }
             }
 
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", cards = cards, buttons = buttons }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, cards = cards, buttons = buttons }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen gos)
         {
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "game_over",
+                floor = runState.TotalFloor,
                 victory = runState?.CurrentRoom?.IsVictoryRoom ?? false
             }, JsonOptions);
         }
@@ -185,6 +187,7 @@ public partial class MainFile : Node
             {
                 type = "grid_selection",
                 subtype = "choose_a_card",
+                floor = runState.TotalFloor,
                 cards = cards,
                 can_skip = canSkip
             }, JsonOptions);
@@ -241,6 +244,7 @@ public partial class MainFile : Node
             {
                 type = "grid_selection",
                 subtype = gridSelection.GetType().Name,
+                floor = runState.TotalFloor,
                 cards = cards,
                 is_confirming = isConfirming
             }, JsonOptions);
@@ -266,6 +270,7 @@ public partial class MainFile : Node
                 return System.Text.Json.JsonSerializer.Serialize(new
                 {
                     type = "treasure_relics",
+                    floor = runState.TotalFloor,
                     relics = relics
                 }, JsonOptions);
             }
@@ -326,6 +331,7 @@ public partial class MainFile : Node
                     return System.Text.Json.JsonSerializer.Serialize(new
                     {
                         type = "hand_selection",
+                        floor = runState.TotalFloor,
                         cards = cards,
                         is_confirming = isConfirming,
                         mode = hand.CurrentMode.ToString()
@@ -341,6 +347,7 @@ public partial class MainFile : Node
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "combat",
+                floor = runState.TotalFloor,
                 player = new
                 {
                     hp = player?.Creature.CurrentHp ?? 0,
@@ -412,6 +419,7 @@ public partial class MainFile : Node
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "event",
+                floor = runState.TotalFloor,
                 title = ev.Title.GetRawText(),
                 options = options
             }, JsonOptions);
@@ -464,6 +472,7 @@ public partial class MainFile : Node
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "rest_site",
+                floor = runState.TotalFloor,
                 options = optionsData,
                 can_proceed = canProceed
             }, JsonOptions);
@@ -498,6 +507,7 @@ public partial class MainFile : Node
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "shop",
+                floor = runState.TotalFloor,
                 gold = gold,
                 items = items,
                 can_proceed = canProceed
@@ -520,13 +530,14 @@ public partial class MainFile : Node
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "treasure",
+                floor = runState.TotalFloor,
                 has_chest = hasChest,
                 can_proceed = canProceed
             }, JsonOptions);
         }
 
         Logger.Info($"[AutoAI] Reporting unknown state for room: {currentRoom.GetType().Name}");
-        return System.Text.Json.JsonSerializer.Serialize(new { type = "unknown", room = currentRoom.GetType().Name }, JsonOptions);
+        return System.Text.Json.JsonSerializer.Serialize(new { type = "unknown", floor = runState.TotalFloor, room = currentRoom.GetType().Name }, JsonOptions);
     }
 
     private string GetMapJson(MegaCrit.Sts2.Core.Runs.RunState runState)
@@ -600,6 +611,7 @@ public partial class MainFile : Node
         return System.Text.Json.JsonSerializer.Serialize(new
         {
             type = "map",
+            floor = runState.TotalFloor,
             current_pos = currentPos.HasValue ? new { row = currentPos.Value.row, col = currentPos.Value.col } : null,
             next_nodes = nextNodesData
         }, JsonOptions);

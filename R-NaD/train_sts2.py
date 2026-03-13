@@ -18,16 +18,26 @@ def main():
     
     logging.info("Starting JAX training loop...")
     for step in range(config.max_steps):
-        # Dummy batch
+        # Mock batch with reward logic
+        # Rew = floor * 0.01 + (1.0 if clear else 0) + (-1.0 if lose else 0)
+        
+        # Example calculation for a single state (dummy)
+        floor = 10
+        is_clear = True
+        is_lose = False
+        reward = floor * 0.01
+        if is_clear: reward += 1.0
+        if is_lose: reward -= 1.0
+        
         batch = {
             'obs': jnp.zeros((20, 32, 128)),
             'act': jnp.zeros((20, 32), dtype=jnp.int32),
-            'rew': jnp.zeros((20, 32)),
+            'rew': jnp.full((20, 32), reward), # Using the calculated reward
             'log_prob': jnp.zeros((20, 32))
         }
         metrics = learner.update(batch, step)
         if step % 100 == 0:
-            logging.info(f"Step {step}: Loss = {metrics['loss']:.4f}")
+            logging.info(f"Step {step}: Loss = {metrics['loss']:.4f}, Reward Example = {reward:.2f}")
 
 if __name__ == "__main__":
     main()

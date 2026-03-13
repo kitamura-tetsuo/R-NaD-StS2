@@ -43,8 +43,8 @@ def load_model(checkpoint_path=None):
         print("[Python] Initialized new JAX model")
 
 def encode_state(state):
-    """Simple placeholder state encoder for JAX."""
     vec = np.zeros(128, dtype=np.float32)
+    vec[3] = state.get("floor", 0) / 50.0  # Normalize floor
     if state.get("type") == "combat":
         vec[0] = 1.0
         player = state.get("player", {})
