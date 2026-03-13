@@ -4,9 +4,10 @@ import time
 import subprocess
 import os
 import signal
+import argparse
 
-def test_hand_extraction():
-    print("=== Starting E2E Hand Extraction Test ===")
+def test_hand_extraction(headless=False):
+    print(f"=== Starting E2E Hand Extraction Test {'(Headless)' if headless else ''} ===")
     
     # Path to the last state file
     last_state_path = "/tmp/rnad_last_state.json"
@@ -16,8 +17,12 @@ def test_hand_extraction():
     # 1. Launch Slay the Spire 2 in background
     print("[Test] Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
+    cmd = ["./SlayTheSpire2", "--verbose"]
+    if headless:
+        cmd.append("--headless")
+        
     process = subprocess.Popen(
-        ["./SlayTheSpire2", "--verbose"],
+        cmd,
         cwd=game_dir,
         stdout=open("/tmp/sts2_stdout.log", "w"),
         stderr=open("/tmp/sts2_stderr.log", "w")
@@ -75,4 +80,8 @@ def test_hand_extraction():
         print("=== Test Finished ===")
 
 if __name__ == "__main__":
-    test_hand_extraction()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--headless", action="store_true", help="Launch StS2 in headless mode")
+    args = parser.parse_args()
+    
+    test_hand_extraction(headless=args.headless)
