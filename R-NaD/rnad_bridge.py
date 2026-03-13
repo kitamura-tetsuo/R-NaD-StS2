@@ -12,19 +12,81 @@ except ImportError:
     print("[Python] PIL not found or failed to load. PIL-based screenshots will be disabled.")
 import os
 
+import random
+import jax
+import jax.numpy as jnp
+import numpy as np
+from src.rnad import RNaDLearner, RNaDConfig
+
 # Global state
 learning_active = False
 command_queue = []
 current_seed = None
+trajectory = []
 
-import random
+# Model and Config
+config = RNaDConfig()
+learner = None
+rng_key = jax.random.PRNGKey(42)
+
+def load_model(checkpoint_path=None):
+    global learner, rng_key
+    # Placeholder dims
+    state_dim = 128
+    num_actions = 50
+    learner = RNaDLearner(state_dim, num_actions, config)
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        learner.load_checkpoint(checkpoint_path)
+        print(f"[Python] Loaded JAX model from {checkpoint_path}")
+    else:
+        learner.init(rng_key)
+        print("[Python] Initialized new JAX model")
+
+def encode_state(state):
+    """Simple placeholder state encoder for JAX."""
+    vec = np.zeros(128, dtype=np.float32)
+    if state.get("type") == "combat":
+        vec[0] = 1.0
+        player = state.get("player", {})
+        vec[1] = player.get("hp", 0) / 100.0
+        vec[2] = player.get("block", 0) / 100.0
+    return jnp.array(vec)
+
+def get_action_from_model(state_json):
+    global learner, trajectory, rng_key
+    if learner is None:
+        load_model()
+    
+    state = json.loads(state_json)
+    state_vec = encode_state(state)
+    
+    # Inference
+    logits, value = learner.network.apply(learner.params, rng_key, state_vec[None, :])
+    probs = jax.nn.softmax(logits, axis=-1)
+    
+    # Sample action
+    rng_key, subkey = jax.random.split(rng_key)
+    action_idx = jax.random.categorical(subkey, logits).item()
+    
+    # Simple action mapping (placeholder)
+    action = {"action": "wait"}
+    
+    # Trajectory collection
+    if learning_active:
+        trajectory.append({
+            "state": state_json,
+            "action_idx": int(action_idx),
+            "value": float(value[0])
+        })
+    
+    return action
 
 def predict_action(state_json):
     """
     Called from Rust (GDExtension).
     state_json is the JSON serialized game state from C#.
     """
-    global learning_active, command_queue
+    global learning_active, command_queue, learner
     
     try:
         # Check for pending commands first
@@ -32,6 +94,12 @@ def predict_action(state_json):
             cmd = command_queue.pop(0)
             print(f"[Python] Sending command to game: {cmd}")
             return json.dumps({"action": "command", "command": cmd})
+
+        if learner is not None:
+             # Use R-NaD model if loaded
+             action = get_action_from_model(state_json)
+             if action["action"] != "wait":
+                 return json.dumps(action)
 
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")

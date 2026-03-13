@@ -20,7 +20,19 @@ public partial class MainFile : Node
     public static MegaCrit.Sts2.Core.Logging.Logger Logger { get; } =
         new(ModId, MegaCrit.Sts2.Core.Logging.LogType.Generic);
 
-    public static Node? AiBridge { get; private set; }
+    private static Node? _aiBridge;
+    public static Node? AiBridge 
+    { 
+        get => _aiBridge;
+        private set 
+        {
+            _aiBridge = value;
+            if (_aiBridge != null)
+            {
+                InitializeHooks();
+            }
+        }
+    }
     private static MainFile? _instance;
 
     private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()
@@ -59,26 +71,28 @@ public partial class MainFile : Node
         }
     }
 
-    private double _aiTimer = 0;
-    private const double AiInterval = 2.0;
-
-    public override void _Process(double delta)
+    private static void InitializeHooks()
     {
-        _aiTimer += delta;
-        if (_aiTimer >= AiInterval)
-        {
-            _aiTimer = 0;
-            if (AiBridge != null)
-            {
-                PollCommands();
+        Logger.Info("[AutoAI] Initializing event-based hooks");
+        
+        // Combat hooks
+        MegaCrit.Sts2.Core.Combat.CombatManager.Instance.TurnStarted += (state) => TriggerAiMove("Combat Turn Started");
+        MegaCrit.Sts2.Core.Combat.CombatManager.Instance.PlayerActionsDisabledChanged += (state) => {
+            if (!MegaCrit.Sts2.Core.Combat.CombatManager.Instance.PlayerActionsDisabled)
+                TriggerAiMove("Player Actions Enabled");
+        };
 
-                // Allow UI to settle
-                var transition = MegaCrit.Sts2.Core.Nodes.NGame.Instance?.Transition;
-                if (transition != null && transition.InTransition) return;
+        // Screen/Overlay hooks
+        MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance.ChildEnteredTree += (node) => TriggerAiMove($"Overlay Opened: {node.Name}");
 
-                TryAiMove();
-            }
-        }
+        // Action completion hook
+        MegaCrit.Sts2.Core.Runs.RunManager.Instance.ActionExecutor.AfterActionExecuted += (action) => TriggerAiMove("Action Executed");
+    }
+
+    private static void TriggerAiMove(string reason)
+    {
+        Logger.Info($"[AutoAI] Triggering AI move due to: {reason}");
+        _instance?.CallDeferred(nameof(TryAiMove));
     }
 
     private void TryAiMove()

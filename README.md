@@ -37,12 +37,21 @@ You need to install dependencies in a virtual environment for the Streamlit grap
 cd R-NaD
 python3 -m venv venv
 source venv/bin/activate
-pip install streamlit requests
+pip install streamlit requests jax jaxlib dm-haiku optax mlflow numpy
 streamlit run ui.py
 ```
 *The UI will run on `http://localhost:8501`.*
 
-### 4. Launch Slay the Spire 2
+### 4. Running R-NaD Training (Optional)
+You can run or verify the R-NaD training process independently:
+```bash
+# Launch the JAX-based training loop
+export PYTHONPATH=$PYTHONPATH:$(pwd)/R-NaD
+python3 R-NaD/train_sts2.py --max_steps 1000
+```
+*Trained checkpoints will be saved in the `checkpoints/` directory.*
+
+### 5. Launch Slay the Spire 2
 Start the game with the Mod Loader enabled. The `communication-mod` will attach the `AiBridge` Godot node, start the Python daemon, and begin streaming state/receiving actions from R-NaD. Using the Streamlit UI, you can toggle the "Learning ACTIVE/INACTIVE" state.
 
 ## License
