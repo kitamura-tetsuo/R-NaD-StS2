@@ -1,7 +1,13 @@
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Characters;
+using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Rooms;
+using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace communication_mod;
 
@@ -16,6 +22,13 @@ public partial class MainFile : Node
 
     public static Node? AiBridge { get; private set; }
     private static MainFile? _instance;
+    private static bool _diagnosed = false;
+
+    private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()
+    {
+        IncludeFields = true,
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+    };
 
     public static void Initialize()
     {
@@ -56,8 +69,11 @@ public partial class MainFile : Node
         if (_aiTimer >= AiInterval)
         {
             _aiTimer = 0;
-            PollCommands();
-            TryAiMove();
+            if (AiBridge != null)
+            {
+                PollCommands();
+                TryAiMove();
+            }
         }
     }
 
@@ -99,10 +115,17 @@ public partial class MainFile : Node
         try
         {
             var ngame = MegaCrit.Sts2.Core.Nodes.NGame.Instance;
+            Logger.Info($"[AutoAI] NGame.Instance: {(ngame != null ? "exists" : "null")}");
             if (ngame != null)
             {
-                // Correct signature for StS2: (CharacterModel, bool, IReadOnlyList<ActModel>, IReadOnlyList<ModifierModel>, string, int, DateTimeOffset?)
-                ngame.StartNewSingleplayerRun(null, true, null, null, null, 0, null);
+                var ironclad = ModelDb.Character<Ironclad>();
+                var acts = ActModel.GetDefaultList();
+                var modifiers = new List<ModifierModel>();
+                
+                Logger.Info($"[AutoAI] Launching new run with {ironclad.Id.Entry}...");
+                
+                // Call the deferred method to ensure it runs on the main thread
+                CallDeferred(nameof(StartNewGameDeferred));
             }
             else
             {
@@ -115,56 +138,140 @@ public partial class MainFile : Node
         }
     }
 
+    private async void StartNewGameDeferred()
+    {
+        try
+        {
+            var ngame = MegaCrit.Sts2.Core.Nodes.NGame.Instance;
+            if (ngame == null) return;
+
+            var ironclad = ModelDb.Character<Ironclad>();
+            var acts = ActModel.GetDefaultList();
+            var modifiers = new List<ModifierModel>();
+
+            // StartNewSingleplayerRun handles the main run initialization
+            var runState = await ngame.StartNewSingleplayerRun(
+                ironclad, 
+                true, 
+                acts, 
+                modifiers, 
+                "", // Use random seed
+                0, 
+                null
+            );
+            
+            Logger.Info("[AutoAI] Run started. Waiting for scene to settle...");
+            await Task.Delay(2000); // Wait for transition effects
+            
+            var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
+            var state = rm.DebugOnlyGetState();
+            
+            if (state != null && state.CurrentRoom is MapRoom)
+            {
+                Logger.Info("[AutoAI] Landed in MapRoom. Entering starting combat node...");
+                await rm.EnterMapCoord(state.Map.StartingMapPoint.coord);
+                Logger.Info("[AutoAI] Successfully entered first node.");
+            }
+            else
+            {
+                string roomType = state?.CurrentRoom?.GetType().Name ?? "null";
+                Logger.Info($"[AutoAI] Current room is {roomType}. No auto-map entry needed.");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Logger.Error($"[AutoAI] Error in StartNewGameDeferred: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
     private void TryAiMove()
     {
-        /* Temporary commented out due to API mismatch with current sts2.dll
         var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-        if (cm != null && cm.IsPlayPhase && !cm.PlayerActionsDisabled)
+        if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase || cm.PlayerActionsDisabled) return;
+
+        try
         {
-            var player = cm.State?.Players.FirstOrDefault();
-            var hand = player?.PlayerCombatState?.Hand?.Cards;
-            if (hand == null || hand.Count == 0) return;
-
-            // Simple serialization
-            var handList = new Godot.Collections.Array();
-            foreach (var card in hand)
-            {
-                handList.Add(card.Id.Entry);
-            }
-
-            var stateDict = new Godot.Collections.Dictionary
-            {
-                { "hp", player!.Creature.CurrentHp },
-                { "energy", player.PlayerCombatState.Energy },
-                { "hand", handList }
-            };
-
-            string jsonState = Json.Stringify(stateDict);
-
-            if (AiBridge == null) return;
-            var responseVariant = AiBridge.Call("predict_action", jsonState);
-            string response = responseVariant.AsString();
+            string stateJson = GetJsonState();
+            var responseVariant = AiBridge?.Call("predict_action", stateJson);
+            if (responseVariant == null) return;
             
+            string response = responseVariant.Value.AsString();
             if (string.IsNullOrEmpty(response)) return;
 
             var json = new Json();
             if (json.Parse(response) == Error.Ok)
             {
                 var dict = json.Data.AsGodotDictionary();
-                if (dict.ContainsKey("action") && dict["action"].AsString() == "play_card")
+                if (dict.ContainsKey("action"))
                 {
-                    string cardId = dict["card_id"].AsString();
-                    var cardToPlay = hand.FirstOrDefault(c => c.Id.Entry == cardId);
-                    if (cardToPlay != null)
+                    string action = dict["action"].AsString();
+                    if (action == "play_card")
                     {
-                        Logger.Info($"[AutoAI] AI chose to play: {cardId}");
-                        CardSelectionPatch.IsAiPlaying = true;
-                        cardToPlay.TryManualPlay(null);
-                        CardSelectionPatch.IsAiPlaying = false;
+                        // TODO: Implement card playing logic
+                        string cardId = dict["card_id"].AsString();
+                        Logger.Info($"[AutoAI] AI wants to play card: {cardId}");
+                    }
+                    else if (action == "wait")
+                    {
+                        Logger.Info("[AutoAI] AI is waiting.");
                     }
                 }
             }
         }
-        */
+        catch (System.Exception ex)
+        {
+            Logger.Error($"Error in TryAiMove: {ex.Message}");
+        }
+    }
+
+    private string GetJsonState()
+    {
+        var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
+        var combatState = cm.DebugOnlyGetState();
+        if (combatState == null) return "{}";
+
+        var player = MegaCrit.Sts2.Core.Context.LocalContext.GetMe(combatState);
+        if (player == null) return "{}";
+
+        var pState = player.PlayerCombatState;
+        
+        var state = new
+        {
+            player = new
+            {
+                hp = player.Creature.CurrentHp,
+                maxHp = player.Creature.MaxHp,
+                block = player.Creature.Block,
+                energy = pState?.Energy ?? 0,
+                stars = pState?.Stars ?? 0
+            },
+            hand = pState?.Hand.Cards.Select(c => new
+            {
+                id = c.Id.Entry,
+                name = c.Title,
+                cost = c.EnergyCost.GetWithModifiers(MegaCrit.Sts2.Core.Entities.Cards.CostModifiers.All),
+                starCost = c.GetStarCostWithModifiers(),
+                isPlayable = c.CanPlay()
+            }).ToList(),
+            drawPileCount = pState?.DrawPile.Cards.Count ?? 0,
+            discardPileCount = pState?.DiscardPile.Cards.Count ?? 0,
+            exhaustPileCount = pState?.ExhaustPile.Cards.Count ?? 0,
+            enemies = combatState.Enemies.Where(e => e.IsAlive).Select(e => new
+            {
+                id = e.ModelId.Entry,
+                name = e.Name,
+                hp = e.CurrentHp,
+                maxHp = e.MaxHp,
+                block = e.Block,
+                intent = e.Monster?.NextMove.Intents.Select(i => new
+                {
+                    type = i.IntentType.ToString(),
+                    damage = (i is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent ai) ? ai.GetSingleDamage(combatState.PlayerCreatures, e) : 0,
+                    hits = (i is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent ai2) ? ai2.Repeats + 1 : 0
+                }).ToList()
+            }).ToList()
+        };
+
+        return System.Text.Json.JsonSerializer.Serialize(state, JsonOptions);
     }
 }

@@ -29,6 +29,8 @@ def predict_action(state_json):
         hand = state.get("hand", [])
         
         print(f"[Python] predict_action called with {len(hand)} cards in hand.")
+        for card in hand:
+            print(f"  - Card: {card.get('name')} (ID: {card.get('id')}, Cost: {card.get('cost')})")
         
         if hand:
             # Pick a random card from hand as requested
@@ -45,6 +47,13 @@ def predict_action(state_json):
         print(f"[Python] Error in predict_action: {e}")
         action = {"action": "error", "message": str(e)}
         
+    # Write last state to a file for E2E testing
+    try:
+        with open("/tmp/rnad_last_state.json", "w") as f:
+            f.write(state_json)
+    except:
+        pass
+
     return json.dumps(action)
 
 
@@ -115,3 +124,11 @@ def init():
 
 # Initialize when loaded
 init()
+
+if __name__ == "__main__":
+    # Keep the main thread alive if run as a script
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("[Python] rnad_bridge stopping...")
