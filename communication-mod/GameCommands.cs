@@ -29,9 +29,14 @@ public partial class MainFile : Node
                 {
                     string command = dict["command"].AsString();
                     Logger.Info($"[AutoAI] Received command: {command}");
-                    if (command == "start_game")
+                    if (command.StartsWith("start_game"))
                     {
-                        StartNewGame();
+                        string seed = "";
+                        if (command.Contains(":"))
+                        {
+                            seed = command.Split(':')[1];
+                        }
+                        StartNewGame(seed);
                     }
                 }
             }
@@ -42,9 +47,9 @@ public partial class MainFile : Node
         }
     }
 
-    private void StartNewGame()
+    private void StartNewGame(string seed = "")
     {
-        Logger.Info("[AutoAI] Starting new game...");
+        Logger.Info($"[AutoAI] Starting new game with seed: {seed}");
         try
         {
             var ngame = MegaCrit.Sts2.Core.Nodes.NGame.Instance;
@@ -58,6 +63,8 @@ public partial class MainFile : Node
                 Logger.Info($"[AutoAI] Launching new run with {ironclad.Id.Entry}...");
 
                 // Call the deferred method to ensure it runs on the main thread
+                // Pass seed via a temporary field or directly if we use a different pattern
+                _pendingSeed = seed;
                 CallDeferred(nameof(StartNewGameDeferred));
             }
             else
@@ -71,10 +78,15 @@ public partial class MainFile : Node
         }
     }
 
+    private string _pendingSeed = "";
+
     private async void StartNewGameDeferred()
     {
         try
         {
+            string seedToUse = _pendingSeed;
+            _pendingSeed = ""; // Clear it
+            
             var ngame = MegaCrit.Sts2.Core.Nodes.NGame.Instance;
             if (ngame == null) return;
 
@@ -88,7 +100,7 @@ public partial class MainFile : Node
                 true,
                 acts,
                 modifiers,
-                "", // Use random seed
+                seedToUse, // Use provided seed
                 0,
                 null
             );

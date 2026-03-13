@@ -8,6 +8,7 @@ from urllib.parse import urlparse, parse_qs
 # Global state
 learning_active = False
 command_queue = []
+current_seed = None
 
 import random
 
@@ -139,6 +140,25 @@ def predict_action(state_json):
             else:
                 action = {"action": "wait"}
 
+        elif state_type == "treasure":
+            if state.get("has_chest"):
+                action = {"action": "open_chest"}
+            elif state.get("can_proceed"):
+                action = {"action": "proceed"}
+            else:
+                action = {"action": "wait"}
+
+        elif state_type == "treasure_relics":
+            relics = state.get("relics", [])
+            if relics:
+                chosen_relic = random.choice(relics)
+                action = {
+                    "action": "select_treasure_relic",
+                    "index": chosen_relic.get("index")
+                }
+            else:
+                action = {"action": "wait"}
+
         elif state_type == "game_over":
             action = {"action": "return_to_main_menu"}
 
@@ -157,6 +177,26 @@ def predict_action(state_json):
         pass
 
     return json.dumps(action)
+
+
+def set_seed(seed):
+    global current_seed
+    if seed:
+        current_seed = str(seed)
+        # Convert seed string to integer for random.seed
+        # If it's already an integer-like string, use it, otherwise hash it
+        try:
+            seed_int = int(current_seed)
+        except ValueError:
+            import hashlib
+            seed_int = int(hashlib.md5(current_seed.encode()).hexdigest(), 16) % (2**32)
+        
+        random.seed(seed_int)
+        print(f"[Python] Random seed set to: {current_seed} (int: {seed_int})")
+    else:
+        current_seed = None
+        random.seed(None)
+        print("[Python] Random seed reset to None")
 
 
 class CommandHandler(BaseHTTPRequestHandler):
@@ -187,12 +227,21 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "stopped"}).encode())
 
         elif parsed_path.path == "/new_game":
-            command_queue.append("start_game")
-            print("[Python] New game requested!")
+            query_components = parse_qs(parsed_path.query)
+            seed = query_components.get("seed", [None])[0]
+            
+            if seed:
+                set_seed(seed)
+                command_queue.append(f"start_game:{seed}")
+            else:
+                set_seed(None)
+                command_queue.append("start_game")
+                
+            print(f"[Python] New game requested! Seed: {seed}")
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "queued", "command": "start_game"}).encode())
+            self.wfile.write(json.dumps({"status": "queued", "command": "start_game", "seed": seed}).encode())
             
         else:
             self.send_response(404)

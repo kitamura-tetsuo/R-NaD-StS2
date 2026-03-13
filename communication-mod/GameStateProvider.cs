@@ -184,29 +184,6 @@ public partial class MainFile : Node
                 can_skip = canSkip
             }, JsonOptions);
         }
-        else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridScreen)
-        {
-            var cards = new List<object>();
-            var gridField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen).GetField("_grid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var grid = gridField?.GetValue(gridScreen) as MegaCrit.Sts2.Core.Nodes.Cards.NCardGrid;
-
-            if (grid != null)
-            {
-                var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(grid);
-                for (int i = 0; i < holders.Count; i++)
-                {
-                    cards.Add(new { index = i, name = holders[i].CardModel?.Title ?? "Unknown" });
-                }
-            }
-
-            return System.Text.Json.JsonSerializer.Serialize(new
-            {
-                type = "grid_selection",
-                subtype = "grid_selection",
-                cards = cards,
-                can_skip = false // Typically grid screens don't have a simple skip
-            }, JsonOptions);
-        }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridSelection)
         {
             var cards = new List<object>();
@@ -237,6 +214,12 @@ public partial class MainFile : Node
                 var preview = field?.GetValue(transformScreen) as CanvasItem;
                 isConfirming = preview != null && preview.Visible;
             }
+            else if (gridSelection is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen cardSelectScreen)
+            {
+                var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen).GetField("_previewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var preview = field?.GetValue(cardSelectScreen) as CanvasItem;
+                isConfirming = preview != null && preview.Visible;
+            }
 
             return System.Text.Json.JsonSerializer.Serialize(new
             {
@@ -245,6 +228,31 @@ public partial class MainFile : Node
                 cards = cards,
                 is_confirming = isConfirming
             }, JsonOptions);
+        }
+
+        // 1.5. Check for global screens that aren't on overlay stack
+        var relicCollection = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection>(GetTree().Root).FirstOrDefault(c => ((CanvasItem)c).Visible);
+        if (relicCollection != null)
+        {
+            var relics = new List<object>();
+            var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicHolder>(relicCollection);
+            for (int i = 0; i < holders.Count; i++)
+            {
+                var holder = holders[i];
+                if (((CanvasItem)holder).Visible)
+                {
+                    relics.Add(new { index = holder.Index, name = holder.Relic?.Model?.Id.Entry ?? "Unknown" });
+                }
+            }
+
+            if (relics.Count > 0)
+            {
+                return System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    type = "treasure_relics",
+                    relics = relics
+                }, JsonOptions);
+            }
         }
 
         // 2. Room Logic
@@ -357,6 +365,27 @@ public partial class MainFile : Node
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "shop",
+                can_proceed = canProceed
+            }, JsonOptions);
+        }
+        else if (currentRoom is MegaCrit.Sts2.Core.Rooms.TreasureRoom tr)
+        {
+            var treasureRoomNode = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom>(GetTree().Root).FirstOrDefault();
+            bool hasChest = false;
+            bool canProceed = false;
+
+            if (treasureRoomNode != null)
+            {
+                var chestBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom).GetField("_chestButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var chestBtn = chestBtnField?.GetValue(treasureRoomNode) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                hasChest = chestBtn != null && chestBtn.Visible && chestBtn.IsEnabled;
+                canProceed = treasureRoomNode.ProceedButton?.IsEnabled ?? false;
+            }
+
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "treasure",
+                has_chest = hasChest,
                 can_proceed = canProceed
             }, JsonOptions);
         }

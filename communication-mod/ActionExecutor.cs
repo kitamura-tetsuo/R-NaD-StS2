@@ -284,6 +284,11 @@ public partial class MainFile : Node
                     var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                     confirmBtn = field?.GetValue(transformScreen) as Node;
                 }
+                else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen cardSelectScreen)
+                {
+                    var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    confirmBtn = field?.GetValue(cardSelectScreen) as Node;
+                }
 
                 if (confirmBtn != null)
                 {
@@ -389,6 +394,35 @@ public partial class MainFile : Node
                 else
                 {
                     await rm.ProceedFromTerminalRewardsScreen();
+                }
+            }
+            else if (action == "open_chest")
+            {
+                var treasureRoomNode = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom>(GetTree().Root).FirstOrDefault();
+                if (treasureRoomNode != null)
+                {
+                    var field = typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom).GetField("_chestButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var chestBtn = field?.GetValue(treasureRoomNode) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                    if (chestBtn != null && chestBtn.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Opening treasure chest.");
+                        chestBtn.Call("ForceClick");
+                    }
+                }
+            }
+            else if (action == "select_treasure_relic")
+            {
+                int index = (int)dict["index"].AsInt64();
+                var relicCollection = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection>(GetTree().Root).FirstOrDefault(c => ((CanvasItem)c).Visible);
+                if (relicCollection != null)
+                {
+                    var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicHolder>(relicCollection);
+                    var holder = holders.FirstOrDefault(h => h.Index == index);
+                    if (holder != null && holder.IsEnabled)
+                    {
+                        Logger.Info($"[AutoAI] Selecting treasure relic index {index}: {holder.Relic?.Model?.Id.Entry}");
+                        holder.Call("ForceClick");
+                    }
                 }
             }
         }

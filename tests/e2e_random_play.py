@@ -5,6 +5,9 @@ import subprocess
 import os
 import signal
 import argparse
+import random
+import string
+
 
 def cleanup_processes():
     print("[Test] Cleaning up existing processes...")
@@ -25,8 +28,8 @@ def cleanup_processes():
     except Exception:
         pass
 
-def test_random_play(max_turns=50):
-    print("=== Starting E2E Random Play Test (Headed) ===")
+def test_random_play(max_turns=50, seed=None):
+    print(f"=== Starting E2E Random Play Test (Headed) Seed={seed} ===")
     cleanup_processes()
     
     last_state_path = "/tmp/rnad_last_state.json"
@@ -54,7 +57,10 @@ def test_random_play(max_turns=50):
         # 2. Trigger New Game
         print("[Test] Requesting new game...")
         try:
-            response = requests.get("http://127.0.0.1:8081/new_game")
+            url = "http://127.0.0.1:8081/new_game"
+            if seed:
+                url += f"?seed={seed}"
+            response = requests.get(url)
             print(f"[Test] New game response: {response.json()}")
         except Exception as e:
             print(f"[Test] Failed to request new game: {e}")
@@ -133,6 +139,15 @@ def test_random_play(max_turns=50):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--turns", type=int, default=50, help="Maximum number of turns/events to record")
+    parser.add_argument("--seed", type=str, default=None, help="Fixed seed for reproducibility")
     args = parser.parse_args()
     
-    test_random_play(max_turns=args.turns)
+    if args.seed is None:
+        # Generate a random 10-character alphanumeric seed
+        args.seed = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
+        print(f"[Test] No seed provided. Generated random seed: {args.seed}")
+    else:
+        print(f"[Test] Using provided seed: {args.seed}")
+    
+    test_random_play(max_turns=args.turns, seed=args.seed)
+
