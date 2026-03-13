@@ -39,7 +39,7 @@ def test_random_play(max_turns=50, seed=None):
     # 1. Launch Slay the Spire 2
     print("[Test] Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
-    cmd = ["./SlayTheSpire2", "--verbose", "--fastmp"]
+    cmd = ["./SlayTheSpire2", "--verbose"]
     
     # Run in headed mode as requested
     process = subprocess.Popen(

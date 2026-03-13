@@ -82,7 +82,8 @@ public partial class MainFile : Node
                     var reward = rewardProp?.GetValue(btn) as MegaCrit.Sts2.Core.Rewards.Reward;
                     if (reward != null)
                     {
-                        rewards.Add(new { index = i, description = reward.Description.GetRawText() });
+                        var rewardType = reward.GetType().Name;
+                        rewards.Add(new { index = i, type = rewardType, description = reward.Description.GetRawText() });
                         hasRewards = true;
                     }
                     i++;
@@ -96,10 +97,14 @@ public partial class MainFile : Node
                 return GetMapJson(runState);
             }
 
+            var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
+            bool hasOpenPotionSlots = player?.HasOpenPotionSlots ?? false;
+
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "rewards",
                 rewards = rewards,
+                has_open_potion_slots = hasOpenPotionSlots,
                 can_proceed = MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState)
             }, JsonOptions);
         }

@@ -81,8 +81,16 @@ def predict_action(state_json):
 
         elif state_type == "rewards":
             rewards = state.get("rewards", [])
-            if rewards:
-                chosen_reward = random.choice(rewards)
+            has_open_potion_slots = state.get("has_open_potion_slots", True)
+            
+            # Filter out potion rewards if slots are full
+            available_rewards = [
+                r for r in rewards 
+                if not (r.get("type") == "PotionReward" and not has_open_potion_slots)
+            ]
+
+            if available_rewards:
+                chosen_reward = random.choice(available_rewards)
                 action = {
                     "action": "select_reward",
                     "index": chosen_reward.get("index")
