@@ -36,6 +36,29 @@ public partial class MainFile : Node
                     card.TryManualPlay(target);
                 }
             }
+            else if (action == "use_potion")
+            {
+                int index = (int)dict["index"].AsInt64();
+                var potions = player.PotionSlots;
+                if (index >= 0 && index < potions.Count)
+                {
+                    var potion = potions[index];
+                    bool canUse = potion != null && potion.PassesCustomUsabilityCheck && (potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime || (potion.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly && MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress));
+                    if (potion != null && canUse)
+                    {
+                        MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
+                        if (potion.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
+                        {
+                            var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
+                            var combatState = cm.DebugOnlyGetState();
+                            target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
+                        }
+                        
+                        Logger.Info($"[AutoAI] Using potion: {potion.Title.GetRawText()}");
+                        potion.EnqueueManualUse(target);
+                    }
+                }
+            }
             else if (action == "end_turn")
             {
                 var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
@@ -280,12 +303,49 @@ public partial class MainFile : Node
                     }
                 }
             }
+            else if (action == "select_hand_card")
+            {
+                int index = (int)dict["index"].AsInt64();
+                var hand = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
+                if (hand != null)
+                {
+                    bool isSelectionMode = hand.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.SimpleSelect || 
+                                         hand.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.UpgradeSelect;
+
+                    if (isSelectionMode || hand.IsInCardSelection)
+                    {
+                        var activeHolders = hand.ActiveHolders;
+                        if (index >= 0 && index < activeHolders.Count)
+                        {
+                            var holder = activeHolders[index];
+                            Logger.Info($"[AutoAI] Selecting hand card at index {index}: {holder.CardNode?.Model?.Title}");
+                            hand.Call("OnHolderPressed", holder);
+                            return;
+                        }
+                    }
+                }
+
+                // Fallback for NSimpleCardSelectScreen
+                var simpleSelect = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NSimpleCardSelectScreen>(GetTree().Root).FirstOrDefault(s => s.Visible);
+                if (simpleSelect != null)
+                {
+                    var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(simpleSelect);
+                    if (index >= 0 && index < holders.Count)
+                    {
+                        var holder = holders[index];
+                        Logger.Info($"[AutoAI] Selecting simple select card at index {index}: {holder.CardModel?.Title}");
+                        simpleSelect.Call("SelectCard", holder);
+                        return;
+                    }
+                }
+            }
             else if (action == "confirm_selection")
             {
                 var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
                 var top = overlayStack?.Peek();
 
                 Node? confirmBtn = null;
+                // ... (existing grid selection confirm buttons) ...
                 if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen upgradeScreen)
                 {
                     var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen).GetField("_singlePreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -324,7 +384,54 @@ public partial class MainFile : Node
                 }
                 else
                 {
-                    Logger.Error($"[AutoAI] Could not find enabled Confirm button on {top?.GetType().Name}");
+                    // Check if hand confirm button is available
+                    var hand = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
+                    if (hand != null)
+                    {
+                        var field = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectModeConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        confirmBtn = field?.GetValue(hand) as Node;
+                        if (confirmBtn != null && ((CanvasItem)confirmBtn).IsVisibleInTree())
+                        {
+                            Logger.Info("[AutoAI] Confirming selection on NPlayerHand");
+                            confirmBtn.Call("ForceClick");
+                            return;
+                        }
+                    }
+
+                    // Fallback for NSimpleCardSelectScreen
+                    var simpleSelect = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NSimpleCardSelectScreen>(GetTree().Root).FirstOrDefault(s => s.Visible);
+                    if (simpleSelect != null)
+                    {
+                        var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NSimpleCardSelectScreen).GetField("_confirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        confirmBtn = field?.GetValue(simpleSelect) as Node;
+                        if (confirmBtn != null && ((CanvasItem)confirmBtn).IsVisibleInTree())
+                        {
+                            Logger.Info("[AutoAI] Confirming selection on NSimpleCardSelectScreen");
+                            confirmBtn.Call("ForceClick");
+                            return;
+                        }
+                    }
+
+                    Logger.Error($"[AutoAI] Could not find enabled Confirm button on {top?.GetType().Name}, NPlayerHand, or NSimpleCardSelectScreen");
+                }
+            }
+            else if (action == "buy_item")
+            {
+                int index = (int)dict["index"].AsInt64();
+                var inventoryNode = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.Shops.NMerchantInventory>(GetTree().Root).FirstOrDefault(n => n.Visible);
+                if (inventoryNode != null)
+                {
+                    var slots = inventoryNode.GetAllSlots().ToList();
+                    if (index >= 0 && index < slots.Count)
+                    {
+                        var slot = slots[index];
+                        if (slot.Entry != null && slot.Entry.IsStocked && slot.Entry.EnoughGold)
+                        {
+                            Logger.Info($"[AutoAI] Buying item at index {index}: {slot.Entry.GetType().Name}");
+                            // Trigger purchase via UI click for consistency
+                            slot.Call("ForceClick");
+                        }
+                    }
                 }
             }
             else if (action == "shop_proceed")

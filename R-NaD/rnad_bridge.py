@@ -45,8 +45,18 @@ def predict_action(state_json):
 
         if state_type == "combat":
             hand = state.get("hand", [])
+            potions = state.get("potions", [])
             playable_cards = [c for c in hand if c.get("isPlayable")]
-            if playable_cards:
+            usable_potions = [p for p in potions if p.get("canUse")]
+
+            # 20% chance to use a potion if available
+            if usable_potions and random.random() < 0.2:
+                chosen_potion = random.choice(usable_potions)
+                action = {
+                    "action": "use_potion",
+                    "index": chosen_potion.get("index")
+                }
+            elif playable_cards:
                 chosen_card = random.choice(playable_cards)
                 action = {
                     "action": "play_card",
@@ -141,6 +151,21 @@ def predict_action(state_json):
             else:
                 action = {"action": "wait"}
 
+        elif state_type == "hand_selection":
+            cards = state.get("cards", [])
+            is_confirming = state.get("is_confirming", False)
+            
+            if is_confirming:
+                action = {"action": "confirm_selection"}
+            elif cards:
+                chosen_card = random.choice(cards)
+                action = {
+                    "action": "select_hand_card",
+                    "index": chosen_card.get("index")
+                }
+            else:
+                action = {"action": "wait"}
+
         elif state_type == "rest_site":
             options = state.get("options", [])
             available_options = [o for o in options if o.get("is_enabled")]
@@ -156,8 +181,17 @@ def predict_action(state_json):
                 action = {"action": "wait"}
 
         elif state_type == "shop":
-            # Always just proceed past the shop
-            if state.get("can_proceed"):
+            items = state.get("items", [])
+            affordable_items = [i for i in items if i.get("canAfford")]
+            
+            # 50% chance to buy something if affordable, otherwise proceed
+            if affordable_items and random.random() < 0.5:
+                chosen_item = random.choice(affordable_items)
+                action = {
+                    "action": "buy_item",
+                    "index": chosen_item.get("index")
+                }
+            elif state.get("can_proceed"):
                 action = {"action": "proceed"}
             else:
                 action = {"action": "wait"}

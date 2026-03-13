@@ -277,7 +277,63 @@ public partial class MainFile : Node
         if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom combatRoom)
         {
             var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase || cm.PlayerActionsDisabled) return "{\"type\":\"combat_waiting\"}";
+            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase) return "{\"type\":\"combat_waiting\"}";
+
+            // Check if hand is in selection mode (e.g., Armaments)
+            var hand = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
+            if (hand != null)
+            {
+                var upgradePreviewField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_upgradePreviewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var upgradePreview = upgradePreviewField?.GetValue(hand) as CanvasItem;
+                
+                var simplePreviewField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectedHandCardContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var simplePreview = simplePreviewField?.GetValue(hand) as CanvasItem;
+
+                var confirmBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectModeConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var confirmBtn = confirmBtnField?.GetValue(hand) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+
+                // Use the explicit Mode enum to distinguish between normal play and selection screens
+                // Mode 2 = SimpleSelect, Mode 3 = UpgradeSelect (based on decompiled enum)
+                bool isSelectionMode = hand.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.SimpleSelect || 
+                                     hand.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.UpgradeSelect;
+
+                if (isSelectionMode || hand.IsInCardSelection)
+                {
+                    // Logger.Info($"[AutoAI] hand_selection detected via Mode={hand.CurrentMode} IsInCardSelection={hand.IsInCardSelection}");
+                    var cards = new List<object>();
+                    var activeHolders = hand.ActiveHolders;
+                    for (int i = 0; i < activeHolders.Count; i++)
+                    {
+                        var holder = activeHolders[i];
+                        if (holder.CardNode != null)
+                        {
+                            cards.Add(new { index = i, name = holder.CardNode.Model?.Title ?? "Unknown" });
+                        }
+                    }
+
+                    bool isConfirming = confirmBtn != null && confirmBtn.IsVisibleInTree() && confirmBtn.IsEnabled;
+                    
+                    if (confirmBtn != null && confirmBtn.IsVisibleInTree())
+                    {
+                        var selectedCardsField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectedCards", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        var selectedCards = selectedCardsField?.GetValue(hand) as System.Collections.IEnumerable;
+                        int count = 0;
+                        if (selectedCards != null) foreach (var c in selectedCards) count++;
+
+                        // Logger.Info($"[AutoAI] hand confirmBtn: Enabled={confirmBtn.IsEnabled} Peeking={hand.PeekButton.IsPeeking} count={count}");
+                    }
+
+                    return System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        type = "hand_selection",
+                        cards = cards,
+                        is_confirming = isConfirming,
+                        mode = hand.CurrentMode.ToString()
+                    }, JsonOptions);
+                }
+            }
+
+            if (cm.PlayerActionsDisabled) return "{\"type\":\"combat_waiting\"}";
 
             var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
             var pState = player?.PlayerCombatState;
@@ -297,6 +353,13 @@ public partial class MainFile : Node
                     id = c.Id.Entry,
                     name = c.Title,
                     isPlayable = c.CanPlay()
+                }).ToList(),
+                potions = player?.PotionSlots.Select((p, i) => new
+                {
+                    index = i,
+                    id = p?.Id.Entry ?? "empty",
+                    name = p?.Title.GetRawText() ?? "Empty Slot",
+                    canUse = p != null && p.PassesCustomUsabilityCheck && (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime || (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly && MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress))
                 }).ToList(),
                 enemies = combatRoom.Enemies.Where(e => e.IsAlive).Select(e => new
                 {
@@ -407,12 +470,36 @@ public partial class MainFile : Node
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.MerchantRoom)
         {
-            // For the AI, always just proceed past the shop to avoid stalls
             var merchantRoom = MegaCrit.Sts2.Core.Nodes.Rooms.NMerchantRoom.Instance;
             bool canProceed = merchantRoom?.ProceedButton?.IsEnabled ?? false;
+            
+            var items = new List<object>();
+            var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
+            int gold = player?.Gold ?? 0;
+
+            var inventoryNode = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.Shops.NMerchantInventory>(GetTree().Root).FirstOrDefault(n => n.Visible);
+            if (inventoryNode != null)
+            {
+                var slots = inventoryNode.GetAllSlots();
+                foreach (var slot in slots)
+                {
+                    if (slot.Entry != null && slot.Entry.IsStocked)
+                    {
+                        items.Add(new {
+                            index = slots.ToList().IndexOf(slot),
+                            name = slot.Entry.GetType().Name, // Fallback name
+                            cost = slot.Entry.Cost,
+                            canAfford = slot.Entry.EnoughGold
+                        });
+                    }
+                }
+            }
+
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "shop",
+                gold = gold,
+                items = items,
                 can_proceed = canProceed
             }, JsonOptions);
         }
