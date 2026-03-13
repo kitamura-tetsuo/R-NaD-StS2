@@ -95,6 +95,13 @@ def test_random_play(max_turns=50):
                         elif state_type == "rewards":
                             rewards = len(state.get("rewards", []))
                             print(f"       Rewards: {rewards} available")
+                        elif state_type == "game_over":
+                            victory = state.get("victory", False)
+                            print(f"       GAME OVER: Victory={victory}")
+                            # Give it a moment and then wrap up or reset
+                            time.sleep(5)
+                            print("[Test] SUCCESS: Run completed (Victory or Game Over).")
+                            return
                         
                         turn_count += 1
             

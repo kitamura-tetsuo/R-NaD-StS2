@@ -258,8 +258,9 @@ public partial class MainFile : Node
             {
                 int row = (int)dict["row"].AsInt64();
                 int col = (int)dict["col"].AsInt64();
-                var coord = new MegaCrit.Sts2.Core.Map.MapCoord(row, col);
-                Logger.Info($"[AutoAI] Entering map node: {row}, {col}");
+                // Fix: MapCoord takes (col, row)
+                var coord = new MegaCrit.Sts2.Core.Map.MapCoord(col, row);
+                Logger.Info($"[AutoAI] Entering map node: row={row}, col={col}");
                 await roomManager_EnterMapCoord(coord);
             }
             else if (action == "select_reward")
@@ -380,8 +381,62 @@ public partial class MainFile : Node
                     var ev = er.LocalMutableEvent;
                     if (ev != null && index >= 0 && index < ev.CurrentOptions.Count)
                     {
-                        Logger.Info($"[AutoAI] Selecting event option: {ev.CurrentOptions[index].Title.GetRawText()}");
-                        await ev.CurrentOptions[index].Chosen();
+                        var option = ev.CurrentOptions[index];
+                        Logger.Info($"[AutoAI] Selecting event option: {option.Title.GetRawText()} (index {index}, locked: {option.IsLocked})");
+                        MegaCrit.Sts2.Core.Runs.RunManager.Instance.EventSynchronizer.ChooseLocalOption(index);
+                    }
+                    else
+                    {
+                        // Fallback to UI buttons
+                        var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom>(GetTree().Root)
+                            .SelectMany(r => FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(r))
+                            .OrderBy(b => b.GlobalPosition.Y)
+                            .ToList();
+                        
+                        if (index >= 0 && index < buttons.Count)
+                        {
+                            var btn = buttons[index];
+                            Logger.Info($"[AutoAI] Selecting event option via UIFallback: {btn.Option.Title.GetRawText()} (index {index})");
+                            // Use reflection or direct call if possible. OptionButtonClicked is public.
+                            MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance?.OptionButtonClicked(btn.Option, (int)btn.Get("Index"));
+                        }
+                        else
+                        {
+                            Logger.Error($"[AutoAI] Invalid event option index: {index}. Options count: {ev?.CurrentOptions?.Count ?? 0}, UI count: {buttons.Count}");
+                        }
+                    }
+                }
+            }
+            else if (action == "return_to_main_menu")
+            {
+                var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
+                var gameOverScreen = overlayStack?.Peek() as MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen;
+                if (gameOverScreen != null)
+                {
+                    Logger.Info("[AutoAI] Found GameOverScreen. Returning to main menu.");
+                    // Check for mainMenuButton via reflection
+                    var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen).GetField("_mainMenuButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var mainMenuBtn = field?.GetValue(gameOverScreen) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                    
+                    if (mainMenuBtn != null && mainMenuBtn.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Clicking Main Menu button.");
+                        mainMenuBtn.Call("ForceClick");
+                    }
+                    else
+                    {
+                        // Fallback: try to find any button that might return us
+                        var continueBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen).GetField("_continueButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        var continueBtn = continueBtnField?.GetValue(gameOverScreen) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                        if (continueBtn != null && continueBtn.IsEnabled)
+                        {
+                            Logger.Info("[AutoAI] Main menu button not ready, clicking Continue button first.");
+                            continueBtn.Call("ForceClick");
+                        }
+                        else
+                        {
+                             Logger.Info("[AutoAI] No button on GameOverScreen is enabled yet. Waiting.");
+                        }
                     }
                 }
             }
@@ -448,6 +503,12 @@ public partial class MainFile : Node
         var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
         var runState = rm.DebugOnlyGetState();
         if (runState == null) return "{\"type\":\"none\"}";
+
+        if (runState.IsGameOver)
+        {
+            Logger.Info("[AutoAI] RunState.IsGameOver is true. Reporting game_over state.");
+            return "{\"type\":\"game_over\"}";
+        }
         
         var currentRoom = runState.CurrentRoom;
         
@@ -584,6 +645,14 @@ public partial class MainFile : Node
 
             return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", cards = cards, buttons = buttons }, JsonOptions);
         }
+        else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen gos)
+        {
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "game_over",
+                victory = runState?.CurrentRoom?.IsVictoryRoom ?? false
+            }, JsonOptions);
+        }
 
         // 2. Room Logic
         if (currentRoom == null) return "{\"type\":\"none\"}";
@@ -629,16 +698,44 @@ public partial class MainFile : Node
             var ev = er.LocalMutableEvent;
             if (ev == null) return "{\"type\":\"event_none\"}";
 
+            var options = new List<object>();
+            var modelOptions = ev.CurrentOptions;
+            
+            if (modelOptions.Count > 0) {
+                for (int i = 0; i < modelOptions.Count; i++) {
+                    options.Add(new {
+                        index = i,
+                        title = modelOptions[i].Title.GetRawText(),
+                        is_locked = modelOptions[i].IsLocked
+                    });
+                }
+            } else {
+                // Fallback to UI buttons (useful for PROCEED buttons or when model is out of sync)
+                var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom>(GetTree().Root)
+                    .SelectMany(r => FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(r))
+                    .OrderBy(b => b.GlobalPosition.Y) // Usually top to bottom
+                    .ToList();
+                
+                if (buttons.Count > 0) {
+                    for (int i = 0; i < buttons.Count; i++) {
+                        var opt = buttons[i].Option;
+                        options.Add(new {
+                            index = i,
+                            title = opt.Title.GetRawText() ?? "Proceed",
+                            is_locked = opt.IsLocked,
+                            is_ui_fallback = true
+                        });
+                    }
+                }
+            }
+
+            Logger.Info($"[AutoAI] Event: {ev.Title.GetRawText()}, Options count: {options.Count}, IsFinished: {ev.IsFinished}");
+
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "event",
                 title = ev.Title.GetRawText(),
-                options = ev.CurrentOptions.Select((o, i) => new
-                {
-                    index = i,
-                    title = o.Title.GetRawText(),
-                    is_locked = o.IsLocked
-                }).ToList()
+                options = options
             }, JsonOptions);
         }
 
@@ -649,23 +746,68 @@ public partial class MainFile : Node
     private string GetMapJson(MegaCrit.Sts2.Core.Runs.RunState runState)
     {
         var currentPos = runState.CurrentMapCoord;
-        IEnumerable<MegaCrit.Sts2.Core.Map.MapPoint> nextPoints;
-        
-        if (currentPos.HasValue)
+        var nextNodesData = new List<object>();
+
+        // New Logic: Try to use NMapScreen's internal state to find Travelable nodes
+        var mapScreen = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance;
+        bool foundViaScreen = false;
+
+        if (mapScreen != null)
         {
-            var point = runState.Map.GetPoint(currentPos.Value);
-            nextPoints = point?.Children ?? new HashSet<MegaCrit.Sts2.Core.Map.MapPoint>();
-        }
-        else
-        {
-            // Initial Act entry: starting map point is usually the source
-            nextPoints = runState.Map.StartingMapPoint?.Children ?? new HashSet<MegaCrit.Sts2.Core.Map.MapPoint>();
-            
-            // If starting point has no children, maybe it's the target itself (e.g. Act 1 start)
-            if (!nextPoints.Any())
+            try
             {
-                // In some cases we might just be at the start of the map
-                nextPoints = runState.Map.GetPointsInRow(0);
+                var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen).GetField("_mapPointDictionary", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var dict = field?.GetValue(mapScreen) as System.Collections.IDictionary;
+
+                if (dict != null)
+                {
+                    foreach (System.Collections.DictionaryEntry entry in dict)
+                    {
+                        var nPoint = entry.Value as MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapPoint;
+                        if (nPoint != null)
+                        {
+                            // Check the private IsTravelable property or State
+                            // According to decompilation, IsTravelable checks Debug state OR (IsTravelEnabled && State == Travelable)
+                            // We can use reflection to get IsTravelable
+                            var prop = typeof(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapPoint).GetProperty("IsTravelable", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            bool isTravelable = (bool)(prop?.GetValue(nPoint) ?? false);
+
+                            if (isTravelable)
+                            {
+                                var p = nPoint.Point;
+                                nextNodesData.Add(new { row = p.coord.row, col = p.coord.col, type = p.PointType.ToString() });
+                                foundViaScreen = true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Logger.Error($"[AutoAI] Error accessing _mapPointDictionary via reflection: {ex.Message}");
+            }
+        }
+
+        if (!foundViaScreen)
+        {
+            Logger.Info("[AutoAI] MapScreen not available or empty. Falling back to Children-based next_nodes logic.");
+            IEnumerable<MegaCrit.Sts2.Core.Map.MapPoint> nextPoints;
+            if (currentPos.HasValue)
+            {
+                var point = runState.Map.GetPoint(currentPos.Value);
+                nextPoints = point?.Children ?? new HashSet<MegaCrit.Sts2.Core.Map.MapPoint>();
+            }
+            else
+            {
+                nextPoints = runState.Map.StartingMapPoint?.Children ?? new HashSet<MegaCrit.Sts2.Core.Map.MapPoint>();
+                if (!nextPoints.Any())
+                {
+                    nextPoints = runState.Map.GetPointsInRow(0);
+                }
+            }
+            foreach (var p in nextPoints)
+            {
+                nextNodesData.Add(new { row = p.coord.row, col = p.coord.col, type = p.PointType.ToString() });
             }
         }
 
@@ -673,7 +815,7 @@ public partial class MainFile : Node
         {
             type = "map",
             current_pos = currentPos.HasValue ? new { row = currentPos.Value.row, col = currentPos.Value.col } : null,
-            next_nodes = nextPoints.Select(p => new { row = p.coord.row, col = p.coord.col, type = p.PointType.ToString() }).ToList()
+            next_nodes = nextNodesData
         }, JsonOptions);
     }
 

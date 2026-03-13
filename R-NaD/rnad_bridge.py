@@ -98,6 +98,9 @@ def predict_action(state_json):
             else:
                 action = {"action": "wait"}
 
+        elif state_type == "game_over":
+            action = {"action": "return_to_main_menu"}
+
         else:
             action = {"action": "wait"}
             
