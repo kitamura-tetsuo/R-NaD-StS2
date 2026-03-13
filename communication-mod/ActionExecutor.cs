@@ -289,6 +289,11 @@ public partial class MainFile : Node
                     var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                     confirmBtn = field?.GetValue(cardSelectScreen) as Node;
                 }
+                else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen enchantScreen)
+                {
+                    var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    confirmBtn = field?.GetValue(enchantScreen) as Node;
+                }
 
                 if (confirmBtn != null)
                 {
@@ -352,13 +357,13 @@ public partial class MainFile : Node
             }
             else if (action == "proceed")
             {
-                Logger.Info("[AutoAI] Proceeding from rewards/terminal...");
+                Logger.Info("[AutoAI] Proceeding from room/screen...");
                 var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
+                var currentRoom = runState.CurrentRoom;
+
                 if (overlayStack?.Peek() is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen rewardsScreen)
                 {
                     Logger.Info("[AutoAI] Found NRewardsScreen. Triggering proceed sequence.");
-
-                    // 1. Try to call the internal proceed method via reflection
                     try {
                         var rsType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen);
                         var onProceed = rsType.GetMethod("OnProceedButtonPressed", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -372,11 +377,8 @@ public partial class MainFile : Node
                     } catch (System.Exception ex) {
                         Logger.Error($"[AutoAI] Error calling OnProceedButtonPressed: {ex.Message}");
                     }
-
-                    // 2. Direct RM proceed as a secondary trigger
                     await rm.ProceedFromTerminalRewardsScreen();
-
-                    // 3. Force exit if RoomCount is 1 (the stall bug workaround)
+                    
                     if (runState.CurrentRoomCount == 1) {
                          Logger.Info("[AutoAI] RM count is 1, manually forcing room exit and travel enablement.");
                          var exitMethod = typeof(MegaCrit.Sts2.Core.Runs.RunManager).GetMethod("ExitCurrentRoom", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -386,10 +388,34 @@ public partial class MainFile : Node
                          }
                          MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.SetTravelEnabled(true);
                     }
-
-                    // 4. Force remove the overlay to reveal the map
-                    Logger.Info("[AutoAI] Force-removing NRewardsScreen from overlay stack.");
                     overlayStack.Remove(rewardsScreen);
+                }
+                else if (currentRoom is MegaCrit.Sts2.Core.Rooms.RestSiteRoom)
+                {
+                    var restSiteNode = MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom.Instance;
+                    if (restSiteNode?.ProceedButton != null && restSiteNode.ProceedButton.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Clicking Rest Site proceed button.");
+                        restSiteNode.ProceedButton.Call("ForceClick");
+                    }
+                }
+                else if (currentRoom is MegaCrit.Sts2.Core.Rooms.MerchantRoom)
+                {
+                    var merchantRoomNode = MegaCrit.Sts2.Core.Nodes.Rooms.NMerchantRoom.Instance;
+                    if (merchantRoomNode?.ProceedButton != null && merchantRoomNode.ProceedButton.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Clicking Merchant proceed button.");
+                        merchantRoomNode.ProceedButton.Call("ForceClick");
+                    }
+                }
+                else if (currentRoom is MegaCrit.Sts2.Core.Rooms.TreasureRoom)
+                {
+                    var treasureRoomNode = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom>(GetTree().Root).FirstOrDefault();
+                    if (treasureRoomNode?.ProceedButton != null && treasureRoomNode.ProceedButton.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Clicking Treasure proceed button.");
+                        treasureRoomNode.ProceedButton.Call("ForceClick");
+                    }
                 }
                 else
                 {

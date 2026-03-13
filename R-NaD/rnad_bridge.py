@@ -4,6 +4,13 @@ import time
 import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
+try:
+    from PIL import ImageGrab
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+    print("[Python] PIL not found or failed to load. PIL-based screenshots will be disabled.")
+import os
 
 # Global state
 learning_active = False
@@ -130,13 +137,15 @@ def predict_action(state_json):
                     "action": "select_rest_site_option",
                     "index": chosen_option.get("index")
                 }
+            elif state.get("can_proceed"):
+                action = {"action": "proceed"}
             else:
                 action = {"action": "wait"}
 
         elif state_type == "shop":
             # Always just proceed past the shop
             if state.get("can_proceed"):
-                action = {"action": "shop_proceed"}
+                action = {"action": "proceed"}
             else:
                 action = {"action": "wait"}
 
@@ -242,6 +251,62 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "queued", "command": "start_game", "seed": seed}).encode())
+            
+        elif parsed_path.path == "/screenshot":
+            try:
+                # Ensure tmp directory exists in project root
+                tmp_dir = "/home/ubuntu/src/R-NaD-StS2/tmp"
+                os.makedirs(tmp_dir, exist_ok=True)
+                
+                timestamp = int(time.time())
+                filename = f"screenshot_{timestamp}.png"
+                filepath = os.path.join(tmp_dir, filename)
+                
+                # Try Godot-side screenshot first (works in headless)
+                print(f"[Python] Requesting Godot-side screenshot to: {filepath}")
+                command_queue.append(f"screenshot:{filepath}")
+                
+                # Wait for the file to appear (max 5 seconds)
+                success = False
+                for _ in range(50):
+                    if os.path.exists(filepath):
+                        # Wait a tiny bit more for the file to be fully written
+                        time.sleep(0.2)
+                        success = True
+                        break
+                    time.sleep(0.1)
+                
+                if success:
+                    print(f"[Python] Godot screenshot saved to: {filepath}")
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "success", "path": filepath, "method": "godot"}).encode())
+                    return
+
+                # Fallback to PIL.ImageGrab
+                if HAS_PIL:
+                    print("[Python] Godot screenshot timed out / failed. Falling back to PIL.ImageGrab.")
+                    screenshot = ImageGrab.grab()
+                    screenshot.save(filepath)
+                    
+                    print(f"[Python] PIL screenshot saved to: {filepath}")
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "success", "path": filepath, "method": "pil"}).encode())
+                else:
+                    print("[Python] Godot screenshot failed and PIL is not available.")
+                    self.send_response(500)
+                    self.send_header("Content-type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"status": "error", "message": "Godot screenshot failed and PIL is not available"}).encode())
+            except Exception as e:
+                print(f"[Python] Failed to take screenshot: {e}")
+                self.send_response(500)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode())
             
         else:
             self.send_response(404)

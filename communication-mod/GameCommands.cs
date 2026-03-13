@@ -38,6 +38,11 @@ public partial class MainFile : Node
                         }
                         StartNewGame(seed);
                     }
+                    else if (command.StartsWith("screenshot:"))
+                    {
+                        string path = command.Substring("screenshot:".Length);
+                        TakeScreenshot(path);
+                    }
                 }
             }
         }
@@ -126,6 +131,55 @@ public partial class MainFile : Node
         catch (System.Exception ex)
         {
             Logger.Error($"[AutoAI] Error in StartNewGameDeferred: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+    private void TakeScreenshot(string path)
+    {
+        Logger.Info($"[AutoAI] Taking Godot screenshot to: {path}");
+        try
+        {
+            var viewport = GetViewport();
+            if (viewport == null)
+            {
+                Logger.Error("[AutoAI] GetViewport() returned null.");
+                return;
+            }
+
+            // Ensure we wait for the frame to render if needed, but in _Process it should be okay
+            var texture = viewport.GetTexture();
+            if (texture == null)
+            {
+                Logger.Error("[AutoAI] viewport.GetTexture() returned null.");
+                return;
+            }
+
+            var image = texture.GetImage();
+            if (image == null)
+            {
+                Logger.Error("[AutoAI] texture.GetImage() returned null.");
+                return;
+            }
+
+            // Ensure directory exists
+            string dir = System.IO.Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+            {
+                System.IO.Directory.CreateDirectory(dir);
+            }
+
+            Error err = image.SavePng(path);
+            if (err == Error.Ok)
+            {
+                Logger.Info($"[AutoAI] Screenshot saved successfully to {path}");
+            }
+            else
+            {
+                Logger.Error($"[AutoAI] Failed to save screenshot. Error: {err}");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Logger.Error($"[AutoAI] Error taking screenshot: {ex.Message}\n{ex.StackTrace}");
         }
     }
 }

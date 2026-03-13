@@ -186,6 +186,7 @@ public partial class MainFile : Node
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridSelection)
         {
+            Logger.Info($"[AutoAI] Grid Selection detected: {gridSelection.GetType().FullName}");
             var cards = new List<object>();
             var gridField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen).GetField("_grid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             var grid = gridField?.GetValue(gridSelection) as MegaCrit.Sts2.Core.Nodes.Cards.NCardGrid;
@@ -218,6 +219,22 @@ public partial class MainFile : Node
             {
                 var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen).GetField("_previewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 var preview = field?.GetValue(cardSelectScreen) as CanvasItem;
+                isConfirming = preview != null && preview.Visible;
+            }
+            else if (gridSelection is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen enchantScreen)
+            {
+                if (!_diagnosed) {
+                    Logger.Info($"[AutoAI] Diagnosing {enchantScreen.GetType().FullName}");
+                    foreach (var f in enchantScreen.GetType().GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)) {
+                        Logger.Info($"[AutoAI] Field: {f.Name}");
+                    }
+                    foreach (var child in enchantScreen.GetChildren()) {
+                        Logger.Info($"[AutoAI] Child node: {child.GetType().FullName} Name: {child.Name}");
+                    }
+                    _diagnosed = true;
+                }
+                var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_previewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var preview = field?.GetValue(enchantScreen) as CanvasItem;
                 isConfirming = preview != null && preview.Visible;
             }
 
@@ -351,10 +368,14 @@ public partial class MainFile : Node
                 });
             }
 
+            var restSiteNode = MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom.Instance;
+            bool canProceed = restSiteNode?.ProceedButton?.IsEnabled ?? false;
+
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "rest_site",
-                options = optionsData
+                options = optionsData,
+                can_proceed = canProceed
             }, JsonOptions);
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.MerchantRoom)
