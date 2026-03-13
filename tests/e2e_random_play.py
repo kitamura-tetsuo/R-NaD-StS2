@@ -76,7 +76,11 @@ def test_random_play(max_turns=50):
                         if content == "{}":
                             continue
                         
-                        state = json.loads(content)
+                        try:
+                            state = json.loads(content)
+                        except json.JSONDecodeError:
+                            # File may be empty/partial during write; skip this cycle
+                            continue
                         state_type = state.get("type", "unknown")
                         
                         print(f"[Test] Turn {turn_count}: State detected -> {state_type}")
@@ -92,6 +96,9 @@ def test_random_play(max_turns=50):
                         elif state_type == "event":
                             title = state.get("title")
                             print(f"       Event: {title}")
+                        elif state_type == "rest_site":
+                            options = len(state.get("options", []))
+                            print(f"       Rest Site: {options} options available")
                         elif state_type == "rewards":
                             rewards = len(state.get("rewards", []))
                             print(f"       Rewards: {rewards} available")

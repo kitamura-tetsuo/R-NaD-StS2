@@ -254,6 +254,49 @@ public partial class MainFile : Node
                 cm.SetReadyToEndTurn(player, true);
                 Logger.Info("[AutoAI] End Turn requested.");
             }
+            else if (action == "select_event_option")
+            {
+                int index = (int)dict["index"].AsInt64();
+                var eventRoom = MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance;
+                if (eventRoom != null)
+                {
+                    var eventRoomLayout = eventRoom.Layout;
+                    if (eventRoomLayout != null)
+                    {
+                        // Get the option buttons from the layout's current options list
+                        var er = runState?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.EventRoom;
+                        if (er != null)
+                        {
+                            var ev = er.LocalMutableEvent;
+                            if (ev != null)
+                            {
+                                // If event is finished, we need to click the proceed option
+                                if (ev.IsFinished)
+                                {
+                                    Logger.Info("[AutoAI] Event is finished, triggering proceed via NEventRoom.");
+                                    await MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Proceed();
+                                }
+                                else
+                                {
+                                    var options = ev.CurrentOptions;
+                                    if (index >= 0 && index < options.Count)
+                                    {
+                                        var option = options[index];
+                                        Logger.Info($"[AutoAI] Selecting event option [{index}]: locked={option.IsLocked}");
+                                        eventRoom.OptionButtonClicked(option, index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Fallback: try via synchronizer
+                    Logger.Info($"[AutoAI] Fallback: selecting event option via synchronizer index={index}");
+                    MegaCrit.Sts2.Core.Runs.RunManager.Instance.EventSynchronizer?.ChooseLocalOption(index);
+                }
+            }
             else if (action == "select_map_node")
             {
                 int row = (int)dict["row"].AsInt64();
@@ -373,37 +416,111 @@ public partial class MainFile : Node
                     }
                 }
             }
-            else if (action == "select_event_option")
+            else if (action == "select_rest_site_option")
             {
                 int index = (int)dict["index"].AsInt64();
-                if (runState?.CurrentRoom is MegaCrit.Sts2.Core.Rooms.EventRoom er)
+                if (runState?.CurrentRoom is MegaCrit.Sts2.Core.Rooms.RestSiteRoom rsr)
                 {
-                    var ev = er.LocalMutableEvent;
-                    if (ev != null && index >= 0 && index < ev.CurrentOptions.Count)
+                    Logger.Info($"[AutoAI] Selecting rest site option index: {index}");
+                    // Local player selection through synchronizer
+                    var sync = MegaCrit.Sts2.Core.Runs.RunManager.Instance.RestSiteSynchronizer;
+                    if (sync != null) {
+                        await sync.ChooseLocalOption(index);
+                    } else {
+                        Logger.Error("[AutoAI] RestSiteSynchronizer is null");
+                    }
+                }
+            }
+            else if (action == "select_grid_card")
+            {
+                int index = (int)dict["index"].AsInt64();
+                var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
+                var top = overlayStack?.Peek();
+                
+                if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen chooseScreen)
+                {
+                    if (index == -1)
                     {
-                        var option = ev.CurrentOptions[index];
-                        Logger.Info($"[AutoAI] Selecting event option: {option.Title.GetRawText()} (index {index}, locked: {option.IsLocked})");
-                        MegaCrit.Sts2.Core.Runs.RunManager.Instance.EventSynchronizer.ChooseLocalOption(index);
+                        var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen).GetField("_skipButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        var skipBtn = field?.GetValue(chooseScreen) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                        if (skipBtn != null && skipBtn.IsEnabled)
+                        {
+                            Logger.Info("[AutoAI] Clicking skip button on NChooseACardSelectionScreen");
+                            skipBtn.Call("ForceClick");
+                        }
                     }
                     else
                     {
-                        // Fallback to UI buttons
-                        var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom>(GetTree().Root)
-                            .SelectMany(r => FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(r))
-                            .OrderBy(b => b.GlobalPosition.Y)
-                            .ToList();
-                        
-                        if (index >= 0 && index < buttons.Count)
+                        var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(chooseScreen);
+                        if (index >= 0 && index < holders.Count)
                         {
-                            var btn = buttons[index];
-                            Logger.Info($"[AutoAI] Selecting event option via UIFallback: {btn.Option.Title.GetRawText()} (index {index})");
-                            // Use reflection or direct call if possible. OptionButtonClicked is public.
-                            MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance?.OptionButtonClicked(btn.Option, (int)btn.Get("Index"));
+                            Logger.Info($"[AutoAI] Selecting card at index {index} on NChooseACardSelectionScreen: {holders[index].CardModel?.Title}");
+                            chooseScreen.Call("SelectHolder", holders[index]);
                         }
-                        else
-                        {
-                            Logger.Error($"[AutoAI] Invalid event option index: {index}. Options count: {ev?.CurrentOptions?.Count ?? 0}, UI count: {buttons.Count}");
-                        }
+                    }
+                }
+                else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridScreen)
+                {
+                    var gridField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen).GetField("_grid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var grid = gridField?.GetValue(gridScreen) as MegaCrit.Sts2.Core.Nodes.Cards.NCardGrid;
+                    
+                    if (grid != null)
+                    {
+                         var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(grid);
+                         if (index >= 0 && index < holders.Count)
+                         {
+                             Logger.Info($"[AutoAI] Selecting card at index {index} on NCardGridSelectionScreen: {holders[index].CardModel?.Title}");
+                             // Use the internal handler for more reliable selection
+                             grid.Call("OnHolderPressed", holders[index]);
+                         }
+                    }
+                }
+            }
+            else if (action == "confirm_selection")
+            {
+                var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
+                var top = overlayStack?.Peek();
+                
+                Node? confirmBtn = null;
+                if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen upgradeScreen)
+                {
+                    var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen).GetField("_singlePreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    confirmBtn = field?.GetValue(upgradeScreen) as Node;
+                    if (confirmBtn == null || !((Godot.CanvasItem)confirmBtn).Visible) {
+                        field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen).GetField("_multiPreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        confirmBtn = field?.GetValue(upgradeScreen) as Node;
+                    }
+                }
+                else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen transformScreen)
+                {
+                    var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    confirmBtn = field?.GetValue(transformScreen) as Node;
+                }
+                
+                if (confirmBtn != null)
+                {
+                    Logger.Info($"[AutoAI] Confirming selection on {top.GetType().Name}");
+                    confirmBtn.Call("ForceClick");
+                }
+                else
+                {
+                    Logger.Error($"[AutoAI] Could not find enabled Confirm button on {top?.GetType().Name}");
+                }
+            }
+            else if (action == "shop_proceed")
+            {
+                var merchantRoom = MegaCrit.Sts2.Core.Nodes.Rooms.NMerchantRoom.Instance;
+                if (merchantRoom != null)
+                {
+                    var proceedBtn = merchantRoom.ProceedButton;
+                    if (proceedBtn != null && proceedBtn.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Clicking shop proceed button.");
+                        proceedBtn.Call("ForceClick");
+                    }
+                    else
+                    {
+                        Logger.Info("[AutoAI] Shop proceed button not enabled yet. Waiting.");
                     }
                 }
             }
@@ -653,6 +770,89 @@ public partial class MainFile : Node
                 victory = runState?.CurrentRoom?.IsVictoryRoom ?? false
             }, JsonOptions);
         }
+        else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen chooseScreen)
+        {
+            var cards = new List<object>();
+            var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(chooseScreen);
+            for (int i = 0; i < holders.Count; i++)
+            {
+                cards.Add(new { index = i, name = holders[i].CardModel?.Title ?? "Unknown" });
+            }
+
+            var skipBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen).GetField("_skipButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var skipBtn = skipBtnField?.GetValue(chooseScreen) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+            bool canSkip = skipBtn != null && skipBtn.IsEnabled && skipBtn.Visible;
+
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "grid_selection",
+                subtype = "choose_a_card",
+                cards = cards,
+                can_skip = canSkip
+            }, JsonOptions);
+        }
+        else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridScreen)
+        {
+            var cards = new List<object>();
+            var gridField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen).GetField("_grid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var grid = gridField?.GetValue(gridScreen) as MegaCrit.Sts2.Core.Nodes.Cards.NCardGrid;
+            
+            if (grid != null)
+            {
+                var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(grid);
+                for (int i = 0; i < holders.Count; i++)
+                {
+                    cards.Add(new { index = i, name = holders[i].CardModel?.Title ?? "Unknown" });
+                }
+            }
+
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "grid_selection",
+                subtype = "grid_selection",
+                cards = cards,
+                can_skip = false // Typically grid screens don't have a simple skip
+            }, JsonOptions);
+        }
+        else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridSelection)
+        {
+            var cards = new List<object>();
+            var gridField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen).GetField("_grid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var grid = gridField?.GetValue(gridSelection) as MegaCrit.Sts2.Core.Nodes.Cards.NCardGrid;
+            
+            if (grid != null)
+            {
+                var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(grid);
+                for (int i = 0; i < holders.Count; i++)
+                {
+                    cards.Add(new { index = i, name = holders[i].CardModel?.Title ?? "Unknown" });
+                }
+            }
+
+            bool isConfirming = false;
+            if (gridSelection is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen upgradeScreen)
+            {
+                var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen).GetField("_upgradeSinglePreviewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var single = field?.GetValue(upgradeScreen) as CanvasItem;
+                var fieldMulti = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen).GetField("_upgradeMultiPreviewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var multi = fieldMulti?.GetValue(upgradeScreen) as CanvasItem;
+                isConfirming = (single != null && single.Visible) || (multi != null && multi.Visible);
+            }
+            else if (gridSelection is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen transformScreen)
+            {
+                var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_previewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var preview = field?.GetValue(transformScreen) as CanvasItem;
+                isConfirming = preview != null && preview.Visible;
+            }
+
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "grid_selection",
+                subtype = gridSelection.GetType().Name,
+                cards = cards,
+                is_confirming = isConfirming
+            }, JsonOptions);
+        }
 
         // 2. Room Logic
         if (currentRoom == null) return "{\"type\":\"none\"}";
@@ -729,13 +929,44 @@ public partial class MainFile : Node
                 }
             }
 
-            Logger.Info($"[AutoAI] Event: {ev.Title.GetRawText()}, Options count: {options.Count}, IsFinished: {ev.IsFinished}");
-
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "event",
                 title = ev.Title.GetRawText(),
                 options = options
+            }, JsonOptions);
+        }
+        else if (currentRoom is MegaCrit.Sts2.Core.Rooms.RestSiteRoom rsr)
+        {
+            var options = rsr.Options;
+            var optionsData = new List<object>();
+            for (int i = 0; i < options.Count; i++)
+            {
+                optionsData.Add(new
+                {
+                    index = i,
+                    title = options[i].Title.GetRawText(),
+                    is_enabled = options[i].IsEnabled
+                });
+            }
+
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "rest_site",
+                options = optionsData
+            }, JsonOptions);
+        }
+
+
+        else if (currentRoom is MegaCrit.Sts2.Core.Rooms.MerchantRoom)
+        {
+            // For the AI, always just proceed past the shop to avoid stalls
+            var merchantRoom = MegaCrit.Sts2.Core.Nodes.Rooms.NMerchantRoom.Instance;
+            bool canProceed = merchantRoom?.ProceedButton?.IsEnabled ?? false;
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "shop",
+                can_proceed = canProceed
             }, JsonOptions);
         }
 

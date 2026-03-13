@@ -98,6 +98,47 @@ def predict_action(state_json):
             else:
                 action = {"action": "wait"}
 
+        elif state_type == "grid_selection":
+            cards = state.get("cards", [])
+            can_skip = state.get("can_skip", False)
+            is_confirming = state.get("is_confirming", False)
+            
+            if is_confirming:
+                action = {"action": "confirm_selection"}
+            # 80% chance to pick a card, 20% to skip if allowed
+            elif cards and (not can_skip or random.random() < 0.8):
+                chosen_card = random.choice(cards)
+                action = {
+                    "action": "select_grid_card",
+                    "index": chosen_card.get("index")
+                }
+            elif can_skip:
+                action = {
+                    "action": "select_grid_card",
+                    "index": -1
+                }
+            else:
+                action = {"action": "wait"}
+
+        elif state_type == "rest_site":
+            options = state.get("options", [])
+            available_options = [o for o in options if o.get("is_enabled")]
+            if available_options:
+                chosen_option = random.choice(available_options)
+                action = {
+                    "action": "select_rest_site_option",
+                    "index": chosen_option.get("index")
+                }
+            else:
+                action = {"action": "wait"}
+
+        elif state_type == "shop":
+            # Always just proceed past the shop
+            if state.get("can_proceed"):
+                action = {"action": "shop_proceed"}
+            else:
+                action = {"action": "wait"}
+
         elif state_type == "game_over":
             action = {"action": "return_to_main_menu"}
 
