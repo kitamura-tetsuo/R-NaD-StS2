@@ -62,7 +62,7 @@ public partial class MainFile : Node
 
         if (currentRoom == null)
         {
-             Godot.GD.Print($"[AutoAI] currentRoom is null. mapScreenExists={mapScreenExists}, mapScreenOpen={mapScreenOpen}");
+             Logger.Info($"[AutoAI] currentRoom is null. mapScreenExists={mapScreenExists}, mapScreenOpen={mapScreenOpen}");
              return System.Text.Json.JsonSerializer.Serialize(new { type = "unknown", error = "currentRoom is null" }, JsonOptions);
         }
 
@@ -223,19 +223,13 @@ public partial class MainFile : Node
             }
             else if (gridSelection is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen enchantScreen)
             {
-                if (!_diagnosed) {
-                    Logger.Info($"[AutoAI] Diagnosing {enchantScreen.GetType().FullName}");
-                    foreach (var f in enchantScreen.GetType().GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)) {
-                        Logger.Info($"[AutoAI] Field: {f.Name}");
-                    }
-                    foreach (var child in enchantScreen.GetChildren()) {
-                        Logger.Info($"[AutoAI] Child node: {child.GetType().FullName} Name: {child.Name}");
-                    }
-                    _diagnosed = true;
-                }
-                var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_previewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var preview = field?.GetValue(enchantScreen) as CanvasItem;
-                isConfirming = preview != null && preview.Visible;
+                var singleField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_enchantSinglePreviewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var multiField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_enchantMultiPreviewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                
+                var singlePreview = singleField?.GetValue(enchantScreen) as CanvasItem;
+                var multiPreview = multiField?.GetValue(enchantScreen) as CanvasItem;
+                
+                isConfirming = (singlePreview != null && singlePreview.Visible) || (multiPreview != null && multiPreview.Visible);
             }
 
             return System.Text.Json.JsonSerializer.Serialize(new
@@ -358,14 +352,42 @@ public partial class MainFile : Node
         {
             var options = rsr.Options;
             var optionsData = new List<object>();
-            for (int i = 0; i < options.Count; i++)
+            
+            if (options.Count > 0)
             {
-                optionsData.Add(new
+                for (int i = 0; i < options.Count; i++)
                 {
-                    index = i,
-                    title = options[i].Title.GetRawText(),
-                    is_enabled = options[i].IsEnabled
-                });
+                    optionsData.Add(new
+                    {
+                        index = i,
+                        title = options[i].Title.GetRawText(),
+                        is_enabled = options[i].IsEnabled
+                    });
+                }
+            }
+            else
+            {
+                // UI Fallback for Rest Site Buttons
+                var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.RestSite.NRestSiteButton>(GetTree().Root)
+                    .Where(b => b.Visible)
+                    .OrderBy(b => b.GlobalPosition.X)
+                    .ToList();
+                
+                if (buttons.Count > 0)
+                {
+                    Logger.Info($"[AutoAI] Found {buttons.Count} Rest Site buttons via UI fallback.");
+                    for (int i = 0; i < buttons.Count; i++)
+                    {
+                        var opt = buttons[i].Option;
+                        optionsData.Add(new
+                        {
+                            index = i,
+                            title = opt.Title.GetRawText(),
+                            is_enabled = opt.IsEnabled,
+                            is_ui_fallback = true
+                        });
+                    }
+                }
             }
 
             var restSiteNode = MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom.Instance;
@@ -411,6 +433,7 @@ public partial class MainFile : Node
             }, JsonOptions);
         }
 
+        Logger.Info($"[AutoAI] Reporting unknown state for room: {currentRoom.GetType().Name}");
         return System.Text.Json.JsonSerializer.Serialize(new { type = "unknown", room = currentRoom.GetType().Name }, JsonOptions);
     }
 

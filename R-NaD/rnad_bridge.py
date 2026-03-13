@@ -36,7 +36,12 @@ def predict_action(state_json):
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
         
-        print(f"[Python] predict_action called for state type: {state_type}")
+        if state_type == "unknown":
+            room = state.get("room", "N/A")
+            error = state.get("error", "N/A")
+            print(f"[Python] predict_action called for state type: unknown (room={room}, error={error})")
+        else:
+            print(f"[Python] predict_action called for state type: {state_type}")
 
         if state_type == "combat":
             hand = state.get("hand", [])

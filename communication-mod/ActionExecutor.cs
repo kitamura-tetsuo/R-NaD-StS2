@@ -210,12 +210,28 @@ public partial class MainFile : Node
                 if (runState?.CurrentRoom is MegaCrit.Sts2.Core.Rooms.RestSiteRoom rsr)
                 {
                     Logger.Info($"[AutoAI] Selecting rest site option index: {index}");
-                    // Local player selection through synchronizer
+                    
+                    // Prioritize UI button click as it handles the full lifecycle (synchronizer + UI updates)
+                    var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.RestSite.NRestSiteButton>(GetTree().Root)
+                        .Where(b => b.Visible)
+                        .OrderBy(b => b.GlobalPosition.X)
+                        .ToList();
+                    
+                    if (index >= 0 && index < buttons.Count)
+                    {
+                        var btn = buttons[index];
+                        Logger.Info($"[AutoAI] Clicking rest site button via UI: {btn.Option.Title.GetRawText()}");
+                        btn.Call("ForceClick");
+                        return;
+                    }
+
+                    // Fallback to synchronizer if UI button not found
+                    Logger.Info($"[AutoAI] UI button not found. Falling back to synchronizer for rest site index {index}.");
                     var sync = MegaCrit.Sts2.Core.Runs.RunManager.Instance.RestSiteSynchronizer;
                     if (sync != null) {
                         await sync.ChooseLocalOption(index);
                     } else {
-                        Logger.Error("[AutoAI] RestSiteSynchronizer is null");
+                        Logger.Error("[AutoAI] RestSiteSynchronizer is null and UI button not found");
                     }
                 }
             }
@@ -291,8 +307,14 @@ public partial class MainFile : Node
                 }
                 else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen enchantScreen)
                 {
-                    var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                    confirmBtn = field?.GetValue(enchantScreen) as Node;
+                    var singleField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_singlePreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var multiField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_multiPreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    
+                    var singleBtn = singleField?.GetValue(enchantScreen) as Node;
+                    var multiBtn = multiField?.GetValue(enchantScreen) as Node;
+                    
+                    if (singleBtn != null && ((CanvasItem)singleBtn).IsVisibleInTree()) confirmBtn = singleBtn;
+                    else if (multiBtn != null && ((CanvasItem)multiBtn).IsVisibleInTree()) confirmBtn = multiBtn;
                 }
 
                 if (confirmBtn != null)
