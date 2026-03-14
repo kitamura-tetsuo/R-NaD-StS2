@@ -398,7 +398,7 @@ def compute_reward(state, state_type=None):
             
     return reward
 
-def get_action_mask(state):
+def get_action_mask(state, masked_reward_indices=None):
     mask = np.zeros(50, dtype=bool)
     state_type = state.get("type", "unknown")
     
@@ -418,6 +418,8 @@ def get_action_mask(state):
     elif state_type == "rewards":
         rewards = state.get("rewards", [])
         for i in range(min(len(rewards), 10)):
+            if masked_reward_indices and i in masked_reward_indices:
+                continue
             mask[16 + i] = True
         if state.get("can_proceed"):
             mask[26] = True
@@ -477,14 +479,24 @@ def predict_action(state_json):
                 predict_action.episode_end_recorded = True
                 # Reset reward for next episode (will be reset below too, but safe)
                 predict_action.session_cumulative_reward = 0.0
-        elif state_type in ["combat", "map", "rewards", "event", "rest_site", "shop", "treasure"]:
+            predict_action.skipped_reward_indices = set()
+        elif state_type in ["combat", "map", "event", "rest_site", "shop", "treasure"]:
             predict_action.episode_end_recorded = False
             # Ensure cumulative reward is initialized
             if not hasattr(predict_action, 'session_cumulative_reward'):
                 predict_action.session_cumulative_reward = 0.0
+            # Reset skipped rewards when leaving rewards flow
+            predict_action.skipped_reward_indices = set()
+            predict_action.last_reward_floor = state.get("floor", -1)
+        elif state_type == "rewards":
+            predict_action.episode_end_recorded = False
+            if not hasattr(predict_action, 'skipped_reward_indices') or getattr(predict_action, 'last_reward_floor', -1) != state.get("floor"):
+                predict_action.skipped_reward_indices = set()
+                predict_action.last_reward_floor = state.get("floor")
         elif state_type in ["main_menu", "none"]:
             predict_action.session_cumulative_reward = 0.0
             predict_action.episode_end_recorded = False
+            predict_action.skipped_reward_indices = set()
 
         log(f"predict_action called. state_type: {state_type}, command_queue size: {command_queue.qsize()}")
         
@@ -511,7 +523,8 @@ def predict_action(state_json):
         state_vec = encode_state(state)
         
         # Calculate Action Mask
-        mask = get_action_mask(state)
+        masked_rewards = getattr(predict_action, 'skipped_reward_indices', set())
+        mask = get_action_mask(state, masked_reward_indices=masked_rewards)
         mask_jnp = jnp.array(mask)
         
         # Inference
@@ -562,7 +575,7 @@ def predict_action(state_json):
                 action = {"action": "proceed"}
 
         # Fallback to heuristic for complex types not fully mapped to action_idx yet
-        if action["action"] == "wait" and state_type not in ["unknown", "none"]:
+        if action["action"] == "wait" and state_type not in ["unknown"]:
              log(f"Mapping action_idx {action_idx} to heuristic for state: {state_type}")
              action = get_heuristic_action(state)
 
@@ -585,6 +598,21 @@ def predict_action(state_json):
             if len(current_trajectory) >= config.unroll_length:
                 experience_queue.put(list(current_trajectory))
                 current_trajectory = []
+
+        # If we chose to skip a card reward, remember this to mask it in next rewards screen call
+        if action.get("action") == "click_reward_button":
+             if action.get("index") is not None:
+                 buttons = state.get("buttons", [])
+                 if action["index"] < len(buttons):
+                     btn_name = buttons[action["index"]].get("name", "").lower()
+                     if "skip" in btn_name or "remov" in btn_name or "dismiss" in btn_name: 
+                         last_reward_idx = getattr(predict_action, 'last_selected_reward_idx', None)
+                         if last_reward_idx is not None:
+                             log(f"Detected SKIP in card reward. Masking reward index {last_reward_idx} for floor {state.get('floor')}")
+                             predict_action.skipped_reward_indices.add(last_reward_idx)
+
+        if action.get("action") == "select_reward":
+            predict_action.last_selected_reward_idx = action.get("index")
 
         res = json.dumps(action)
         log(f"Returning action: {res}")
