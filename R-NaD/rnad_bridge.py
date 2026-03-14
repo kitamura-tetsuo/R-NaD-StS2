@@ -133,6 +133,32 @@ rng_key = None
 experience_queue = queue.Queue()
 current_trajectory = []
 
+# Synchronous screenshot signaling
+pending_screenshot = None
+screenshot_done_event = threading.Event()
+_screenshot_claimed = False  # True once _Process has picked up the current request
+
+_poll_data = [0]
+def check_screenshot_request():
+    global pending_screenshot, _screenshot_claimed
+    _poll_data[0] += 1
+    if pending_screenshot and _poll_data[0] % 10 == 0:
+        log(f"check_screenshot_request polled {_poll_data[0]} times. pending={pending_screenshot}")
+    # Only return the path if not already claimed by another caller.
+    # Once claimed, subsequent calls return "" until mark_screenshot_done clears the flag.
+    if pending_screenshot and not _screenshot_claimed:
+        _screenshot_claimed = True
+        log(f"check_screenshot_request: claiming screenshot for path={pending_screenshot}")
+        return pending_screenshot
+    return ""
+
+def mark_screenshot_done():
+    global pending_screenshot, screenshot_done_event, _screenshot_claimed
+    pending_screenshot = None
+    _screenshot_claimed = False
+    screenshot_done_event.set()
+    return True
+
 class TrainingWorker(threading.Thread):
     def __init__(self, learner, config):
         super().__init__(daemon=True)
@@ -359,6 +385,14 @@ def get_heuristic_action(state):
     state_type = state.get("type", "unknown")
     if state_type == "combat":
         hand = state.get("hand", [])
+        if not hand:
+            # If the hand is completely empty, we might be in the middle of a draw animation
+            # Or recovering from a hand disruption. It's safer to wait just a bit.
+            # But what if we actually have 0 cards? We have to ensure we don't infinite wait.
+            # For this simple heuristic, let's look at player state. If we have no playable cards,
+            # and hand is not empty, then end turn. If hand IS empty, wait.
+            return {"action": "wait"}
+            
         playable_cards = [c for c in hand if c.get("isPlayable")]
         if playable_cards:
             chosen_card = random.choice(playable_cards)
@@ -380,6 +414,62 @@ def get_heuristic_action(state):
             
     elif state_type == "game_over":
         return {"action": "return_to_main_menu"}
+
+    elif state_type == "none":
+        global learning_active
+        if learning_active:
+            return {"action": "command", "command": "start_game"}
+
+    elif state_type == "event":
+        options = [o for o in state.get("options", []) if not o.get("is_locked")]
+        if options:
+            return {"action": "select_event_option", "index": random.choice(options).get("index")}
+            
+    elif state_type == "rest_site":
+        if state.get("can_proceed"):
+            return {"action": "proceed"}
+        options = [o for o in state.get("options", []) if o.get("is_enabled")]
+        if options:
+            return {"action": "select_rest_site_option", "index": random.choice(options).get("index")}
+            
+    elif state_type == "shop":
+        # Just proceed for simplicity, or buy a random affordable item
+        return {"action": "shop_proceed"}
+        
+    elif state_type == "treasure":
+        if state.get("has_chest"):
+            return {"action": "open_chest"}
+        if state.get("can_proceed"):
+            return {"action": "proceed"}
+            
+    elif state_type == "treasure_relics":
+        relics = state.get("relics", [])
+        if relics:
+            return {"action": "select_treasure_relic", "index": relics[0].get("index")}
+            
+    elif state_type == "card_reward":
+        buttons = state.get("buttons", [])
+        if buttons:
+            skip_btns = [b for b in buttons if b.get("name", "").lower() == "skip"]
+            if skip_btns:
+                return {"action": "click_reward_button", "index": skip_btns[0].get("index")}
+            return {"action": "click_reward_button", "index": buttons[0].get("index")}
+
+    elif state_type == "grid_selection":
+        if state.get("is_confirming"):
+            return {"action": "confirm_selection"}
+        if state.get("can_skip"):
+            return {"action": "select_grid_card", "index": -1}
+        cards = state.get("cards", [])
+        if cards:
+            return {"action": "select_grid_card", "index": random.choice(cards).get("index")}
+            
+    elif state_type == "hand_selection":
+        if state.get("is_confirming"):
+            return {"action": "confirm_selection"}
+        cards = state.get("cards", [])
+        if cards:
+            return {"action": "select_hand_card", "index": random.choice(cards).get("index")}
         
     return {"action": "wait"}
 
@@ -427,11 +517,30 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "queued", "command": cmd}).encode())
             
         elif parsed_path.path == "/screenshot":
-            command_queue.put("screenshot")
+            global pending_screenshot, screenshot_done_event
+            timestamp = int(time.time())
+            path = f"/home/ubuntu/src/R-NaD-StS2/tmp/screenshot_{timestamp}.png"
+            
+            pending_screenshot = path
+            screenshot_done_event.clear()
+            
+            log(f"Screenshot requested at {path}. Waiting for game...")
+            
+            # Wait up to 30 seconds for the game's internal viewport capture
+            completed = screenshot_done_event.wait(timeout=30.0)
+            
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "queued"}).encode())
+            
+            if completed:
+                log(f"Screenshot request fulfilled (path: {path}).")
+                self.wfile.write(json.dumps({"status": "success", "path": path}).encode())
+            else:
+                log("Screenshot request timed out (30s).")
+                # Clear the request if it timed out so we don't take it later
+                pending_screenshot = None
+                self.wfile.write(json.dumps({"status": "error", "message": "timeout"}).encode())
             
         elif parsed_path.path == "/new_game":
             query_components = parse_qs(parsed_path.query)

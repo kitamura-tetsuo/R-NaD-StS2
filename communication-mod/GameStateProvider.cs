@@ -282,7 +282,12 @@ public partial class MainFile : Node
         if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom combatRoom)
         {
             var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase) return "{\"type\":\"combat_waiting\"}";
+            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase || cm.PlayerActionsDisabled) 
+            {
+                // Only log if it's been a while or debug is on
+                // Logger.Info($"[AutoAI] combat_waiting: cm={(cm==null?"null":"exists")}, IsInProgress={cm?.IsInProgress}, IsPlayPhase={cm?.IsPlayPhase}, Disabled={cm?.PlayerActionsDisabled}");
+                return "{\"type\":\"combat_waiting\"}";
+            }
 
             // Check if hand is in selection mode (e.g., Armaments)
             var hand = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
@@ -304,7 +309,7 @@ public partial class MainFile : Node
 
                 if (isSelectionMode || hand.IsInCardSelection)
                 {
-                    // Logger.Info($"[AutoAI] hand_selection detected via Mode={hand.CurrentMode} IsInCardSelection={hand.IsInCardSelection}");
+                    Logger.Info($"[AutoAI] hand_selection detected: Mode={hand.CurrentMode}, IsInCardSelection={hand.IsInCardSelection}");
                     var cards = new List<object>();
                     var activeHolders = hand.ActiveHolders;
                     for (int i = 0; i < activeHolders.Count; i++)

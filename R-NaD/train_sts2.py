@@ -64,13 +64,13 @@ def main():
         if not wait_for_server("http://127.0.0.1:8081/status", timeout=60):
             raise RuntimeError("Game server failed to start.")
         
-        # Enable learning mode
-        logging.info("Enabling learning mode via bridge server...")
-        requests.get("http://127.0.0.1:8081/start")
-
         # Wait for Godot to fully load the scene tree before sending new_game
         logging.info("Waiting 5 seconds for Game Scene Tree to initialize...")
         time.sleep(5)
+
+        # Enable learning mode
+        logging.info("Enabling learning mode via bridge server...")
+        requests.get("http://127.0.0.1:8081/start")
 
         # Start first run
         logging.info("Starting new game...")

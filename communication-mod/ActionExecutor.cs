@@ -25,12 +25,8 @@ public partial class MainFile : Node
 
                 if (card != null && card.CanPlay())
                 {
-                    // For simplicity, pick first valid target or none
                     MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
-                    if (card.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
-                    {
-                        target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
-                    }
+                    target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
 
                     Logger.Info($"[AutoAI] Playing card: {card.Title}");
                     card.TryManualPlay(target);
@@ -47,12 +43,9 @@ public partial class MainFile : Node
                     if (potion != null && canUse)
                     {
                         MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
-                        if (potion.TargetType == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
-                        {
-                            var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-                            var combatState = cm.DebugOnlyGetState();
-                            target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
-                        }
+                        var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
+                        var combatState = cm.DebugOnlyGetState();
+                        target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
                         
                         Logger.Info($"[AutoAI] Using potion: {potion.Title.GetRawText()}");
                         potion.EnqueueManualUse(target);
@@ -95,6 +88,13 @@ public partial class MainFile : Node
                                         var option = options[index];
                                         Logger.Info($"[AutoAI] Selecting event option [{index}]: locked={option.IsLocked}");
                                         eventRoom.OptionButtonClicked(option, index);
+
+                                        // OptionButtonClicked runs async – the event becomes IsFinished
+                                        // after the animation chain completes, so AfterActionExecuted
+                                        // won't fire here. Schedule a deferred retry so the next AI step
+                                        // can detect IsFinished and call NEventRoom.Proceed().
+                                        GetTree().CreateTimer(0.8).Connect("timeout",
+                                            new Callable(this, nameof(ScheduleAI)));
                                     }
                                 }
                             }
