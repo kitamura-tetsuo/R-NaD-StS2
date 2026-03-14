@@ -105,7 +105,7 @@ def main():
                             state = json.loads(content)
                             if state.get("type") == "game_over":
                                 logging.info("Game over detected. Restarting game run in 5s...")
-                                time.sleep(5)
+                                # time.sleep(5)
                                 requests.get("http://127.0.0.1:8081/new_game")
                                 # Remove the game_over state so we don't spam restarts
                                 os.remove(last_state_path)

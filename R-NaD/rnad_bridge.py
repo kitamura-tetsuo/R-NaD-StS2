@@ -218,7 +218,15 @@ def load_model(checkpoint_path=None):
     
     state_dim = 128
     num_actions = 50
-    config = RNaDConfig(batch_size=8, unroll_length=32)
+    config = RNaDConfig(
+        batch_size=8, 
+        unroll_length=32, 
+        model_type="transformer",
+        hidden_size=256,
+        num_blocks=4,
+        num_heads=4,
+        seq_len=8
+    )
     learner = RNaDLearner(state_dim, num_actions, config)
     rng_key = jax.random.PRNGKey(42)
     
@@ -277,6 +285,63 @@ def compute_reward(state, next_state_type=None):
             
     return reward
 
+def get_action_mask(state):
+    mask = np.zeros(50, dtype=bool)
+    state_type = state.get("type", "unknown")
+    
+    if state_type == "combat":
+        hand = state.get("hand", [])
+        for i in range(min(len(hand), 10)):
+            if hand[i].get("isPlayable"):
+                mask[i] = True
+        
+        potions = state.get("potions", [])
+        for i in range(min(len(potions), 5)):
+            if potions[i].get("canUse"):
+                mask[10 + i] = True
+        
+        mask[15] = True # End turn is almost always valid in play phase
+    
+    elif state_type == "rewards":
+        rewards = state.get("rewards", [])
+        for i in range(min(len(rewards), 10)):
+            mask[16 + i] = True
+        if state.get("can_proceed"):
+            mask[26] = True
+            
+    elif state_type == "map":
+        next_nodes = state.get("next_nodes", [])
+        if next_nodes:
+            mask[27] = True # Simple mapping for now: 27 means "take first valid map node"
+            
+    elif state_type == "event":
+        options = state.get("options", [])
+        for i in range(min(len(options), 10)):
+            if not options[i].get("is_locked"):
+                mask[28] = True # Using 28 as a generic event action for now
+                break
+                
+    elif state_type == "rest_site":
+        options = state.get("options", [])
+        for i in range(min(len(options), 5)):
+            if options[i].get("is_enabled"):
+                mask[29] = True
+                break
+        if state.get("can_proceed"):
+            mask[26] = True
+
+    # Action 49 (Wait) is a fallback
+    if state_type in ["grid_selection", "hand_selection"]:
+        # Ensure we always have a valid action in selection screens
+        # Actions for grid/hand selection start from 26 (proceed/confirm) or higher
+        mask[26] = True # Proceed/Confirm
+        mask[49] = False # Avoid waiting in selection screens if possible
+        
+    if not np.any(mask):
+        mask[49] = True
+        
+    return mask
+
 def predict_action(state_json):
     global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key
     
@@ -306,53 +371,61 @@ def predict_action(state_json):
         state_type = state.get("type", "unknown")
         state_vec = encode_state(state)
         
+        # Calculate Action Mask
+        mask = get_action_mask(state)
+        mask_jnp = jnp.array(mask)
+        
         # Inference
         logits, value = learner.network.apply(learner.params, rng_key, state_vec[None, :])
-        probs = jax.nn.softmax(logits, axis=-1)
         
-        # Sample action
+        # Apply Masking
+        # Set illegal actions to a very low value before softmax
+        masked_logits = jnp.where(mask_jnp, logits, -1e9)
+        
+        probs = jax.nn.softmax(masked_logits, axis=-1)
+        
+        # Sample action from masked distribution
         rng_key, subkey = jax.random.split(rng_key)
-        action_idx = jax.random.categorical(subkey, logits).item()
-        log_prob = jax.nn.log_softmax(logits)[0, action_idx].item()
+        action_idx = jax.random.categorical(subkey, masked_logits).item()
+        log_prob = jax.nn.log_softmax(masked_logits)[0, action_idx].item()
         
-        # Decide action (random for now if learning_active but model is fresh, 
-        # or follow model if we want to exploit)
-        # For this implementation, we follow the model's recommendation.
-        
-        # Mapping action_idx to actual game actions (Placeholder Mapping)
-        # Action space: 
-        # 0-9: Play cards 0-9
-        # 10-14: Use potions 0-4
-        # 15: End turn
-        # 16-25: Select reward index 0-9
-        # 26: Proceed
-        # ... and so on.
+        # Log if the model's preferred (original top) action was masked
+        original_top_action = jnp.argmax(logits).item()
+        if not mask[original_top_action]:
+             log(f"Model preferred action {original_top_action} but it was masked. Masked selected: {action_idx}")
         
         action = {"action": "wait"} # Default
         
-        if state_type == "combat":
+        if action_idx == 49:
+            pass # already wait
+        
+        elif state_type == "combat":
             hand = state.get("hand", [])
-            playable_cards = [c for c in hand if c.get("isPlayable")]
-            if action_idx < len(hand) and hand[action_idx].get("isPlayable"):
-                action = {"action": "play_card", "card_id": hand[action_idx].get("id")}
+            potions = state.get("potions", [])
+            
+            if action_idx < 10 and action_idx < len(hand):
+                card = hand[action_idx]
+                action = {"action": "play_card", "card_id": card.get("id")}
+            elif 10 <= action_idx < 15:
+                potion_idx = action_idx - 10
+                if potion_idx < len(potions):
+                    action = {"action": "use_potion", "index": potion_idx}
             elif action_idx == 15:
                 action = {"action": "end_turn"}
-            else:
-                # Heuristic fallback if model picks invalid action
-                if playable_cards:
-                    c = random.choice(playable_cards)
-                    action = {"action": "play_card", "card_id": c.get("id")}
-                else:
-                    action = {"action": "end_turn"}
         
         elif state_type == "rewards":
             rewards = state.get("rewards", [])
-            if 16 <= action_idx < 16 + len(rewards):
-                action = {"action": "select_reward", "index": action_idx - 16}
-            elif state.get("can_proceed"):
+            if 16 <= action_idx < 26:
+                reward_idx = action_idx - 16
+                if reward_idx < len(rewards):
+                    action = {"action": "select_reward", "index": reward_idx}
+            elif action_idx == 26:
                 action = {"action": "proceed"}
-            else:
-                action = {"action": "wait"}
+
+        # Fallback to heuristic for complex types not fully mapped to action_idx yet
+        if action["action"] == "wait" and state_type not in ["unknown", "none"]:
+             log(f"Mapping action_idx {action_idx} to heuristic for state: {state_type}")
+             action = get_heuristic_action(state)
 
         # Trajectory collection
         if learning_active:
@@ -367,10 +440,6 @@ def predict_action(state_json):
             if len(current_trajectory) >= config.unroll_length:
                 experience_queue.put(list(current_trajectory))
                 current_trajectory = []
-
-        if action["action"] == "wait" and state_type != "unknown":
-             log(f"Falling back to heuristic for state: {state_type}")
-             action = get_heuristic_action(state)
 
         res = json.dumps(action)
         log(f"Returning action: {res}")

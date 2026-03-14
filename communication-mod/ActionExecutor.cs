@@ -31,6 +31,10 @@ public partial class MainFile : Node
                     Logger.Info($"[AutoAI] Playing card: {card.Title}");
                     card.TryManualPlay(target);
                 }
+                else
+                {
+                    Logger.Info($"[AutoAI] Cannot play card: {cardId} (card exists: {card != null}, CanPlay: {card?.CanPlay()})");
+                }
             }
             else if (action == "use_potion")
             {
@@ -50,11 +54,16 @@ public partial class MainFile : Node
                         Logger.Info($"[AutoAI] Using potion: {potion.Title.GetRawText()}");
                         potion.EnqueueManualUse(target);
                     }
+                    else
+                    {
+                        Logger.Info($"[AutoAI] Cannot use potion at index {index}: (potion exists: {potion != null}, canUse: {canUse})");
+                    }
                 }
             }
             else if (action == "end_turn")
             {
                 var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
+                Logger.Info($"[AutoAI] Executing End Turn (Player: {player.Creature.Name})");
                 cm.SetReadyToEndTurn(player, true);
                 Logger.Info("[AutoAI] End Turn requested.");
             }

@@ -46,7 +46,9 @@ class RNaDConfig(NamedTuple):
     log_interval: int = 100
     save_interval: int = 1000
     unroll_length: int = 200
-    model_type: str = "mlp" 
+    model_type: str = "mlp" # or "transformer"
+    num_heads: int = 4
+    seq_len: int = 8
     seed: int = 42
 
 def v_trace(
@@ -114,25 +116,128 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     value_loss = 0.5 * jnp.mean((jax.lax.stop_gradient(vs) - values) ** 2)
     policy_loss = -jnp.mean(log_pi_a * jax.lax.stop_gradient(pg_adv))
     
+
     return policy_loss + value_loss, (policy_loss, value_loss)
+
+def _get_hk_module():
+    _init_libs()
+    return hk.Module
+
+class TransformerBlock: # Defined later to avoid import issues
+    pass
+
+class TransformerNet: # Defined later to avoid import issues
+    pass
+
+def _define_transformer_classes():
+    global TransformerBlock, TransformerNet
+    _init_libs()
+    
+    class _TransformerBlock(hk.Module):
+        def __init__(self, num_heads, key_size, hidden_size, name=None):
+            super().__init__(name=name)
+            self.num_heads = num_heads
+            self.key_size = key_size
+            self.hidden_size = hidden_size
+
+        def __call__(self, x, is_training=False):
+            # x: (B, SeqLen, D)
+            d = x.shape[-1]
+
+            # Self-Attention
+            attn_out = hk.MultiHeadAttention(
+                num_heads=self.num_heads,
+                key_size=self.key_size,
+                w_init=hk.initializers.VarianceScaling(2.0),
+                model_size=d,
+            )(x, x, x)
+
+            # Add & Norm
+            x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + attn_out)
+
+            # MLP
+            mlp_out = hk.nets.MLP(
+                [d * 4, d],
+                activation=jax.nn.gelu
+            )(x)
+
+            # Add & Norm
+            x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + mlp_out)
+            return x
+
+    class _TransformerNet(hk.Module):
+        def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len):
+            super().__init__()
+            self.num_actions = num_actions
+            self.hidden_size = hidden_size 
+            self.num_blocks = num_blocks
+            self.num_heads = num_heads
+            self.seq_len = seq_len
+
+        def __call__(self, x, is_training=False):
+            # x: (B, ObsDim)
+            if x.ndim > 2:
+                x = jnp.reshape(x, (x.shape[0], -1))
+
+            batch_size = x.shape[0]
+            
+            # Feature Projection to sequence
+            projection_size = self.seq_len * self.hidden_size
+            x = hk.Linear(projection_size)(x)
+            x = jnp.reshape(x, (batch_size, self.seq_len, self.hidden_size))
+
+            # Position Embeddings
+            pos_emb = hk.get_parameter("pos_emb", [self.seq_len, self.hidden_size], init=hk.initializers.TruncatedNormal())
+            x = x + pos_emb
+
+            # Transformer Blocks
+            for i in range(self.num_blocks):
+                x = _TransformerBlock(
+                    num_heads=self.num_heads,
+                    key_size=self.hidden_size // self.num_heads,
+                    hidden_size=self.hidden_size,
+                    name=f"block_{i}"
+                )(x, is_training)
+
+            # Global Pooling (Mean)
+            features = jnp.mean(x, axis=1)
+
+            # Heads
+            logits = hk.Linear(self.num_actions)(features)
+            value = hk.Linear(1)(features)
+            return logits, jnp.squeeze(value, axis=-1)
+            
+    TransformerBlock = _TransformerBlock
+    TransformerNet = _TransformerNet
 
 class RNaDLearner:
     def __init__(self, state_dim: int, num_actions: int, config: RNaDConfig):
         _init_libs()
+        _define_transformer_classes()
         self.config = config
         self.state_dim = state_dim
         self.num_actions = num_actions
         
         def forward(x):
-            net = hk.Sequential([
-                hk.Linear(config.hidden_size), jax.nn.relu,
-                hk.Linear(config.hidden_size), jax.nn.relu,
-                hk.Linear(config.hidden_size), jax.nn.relu,
-            ])
-            features = net(x)
-            logits = hk.Linear(num_actions)(features)
-            value = hk.Linear(1)(features)
-            return logits, jnp.squeeze(value, axis=-1)
+            if config.model_type == "transformer":
+                model = TransformerNet(
+                    num_actions=num_actions,
+                    hidden_size=config.hidden_size,
+                    num_blocks=config.num_blocks,
+                    num_heads=config.num_heads,
+                    seq_len=config.seq_len
+                )
+                return model(x)
+            else:
+                net = hk.Sequential([
+                    hk.Linear(config.hidden_size), jax.nn.relu,
+                    hk.Linear(config.hidden_size), jax.nn.relu,
+                    hk.Linear(config.hidden_size), jax.nn.relu,
+                ])
+                features = net(x)
+                logits = hk.Linear(num_actions)(features)
+                value = hk.Linear(1)(features)
+                return logits, jnp.squeeze(value, axis=-1)
             
         self.network = hk.transform(forward)
         self.optimizer = optax.adam(config.learning_rate)

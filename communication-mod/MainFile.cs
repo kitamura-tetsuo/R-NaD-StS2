@@ -34,6 +34,7 @@ public partial class MainFile : Node
     private long _mainMenuWaitStartTime = 0;
     private string _lastStateJson = "";
     private long _lastPollTime = 0;
+    private long _lastEndTurnTime = 0;
 
     private void ScheduleAI()
     {
@@ -53,8 +54,8 @@ public partial class MainFile : Node
             string stateJson = GetJsonState();
             long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
-            // Skip polling if state hasn't changed, unless 1s passed (heartbeat)
-            if (stateJson == _lastStateJson && (currentTime - _lastPollTime < 1000))
+            // Skip polling if state hasn't changed, unless 200ms passed (heartbeat)
+            if (stateJson == _lastStateJson && (currentTime - _lastPollTime < 200))
             {
                 return;
             }
@@ -127,9 +128,15 @@ public partial class MainFile : Node
                     _endTurnSentThisTurn = false;
                 }
 
-                if (_endTurnSentThisTurn) return;
+                // If we already sent it this turn, only allow re-sending after 2 seconds
+                // This handles cases where the game missed the input or is lagging.
+                if (_endTurnSentThisTurn && (currentTime - _lastEndTurnTime < 2000)) 
+                {
+                    return;
+                }
 
                 _endTurnSentThisTurn = true;
+                _lastEndTurnTime = currentTime;
                 ExecuteAction(dict);
             }
             else
