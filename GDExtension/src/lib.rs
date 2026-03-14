@@ -51,4 +51,40 @@ impl AiBridge {
             }
         }
     }
+    #[func]
+    pub fn check_screenshot_request(&self) -> Variant {
+        let result = Python::with_gil(|py| -> PyResult<String> {
+            let my_ai_module = py.import("rnad_bridge")?;
+            let check_fn = my_ai_module.getattr("check_screenshot_request")?;
+            let path: String = check_fn.call0()?.extract()?;
+            Ok(path)
+        });
+
+        match result {
+            Ok(path) => path.to_variant(),
+            Err(e) => {
+                eprintln!("[AiBridge-Rust] Python Error in check_screenshot_request: {:?}", e);
+                "".to_variant()
+            }
+        }
+    }
+
+    #[func]
+    pub fn mark_screenshot_done(&self) -> Variant {
+        let result = Python::with_gil(|py| -> PyResult<bool> {
+            let my_ai_module = py.import("rnad_bridge")?;
+            let mark_fn = my_ai_module.getattr("mark_screenshot_done")?;
+            let res: bool = mark_fn.call0()?.extract()?;
+            Ok(res)
+        });
+
+        match result {
+            Ok(res) => res.to_variant(),
+            Err(e) => {
+                eprintln!("[AiBridge-Rust] Python Error in mark_screenshot_done: {:?}", e);
+                false.to_variant()
+            }
+        }
+    }
 }
+

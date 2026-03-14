@@ -520,7 +520,6 @@ class CommandHandler(BaseHTTPRequestHandler):
             global pending_screenshot, screenshot_done_event
             timestamp = int(time.time())
             path = f"/home/ubuntu/src/R-NaD-StS2/tmp/screenshot_{timestamp}.png"
-            
             pending_screenshot = path
             screenshot_done_event.clear()
             
