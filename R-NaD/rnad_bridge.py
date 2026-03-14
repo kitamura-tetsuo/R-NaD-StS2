@@ -239,7 +239,8 @@ def load_model(checkpoint_path=None):
         hidden_size=256,
         num_blocks=4,
         num_heads=4,
-        seq_len=8
+        seq_len=8,
+        accumulation_steps=1 # Can be changed to test
     )
     learner = RNaDLearner(state_dim, num_actions, config)
     rng_key = jax.random.PRNGKey(42)

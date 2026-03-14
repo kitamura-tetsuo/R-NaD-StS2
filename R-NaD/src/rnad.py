@@ -34,7 +34,7 @@ class LeagueConfig(NamedTuple):
 
 class RNaDConfig(NamedTuple):
     batch_size: int = 128
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-2
     discount_factor: float = 0.99
     max_steps: int = 1000
     entropy_schedule_start: float = 0.1
@@ -43,13 +43,14 @@ class RNaDConfig(NamedTuple):
     clip_pg_rho_threshold: float = 1.0
     hidden_size: int = 256
     num_blocks: int = 4
-    log_interval: int = 100
+    log_interval: int = 1
     save_interval: int = 1000
     unroll_length: int = 200
-    model_type: str = "mlp" # or "transformer"
+    model_type: str = "transformer" # "mlp" or "transformer"
     num_heads: int = 4
     seq_len: int = 8
     seed: int = 42
+    accumulation_steps: int = 1
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -240,7 +241,13 @@ class RNaDLearner:
                 return logits, jnp.squeeze(value, axis=-1)
             
         self.network = hk.transform(forward)
-        self.optimizer = optax.adam(config.learning_rate)
+        
+        base_optimizer = optax.adam(config.learning_rate)
+        if config.accumulation_steps > 1:
+            self.optimizer = optax.MultiSteps(base_optimizer, every_k_schedule=config.accumulation_steps)
+        else:
+            self.optimizer = base_optimizer
+            
         self.params = None
         self.fixed_params = None
         self.opt_state = None
