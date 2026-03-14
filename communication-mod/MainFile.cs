@@ -35,6 +35,7 @@ public partial class MainFile : Node
     private string _lastStateJson = "";
     private long _lastPollTime = 0;
     private long _lastEndTurnTime = 0;
+    private string _defaultSeed = "";
 
     private void ScheduleAI()
     {
@@ -173,8 +174,10 @@ public partial class MainFile : Node
         Logger.Info($"[AutoAI] Command line args: {string.Join(", ", args)}");
 
         bool gym = false;
-        foreach (var arg in args) {
-            if (arg == "--gym" || arg == "gym") gym = true;
+        string defaultSeed = "";
+        for (int i = 0; i < args.Length; i++) {
+            if (args[i] == "--gym" || args[i] == "gym") gym = true;
+            if (args[i] == "--seed" && i + 1 < args.Length) defaultSeed = args[i + 1];
         }
 
         if (gym)
@@ -195,6 +198,7 @@ public partial class MainFile : Node
         _instance = new MainFile();
         _instance.Name = "R_NaD_Controller";
         _instance._gymMode = gym;
+        _instance._defaultSeed = defaultSeed;
         _instance?.CallDeferred(nameof(SafeSetup));
     }
 
@@ -261,7 +265,7 @@ public partial class MainFile : Node
         var ngame = NGame.Instance;
         if (ngame != null)
         {
-            _pendingSeed = seed;
+            _pendingSeed = string.IsNullOrEmpty(seed) ? _defaultSeed : seed;
             CallDeferred(nameof(StartSts2RunDeferred));
         }
     }

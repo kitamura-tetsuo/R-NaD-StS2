@@ -165,7 +165,9 @@ else:
     config = None
     np = None
 
-current_seed = None
+current_seed = os.environ.get("RNAD_SEED")
+if current_seed:
+    log(f"Initialized current_seed from environment: {current_seed}")
 
 # Config placeholder (will be initialized in load_model)
 # config = None # Removed as it's handled by the preservation logic above
@@ -628,9 +630,10 @@ def get_heuristic_action(state):
         return {"action": "return_to_main_menu"}
 
     elif state_type == "none":
-        global learning_active
+        global learning_active, current_seed
         if learning_active:
-            return {"action": "command", "command": "start_game"}
+            cmd = f"start_game:{current_seed}" if current_seed else "start_game"
+            return {"action": "command", "command": cmd}
 
     elif state_type == "event":
         options = [o for o in state.get("options", []) if not o.get("is_locked")]
@@ -759,7 +762,11 @@ class CommandHandler(BaseHTTPRequestHandler):
         elif parsed_path.path == "/new_game":
             query_components = parse_qs(parsed_path.query)
             seed = query_components.get("seed", [None])[0]
-            cmd = f"start_game:{seed}" if seed else "start_game"
+            if seed:
+                current_seed = seed
+                log(f"Updated current_seed to: {current_seed}")
+            
+            cmd = f"start_game:{current_seed}" if current_seed else "start_game"
             command_queue.put(cmd)
             self.send_response(200)
             self.send_header("Content-type", "application/json")

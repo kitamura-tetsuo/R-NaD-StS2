@@ -17,10 +17,12 @@ def cleanup_processes():
     except Exception:
         pass
 
-def launch_game(checkpoint=None):
+def launch_game(checkpoint=None, seed=None):
     logging.info("Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
     cmd = ["./SlayTheSpire2", "--gym"]
+    if seed:
+        cmd.extend(["--seed", seed])
     # cmd = ["./SlayTheSpire2", "--verbose", "--gym"]
     env = os.environ.copy()
     keys_to_remove = [k for k in env if k.startswith("PYTHON") or k.startswith("VIRTUAL_ENV") or k.startswith("LD_") or k.startswith("CONDA_")]
@@ -33,6 +35,10 @@ def launch_game(checkpoint=None):
     if checkpoint:
         env["RNAD_CHECKPOINT"] = os.path.abspath(checkpoint)
         logging.info(f"Setting RNAD_CHECKPOINT environment variable to: {env['RNAD_CHECKPOINT']}")
+
+    if seed:
+        env["RNAD_SEED"] = seed
+        logging.info(f"Setting RNAD_SEED environment variable to: {seed}")
 
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     if not os.path.exists(log_dir):
@@ -68,7 +74,7 @@ def main():
     args = parser.parse_args()
     
     cleanup_processes()
-    process = launch_game(checkpoint=args.checkpoint)
+    process = launch_game(checkpoint=args.checkpoint, seed=args.seed)
 
     try:
         # Wait for game to initialize by checking status endpoint
