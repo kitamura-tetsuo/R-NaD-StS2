@@ -1,11 +1,6 @@
 import os
 import sys
-import ctypes
-import json
-import random
-import threading
 import time
-import traceback
 
 # Ensure stdout/stderr are unbuffered and also log to a file
 import io
@@ -37,27 +32,41 @@ def log(msg):
     # Use direct file write if stdout is weird, but print should be fine now
     print(f"[Python][SM:{id(sys.modules)}][P:{os.getpid()}] {msg}")
 
-log(f"--- Bridge starting at {time.ctime()} ---")
+log(f"--- Bridge starting at {time.ctime() if 'time' in sys.modules else 'unknown'} ---")
 log(f"sys.path: {sys.path[:3]}")
+
+# Add bridge directory to sys.path so we can import our fixer
+BRIDGE_DIR = "/home/ubuntu/src/R-NaD-StS2/R-NaD"
+if BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, BRIDGE_DIR)
+
 VENV_PATH = "/home/ubuntu/src/R-NaD-StS2/R-NaD/venv/lib/python3.12/site-packages"
 if VENV_PATH not in sys.path:
-    sys.path.insert(0, VENV_PATH)
+    # Append the virtualenv AFTER the local directory so local modules take precedence
+    sys.path.append(VENV_PATH)
     print(f"[Python] Added venv to sys.path: {VENV_PATH}")
 
-# Fix for "undefined symbol: PyObject_SelfIter" in embedded environments
-# This forces libpython to load with RTLD_GLOBAL, making its symbols available to C-extensions like NumPy
+# Fix for "undefined symbol: PyObject_SelfIter" and similar dynamic loading issues in embedded environments
+# We use a custom C-extension `libpython_fixer` because `import ctypes` itself fails when RTLD_GLOBAL is missing.
 try:
-    # Try common library names
+    import libpython_fixer
     for libname in ["libpython3.12.so.1.0", "libpython3.12.so.1", "libpython3.12.so"]:
-        try:
-            ctypes.CDLL(libname, mode=ctypes.RTLD_GLOBAL)
-            print(f"[Python] Successfully loaded {libname} with RTLD_GLOBAL")
+        res = libpython_fixer.fix_libpython(libname)
+        if res == "success":
+            print(f"[Python] Successfully loaded {libname} with RTLD_GLOBAL via libpython_fixer")
             break
-        except OSError:
-            continue
+        else:
+            print(f"[Python] libpython_fixer failed for {libname}: {res}")
 except Exception as e:
-    print(f"[Python] Warning: Could not apply RTLD_GLOBAL hack: {e}")
+    print(f"[Python] Warning: Could not apply RTLD_GLOBAL hack via libpython_fixer: {e}")
+
+# Now we can safely import ctypes and other C-extensions
+import ctypes
+import json
+import random
+import threading
 import time
+import traceback
 import socket
 import queue
 from http.server import BaseHTTPRequestHandler, HTTPServer
