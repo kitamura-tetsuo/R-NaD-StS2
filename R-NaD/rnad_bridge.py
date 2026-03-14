@@ -187,6 +187,24 @@ def load_model(checkpoint_path=None):
     learner = RNaDLearner(state_dim, num_actions, config)
     rng_key = jax.random.PRNGKey(42)
     
+    # If no checkpoint_path is provided, try to find the latest one
+    if checkpoint_path is None:
+        checkpoint_dir = "/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints"
+        if os.path.exists(checkpoint_dir):
+            import glob
+            import re
+            
+            checkpoints = glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pkl"))
+            if checkpoints:
+                # Extract step number and find the max
+                def get_step(path):
+                    match = re.search(r"checkpoint_(\d+)\.pkl", os.path.basename(path))
+                    return int(match.group(1)) if match else -1
+                
+                latest_checkpoint = max(checkpoints, key=get_step)
+                checkpoint_path = latest_checkpoint
+                print(f"[Python] Auto-detected latest checkpoint: {checkpoint_path}")
+
     if checkpoint_path and os.path.exists(checkpoint_path):
         step = learner.load_checkpoint(checkpoint_path)
         print(f"[Python] Loaded JAX model from {checkpoint_path} at step {step}")
@@ -231,6 +249,14 @@ def predict_action(state_json):
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
         log(f"predict_action called. state_type: {state_type}, command_queue size: {command_queue.qsize()}")
+        
+        # Debug: write last state to a temporary file for monitoring
+        try:
+            with open("/tmp/rnad_last_state.json", "w") as f:
+                f.write(state_json)
+        except:
+            pass
+
         if not command_queue.empty():
             cmd = command_queue.get_nowait()
             res = json.dumps({"action": "command", "command": cmd})
