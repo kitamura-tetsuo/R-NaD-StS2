@@ -1,8 +1,4 @@
-import jax
-import jax.numpy as jnp
-import haiku as hk
-import optax
-import numpy as np
+from __future__ import annotations
 import os
 import re
 import pickle
@@ -12,6 +8,24 @@ from functools import partial
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Deferred imports placeholders
+jax = None
+jnp = None
+hk = None
+optax = None
+
+def _init_libs():
+    global jax, jnp, hk, optax
+    if jax is None:
+        import jax as jax_mod
+        import jax.numpy as jnp_mod
+        import haiku as hk_mod
+        import optax as optax_mod
+        jax = jax_mod
+        jnp = jnp_mod
+        hk = hk_mod
+        optax = optax_mod
 
 class LeagueConfig(NamedTuple):
     decks: List[str] = ["standard_deck.txt"]
@@ -104,6 +118,7 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
 
 class RNaDLearner:
     def __init__(self, state_dim: int, num_actions: int, config: RNaDConfig):
+        _init_libs()
         self.config = config
         self.state_dim = state_dim
         self.num_actions = num_actions

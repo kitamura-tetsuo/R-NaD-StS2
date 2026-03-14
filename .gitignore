@@ -7,3 +7,6 @@ R-NaD/__pycache__/
 
 StS2_Decompiled/
 tmp/
+**/__pycache__/
+R-NaD/checkpoints/
+bin/

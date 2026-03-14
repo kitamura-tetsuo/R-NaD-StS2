@@ -22,7 +22,7 @@ impl INode for AiBridge {
 #[godot_api]
 impl AiBridge {
     #[func]
-    pub fn predict_action(&self, state_json: GString) -> GString {
+    pub fn predict_action(&self, state_json: GString) -> Variant {
         let state_str = state_json.to_string();
 
         let result = Python::with_gil(|py| -> PyResult<String> {
@@ -38,15 +38,16 @@ impl AiBridge {
             let predict_fn = my_ai_module.getattr("predict_action")?;
             let args = (state_str,);
             let action_json: String = predict_fn.call1(args)?.extract()?;
+            eprintln!("[AiBridge-Rust] predict_action returning to Godot: {}", action_json);
             
             Ok(action_json)
         });
 
         match result {
-            Ok(json) => GString::from(&json),
+            Ok(json) => json.to_variant(),
             Err(e) => {
-                godot_error!("Python Error: {:?}", e);
-                GString::from("{\"error\": \"python_fault\"}")
+                eprintln!("[AiBridge-Rust] Python Error: {:?}", e);
+                "{\"error\": \"python_fault\"}".to_variant()
             }
         }
     }
