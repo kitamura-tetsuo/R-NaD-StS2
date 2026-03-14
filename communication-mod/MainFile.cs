@@ -55,18 +55,15 @@ public partial class MainFile : Node
 
         if (AiBridge == null) return;
 
-        // Ensure run-specific hooks (CombatManager, etc.) are registered for the current state.
-        RegisterRunHooks();
-
         // Enforce fastest settings persistently
-        Engine.TimeScale = 10.0f;
-        try {
-            var sm = MegaCrit.Sts2.Core.Saves.SaveManager.Instance;
-            if (sm != null && sm.PrefsSave.FastMode != MegaCrit.Sts2.Core.Settings.FastModeType.Instant) {
-                sm.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
-                Logger.Info("[AutoAI] Persistent enforce: FastMode = Instant");
-            }
-        } catch (Exception) {}
+        // Engine.TimeScale = 10.0f;
+        // try {
+        //     var sm = MegaCrit.Sts2.Core.Saves.SaveManager.Instance;
+        //     if (sm != null && sm.PrefsSave.FastMode != MegaCrit.Sts2.Core.Settings.FastModeType.Instant) {
+        //         sm.PrefsSave.FastMode = MegaCrit.Sts2.Core.Settings.FastModeType.Instant;
+        //         Logger.Info("[AutoAI] Persistent enforce: FastMode = Instant");
+        //     }
+        // } catch (Exception) {}
 
         try
         {
@@ -85,12 +82,12 @@ public partial class MainFile : Node
 
             string action = dict["action"].AsString();
 
-            // Rate limiting: ensure at least 500ms between actions
+            // Rate limiting: ensure at least 100ms between actions (relaxed from 500ms for high TimeScale)
             long currentTime = System.DateTimeOffset.Now.ToUnixTimeMilliseconds();
-            if (currentTime - _lastActionTime < 500 && action != "wait")
+            if (currentTime - _lastActionTime < 100 && action != "wait")
             {
                 // Logger.Info($"[AutoAI] Rate limiting: skipping action={action} (too soon)");
-                GetTree().CreateTimer(0.2).Connect("timeout", new Callable(this, nameof(ScheduleAI)));
+                GetTree().CreateTimer(0.05).Connect("timeout", new Callable(this, nameof(ScheduleAI)));
                 return;
             }
             _lastActionTime = currentTime;
@@ -115,11 +112,9 @@ public partial class MainFile : Node
             }
             else if (action == "wait")
             {
-                Logger.Info("[AutoAI] TriggerAI: received 'wait'. Scheduling retry in 1.0s.");
-                // Always schedule a retry when the bridge says wait, or we might hang if
-                // no more game events fire.
-                GetTree().CreateTimer(1.0).Connect("timeout",
-                    new Callable(this, nameof(ScheduleAI)));
+                // No longer need to schedule a timer here; 
+                // _Process polling will catch the "wait" state and try again.
+                return;
             }
             else if (action == "end_turn")
             {
@@ -135,8 +130,7 @@ public partial class MainFile : Node
 
                 if (_endTurnSentThisTurn)
                 {
-                    Logger.Info("[AutoAI] Skipping duplicate end_turn for this turn.");
-                    GetTree().CreateTimer(1.0).Connect("timeout", new Callable(this, nameof(ScheduleAI)));
+                    // No longer need timer; _Process will retry
                     return;
                 }
 
@@ -165,8 +159,6 @@ public partial class MainFile : Node
         private set
         {
             _aiBridge = value;
-            if (_aiBridge != null)
-                RegisterGlobalHooks();
         }
     }
 
@@ -218,10 +210,6 @@ public partial class MainFile : Node
                 Logger.Info("[AutoAI] Mod initialized and AiBridge attached.");
                 // Fire an initial AI step so the bridge can issue start_game if needed.
                 _instance?.CallDeferred(nameof(TriggerAI));
-
-                // Start a watchdog timer that ensures AI periodically checks state
-                // even if hooks are missed.
-                _instance?.StartWatchdog();
             }
         }
         catch (System.Exception ex)
@@ -252,6 +240,14 @@ public partial class MainFile : Node
                 AiBridge.Call("mark_screenshot_done");
                 Logger.Info("[AutoAI] Screenshot done signaled to bridge.");
             }
+
+            // High-frequency polling safety net: 
+            // Trigger AI every frame (~60 times/sec at 60fps)
+            // This ensures maximum throughput for R-NaD training.
+            if (!_aiPending)
+            {
+                ScheduleAI();
+            }
         } catch (System.Exception ex) {
             if (_processCount % 600 == 0) {
                 Logger.Error($"[AutoAI] Error in _Process polling: {ex.Message}");
@@ -259,162 +255,13 @@ public partial class MainFile : Node
         }
     }
 
-    private void StartWatchdog()
-    {
-        GetTree().CreateTimer(1.0).Connect("timeout", new Callable(this, nameof(OnWatchdogTimeout)));
-    }
+    // Watchdog removed in favor of _Process high-frequency polling.
 
-    private void OnWatchdogTimeout()
-    {
-        // Only trigger if no AI is currently pending.
-        if (!_aiPending)
-        {
-            // Logger.Info("[AutoAI] Watchdog triggering ScheduleAI.");
-            ScheduleAI();
-        }
-        StartWatchdog();
-    }
 
     // -----------------------------------------------------------------------
     // Hook registration
     // -----------------------------------------------------------------------
 
-    // Guards preventing double-registration on the same singleton instance.
-    private static bool _overlayHooksRegistered = false;
-    private static bool _mapHooksRegistered = false;
-    private static bool _combatHooksRegistered = false;
-    private static bool _actionExecutorHookRegistered = false;
-    private static bool _roomEnteredHookRegistered = false;
-    private static bool _runStartedHookRegistered = false;
-
-    /// <summary>
-    /// Registers hooks that are stable for the whole session (overlay stack, etc.).
-    /// Called once when AiBridge becomes available.
-    /// </summary>
-    private static void RegisterGlobalHooks()
-    {
-        try
-        {
-            bool needsRetry = false;
-
-            // Overlay opened/closed → rewards screen, card select, game over, etc.
-            var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
-            if (!_overlayHooksRegistered && overlayStack != null)
-            {
-                // Fire when a new overlay is pushed (rewards open, card select, game over, etc.).
-                overlayStack.ChildEnteredTree += (_) => _instance?.ScheduleAI();
-                _overlayHooksRegistered = true;
-                Logger.Info("[AutoAI] Overlay hooks registered.");
-            }
-            else if (!_overlayHooksRegistered)
-            {
-                Logger.Info("[AutoAI] NOverlayStack.Instance is null – will retry hook registration.");
-                needsRetry = true;
-            }
-
-            // Map (re-)opened → player can choose a node.
-            var mapScreen = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance;
-            if (!_mapHooksRegistered && mapScreen != null)
-            {
-                mapScreen.VisibilityChanged += () => {
-                    if (mapScreen.Visible) _instance?.ScheduleAI();
-                };
-                _mapHooksRegistered = true;
-                Logger.Info("[AutoAI] MapScreen visibility hook registered.");
-            }
-            else if (!_mapHooksRegistered)
-            {
-                needsRetry = true;
-            }
-            // Register per-run hooks whenever a new run starts.
-            var rmInstance = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
-            if (rmInstance != null && !_runStartedHookRegistered) 
-            {
-                rmInstance.RunStarted += (_) => {
-                    Logger.Info("[AutoAI] RunStarted event detected. Re-registering run hooks.");
-                    _combatHooksRegistered = false;
-                    _actionExecutorHookRegistered = false;
-                    _roomEnteredHookRegistered = false;
-                    RegisterRunHooks();
-                };
-                _runStartedHookRegistered = true;
-            }
-
-            // Register per-run hooks for current run if already in progress.
-            RegisterRunHooks();
-
-            // If some singletons weren't ready yet, retry after 2 seconds via instance method.
-            if (needsRetry)
-            {
-                _instance?.GetTree()?.CreateTimer(2.0).Connect("timeout",
-                    new Callable(_instance, nameof(RetryRegisterGlobalHooks)));
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Logger.Warn($"[AutoAI] RegisterGlobalHooks error: {ex.Message}");
-        }
-    }
-
-    // Instance wrapper so Godot's timer Callable can invoke the static retry.
-    private void RetryRegisterGlobalHooks() => RegisterGlobalHooks();
-
-    /// <summary>
-    /// Registers hooks that are tied to the current run's singleton objects.
-    /// Must be called again each time a new run starts because CombatManager
-    /// and RunManager.ActionExecutor are fresh instances per run.
-    /// </summary>
-    private static void RegisterRunHooks()
-    {
-        try
-        {
-            // Combat hooks
-            var combatManager = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-            if (!_combatHooksRegistered && combatManager != null)
-            {
-                // Player's turn begins
-                combatManager.TurnStarted += (_) => _instance?.ScheduleAI();
-
-                // Action queue freed (enemy animations done, etc.)
-                combatManager.PlayerActionsDisabledChanged += (_) =>
-                {
-                    if (!combatManager.PlayerActionsDisabled)
-                        _instance?.ScheduleAI();
-                };
-
-                _combatHooksRegistered = true;
-                Logger.Info("[AutoAI] CombatManager hooks registered.");
-            }
-
-            // After each game-action finishes processing
-            var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
-            if (rm != null)
-            {
-                if (!_actionExecutorHookRegistered && rm.ActionExecutor != null)
-                {
-                    rm.ActionExecutor.AfterActionExecuted += (_) => _instance?.ScheduleAI();
-                    _actionExecutorHookRegistered = true;
-                    Logger.Info("[AutoAI] RunManager.ActionExecutor hook registered.");
-                }
-
-                if (!_roomEnteredHookRegistered)
-                {
-                    // A new room has been entered (rest site, event, merchant, treasure, etc.).
-                    rm.RoomEntered += () => {
-                        _combatHooksRegistered = false;
-                        _actionExecutorHookRegistered = false;
-                        _instance?.ScheduleAI();
-                    };
-                    _roomEnteredHookRegistered = true;
-                    Logger.Info("[AutoAI] RunManager.RoomEntered hook registered.");
-                }
-            }
-        }
-        catch (System.Exception ex)
-        {
-            Logger.Warn($"[AutoAI] RegisterRunHooks error: {ex.Message}");
-        }
-    }
 
     // -----------------------------------------------------------------------
     // Commands
@@ -480,13 +327,6 @@ public partial class MainFile : Node
 
             Logger.Info("[AutoAI] StartNewSingleplayerRun returned. Waiting 2s for scene settle...");
             await Task.Delay(2000);
-
-            // Reset per-run guards so the new run's CombatManager / ActionExecutor
-            // get their hooks registered fresh.
-            _combatHooksRegistered = false;
-            _actionExecutorHookRegistered = false;
-            _roomEnteredHookRegistered = false;
-            RegisterRunHooks();
 
             var rm    = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
             var state = rm.DebugOnlyGetState();
