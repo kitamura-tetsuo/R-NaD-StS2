@@ -30,12 +30,16 @@ def launch_game():
     # Force a clean system PATH
     env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+
     process = subprocess.Popen(
         cmd,
         cwd=game_dir,
         env=env,
-        stdout=open("/tmp/sts2_train_stdout.log", "w"),
-        stderr=open("/tmp/sts2_train_stderr.log", "w")
+        stdout=open(os.path.join(log_dir, "sts2_train_stdout.log"), "w"),
+        stderr=open(os.path.join(log_dir, "sts2_train_stderr.log"), "w")
     )
     return process
 
@@ -55,6 +59,7 @@ def wait_for_server(url, timeout=30):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--max_steps", type=int, default=1000)
+    parser.add_argument("--seed", type=str, default=None, help="Fixed seed for new games")
     args = parser.parse_args()
     
     cleanup_processes()
@@ -74,10 +79,13 @@ def main():
         requests.get("http://127.0.0.1:8081/start")
 
         # Start first run
-        logging.info("Starting new game...")
-        requests.get("http://127.0.0.1:8081/new_game")
+        logging.info(f"Starting new game{' with seed ' + args.seed if args.seed else ''}...")
+        new_game_url = "http://127.0.0.1:8081/new_game"
+        if args.seed:
+            new_game_url += f"?seed={args.seed}"
+        requests.get(new_game_url)
 
-        last_state_path = "/tmp/rnad_last_state.json"
+        last_state_path = os.path.join(os.path.dirname(__file__), "logs/rnad_last_state.json")
         
         while True:
             # Check training status
@@ -104,9 +112,12 @@ def main():
                         if content.strip() != "{}":
                             state = json.loads(content)
                             if state.get("type") == "game_over":
-                                logging.info("Game over detected. Restarting game run in 5s...")
+                                logging.info(f"Game over detected. Restarting game run{' with seed ' + args.seed if args.seed else ''} in 5s...")
                                 # time.sleep(5)
-                                requests.get("http://127.0.0.1:8081/new_game")
+                                new_game_url = "http://127.0.0.1:8081/new_game"
+                                if args.seed:
+                                    new_game_url += f"?seed={args.seed}"
+                                requests.get(new_game_url)
                                 # Remove the game_over state so we don't spam restarts
                                 os.remove(last_state_path)
                 except Exception:

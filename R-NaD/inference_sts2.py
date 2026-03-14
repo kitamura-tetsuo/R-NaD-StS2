@@ -19,7 +19,11 @@ def play_game(seed=None):
     print(f"=== Starting R-NaD Inference (Headed) Seed={seed} ===")
     cleanup_processes()
     
-    last_state_path = "/tmp/rnad_last_state.json"
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+    
+    last_state_path = os.path.join(log_dir, "rnad_last_state.json")
     if os.path.exists(last_state_path):
         os.remove(last_state_path)
 
@@ -32,8 +36,8 @@ def play_game(seed=None):
     process = subprocess.Popen(
         ["/bin/bash", "./launch.sh"],
         cwd=root_dir,
-        stdout=open("/tmp/sts2_inference_stdout.log", "w"),
-        stderr=open("/tmp/sts2_inference_stderr.log", "w")
+        stdout=open(os.path.join(log_dir, "sts2_inference_stdout.log"), "w"),
+        stderr=open(os.path.join(log_dir, "sts2_inference_stderr.log"), "w")
     )
     
     try:

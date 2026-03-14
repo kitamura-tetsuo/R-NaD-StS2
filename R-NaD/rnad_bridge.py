@@ -4,28 +4,68 @@ import time
 
 # Ensure stdout/stderr are unbuffered and also log to a file
 import io
-LOG_FILE = "/tmp/rnad_bridge.log"
-log_handle = open(LOG_FILE, "a", buffering=1) # line buffered
+BRIDGE_DIR = "/home/ubuntu/src/R-NaD-StS2/R-NaD"
+LOG_DIR = os.path.join(BRIDGE_DIR, "logs")
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_FILE = os.path.join(LOG_DIR, "rnad_bridge.log")
+MAX_LOG_SIZE = 10 * 1024 * 1024 # 10MB
+BACKUP_COUNT = 3
 
 class Logger:
-    def __init__(self, original, file_handle):
+    def __init__(self, original, filename):
         self.original = original
-        self.file_handle = file_handle
+        self.filename = filename
+        self.file_handle = open(filename, "a", buffering=1)
+        self.lock = threading.Lock()
+
+    def _rotate_logs(self):
+        self.file_handle.close()
+        for i in range(BACKUP_COUNT - 1, 0, -1):
+            src = f"{self.filename}.{i}"
+            dst = f"{self.filename}.{i+1}"
+            if os.path.exists(src):
+                if os.path.exists(dst):
+                    os.remove(dst)
+                os.rename(src, dst)
+        
+        if os.path.exists(self.filename):
+            os.rename(self.filename, f"{self.filename}.1")
+            
+        self.file_handle = open(self.filename, "w", buffering=1)
+
     def write(self, message):
         if self.original:
             self.original.write(message)
-        self.file_handle.write(message)
-        self.file_handle.flush()
+        
+        with self.lock:
+            try:
+                if os.path.exists(self.filename) and os.path.getsize(self.filename) > MAX_LOG_SIZE:
+                    self._rotate_logs()
+                self.file_handle.write(message)
+                self.file_handle.flush()
+            except Exception as e:
+                # Fallback to original if file write fails, avoid infinite loops
+                if self.original:
+                    self.original.write(f"\n[Logger Error] {e}\n")
+
     def flush(self):
         if self.original:
             self.original.flush()
-        self.file_handle.flush()
+        with self.lock:
+            try:
+                self.file_handle.flush()
+            except:
+                pass
 
 if not hasattr(sys.stdout, "is_rnad_logger"):
-    sys.stdout = Logger(sys.stdout, log_handle)
-    sys.stderr = Logger(sys.stderr, log_handle)
-    # Using a list to avoid attribute error on some builtin streams if they don't allow setting attributes
-    # but sys.stdout usually does. Or better, just check type.
+    # Note: threading is imported later, but we need it for the lock.
+    # Actually, the bridge imports it at line 67. We should move the logger setup
+    # after the essential imports or ensure threading is available.
+    import threading 
+    sys.stdout = Logger(sys.stdout, LOG_FILE)
+    sys.stderr = Logger(sys.stderr, LOG_FILE)
     sys.stdout.is_rnad_logger = True
 
 def log(msg):
@@ -326,18 +366,22 @@ def encode_state(state):
         vec[2] = player.get("block", 0) / 100.0
     return vec # Return numpy for easier handling before jnp
 
-def compute_reward(state, next_state_type=None):
-    # Intermediate reward: floor progression
-    floor = state.get("floor", 0)
-    reward = floor * 0.01
+def compute_reward(state, state_type=None):
+    """Compute the reward for the current state.
+    This is now a final reward: returns 0.0 unless the state is game_over.
+    """
+    if state_type != "game_over":
+        return 0.0
     
-    # Terminal rewards
-    if next_state_type == "game_over":
-        victory = state.get("victory", False)
-        if victory:
-            reward += 1.0
-        else:
-            reward -= 1.0
+    # Final reward: floor progression (normalized) + victory/defeat bonus
+    floor = state.get("floor", 0)
+    victory = state.get("victory", False)
+    
+    reward = floor / 50.0
+    if victory:
+        reward += 1.0
+    else:
+        reward -= 1.0
             
     return reward
 
@@ -411,12 +455,14 @@ def predict_action(state_json):
             # Reset the flag when we see any gameplay state.
             if not getattr(predict_action, 'episode_end_recorded', False):
                 floor = state.get("floor", 1)
-                reward = getattr(predict_action, 'session_cumulative_reward', 0.0)
-                log(f"Episode end detected at floor {floor}, reward {reward:.2f}. Recording...")
+                # Ensure we include the terminal reward in the logged metric
+                terminal_reward = compute_reward(state, state_type)
+                total_reward = getattr(predict_action, 'session_cumulative_reward', 0.0) + terminal_reward
+                log(f"Episode end detected at floor {floor}, final reward {total_reward:.2f}. Recording...")
                 if training_worker:
-                    training_worker.record_episode_end(floor, reward)
+                    training_worker.record_episode_end(floor, total_reward)
                 predict_action.episode_end_recorded = True
-                # Reset reward for next episode
+                # Reset reward for next episode (will be reset below too, but safe)
                 predict_action.session_cumulative_reward = 0.0
         elif state_type in ["combat", "map", "rewards", "event", "rest_site", "shop", "treasure"]:
             predict_action.episode_end_recorded = False
@@ -429,9 +475,10 @@ def predict_action(state_json):
 
         log(f"predict_action called. state_type: {state_type}, command_queue size: {command_queue.qsize()}")
         
-        # Debug: write last state to a temporary file for monitoring
+        # Debug: write last state to a local file for monitoring
         try:
-            with open("/tmp/rnad_last_state.json", "w") as f:
+            last_state_path = os.path.join(LOG_DIR, "rnad_last_state.json")
+            with open(last_state_path, "w") as f:
                 f.write(state_json)
         except:
             pass
@@ -673,7 +720,10 @@ class CommandHandler(BaseHTTPRequestHandler):
         elif parsed_path.path == "/screenshot":
             global pending_screenshot, screenshot_done_event
             timestamp = int(time.time())
-            path = f"/home/ubuntu/src/R-NaD-StS2/tmp/screenshot_{timestamp}.png"
+            screenshot_dir = os.path.join(LOG_DIR, "screenshots")
+            if not os.path.exists(screenshot_dir):
+                os.makedirs(screenshot_dir, exist_ok=True)
+            path = os.path.join(screenshot_dir, f"screenshot_{timestamp}.png")
             pending_screenshot = path
             screenshot_done_event.clear()
             
