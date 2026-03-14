@@ -480,6 +480,7 @@ def predict_action(state_json):
                 # Reset reward for next episode (will be reset below too, but safe)
                 predict_action.session_cumulative_reward = 0.0
             predict_action.skipped_reward_indices = set()
+            predict_action.last_processed_floor = -1
         elif state_type in ["combat", "map", "event", "rest_site", "shop", "treasure"]:
             predict_action.episode_end_recorded = False
             # Ensure cumulative reward is initialized
@@ -497,6 +498,7 @@ def predict_action(state_json):
             predict_action.session_cumulative_reward = 0.0
             predict_action.episode_end_recorded = False
             predict_action.skipped_reward_indices = set()
+            predict_action.last_processed_floor = -1
 
         log(f"predict_action called. state_type: {state_type}, command_queue size: {command_queue.qsize()}")
         
@@ -581,7 +583,29 @@ def predict_action(state_json):
 
         # Trajectory collection
         if learning_active:
-            reward = compute_reward(state, state_type)
+            base_reward = compute_reward(state, state_type)
+            
+            # Intermediate reward for floor progression
+            intermediate_reward = 0.0
+            current_floor = state.get("floor", 0)
+            last_processed_floor = getattr(predict_action, 'last_processed_floor', -1)
+            
+            if current_floor > last_processed_floor and last_processed_floor != -1:
+                # Calculate HP * 0.0000001
+                hp = 0
+                if "player" in state:
+                    hp = state["player"].get("hp", 0)
+                elif "hp" in state: # Some state types might have HP at top level
+                    hp = state.get("hp", 0)
+                
+                intermediate_reward = hp * 0.0000001
+                log(f"Intermediate reward for floor {current_floor}: {intermediate_reward:.10f} (HP: {hp})")
+                predict_action.last_processed_floor = current_floor
+            elif last_processed_floor == -1 and current_floor > 0:
+                # Initialize last_processed_floor at the start of the game
+                predict_action.last_processed_floor = current_floor
+
+            reward = base_reward + intermediate_reward
             
             # Accumulate session reward
             if not hasattr(predict_action, 'session_cumulative_reward'):
