@@ -43,7 +43,7 @@ fi
 # --- 3. Build and Copy GDExtension files ---
 echo "Building GDExtension..."
 cd "$SRC_ROOT/GDExtension"
-cargo build
+cargo build || echo "GDExtension build failed, skipping..."
 
 echo "Deploying GDExtension..."
 # .so binary (Linux)

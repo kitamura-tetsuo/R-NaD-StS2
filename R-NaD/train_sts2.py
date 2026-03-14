@@ -20,7 +20,8 @@ def cleanup_processes():
 def launch_game():
     logging.info("Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
-    cmd = ["./SlayTheSpire2", "--verbose"]
+    cmd = ["./SlayTheSpire2", "--gym"]
+    # cmd = ["./SlayTheSpire2", "--verbose", "--gym"]
     env = os.environ.copy()
     keys_to_remove = [k for k in env if k.startswith("PYTHON") or k.startswith("VIRTUAL_ENV") or k.startswith("LD_") or k.startswith("CONDA_")]
     for k in keys_to_remove:
