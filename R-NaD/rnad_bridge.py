@@ -326,14 +326,20 @@ def load_model(checkpoint_path=None):
     except Exception as e:
         print(f"[Python] Warning: Failed to initialize MLflow: {e}")
     
-    # If no checkpoint_path is provided, try to find the latest one
+    # If no checkpoint_path is provided, try RNAD_CHECKPOINT env var then auto-detect
+    if checkpoint_path is None:
+        checkpoint_path = os.environ.get("RNAD_CHECKPOINT")
+        if checkpoint_path:
+            print(f"[Python] Using checkpoint from environment variable: {checkpoint_path}")
+
     if checkpoint_path is None:
         checkpoint_dir = "/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints"
         if os.path.exists(checkpoint_dir):
             import glob
             import re
             
-            checkpoints = glob.glob(os.path.join(checkpoint_dir, "checkpoint_*.pkl"))
+            # Search recursively for checkpoints because ExperimentManager saves them in subdirs
+            checkpoints = glob.glob(os.path.join(checkpoint_dir, "**", "checkpoint_*.pkl"), recursive=True)
             if checkpoints:
                 # Extract step number and find the max
                 def get_step(path):
@@ -345,8 +351,13 @@ def load_model(checkpoint_path=None):
                 print(f"[Python] Auto-detected latest checkpoint: {checkpoint_path}")
 
     if checkpoint_path and os.path.exists(checkpoint_path):
-        step = learner.load_checkpoint(checkpoint_path)
-        print(f"[Python] Loaded JAX model from {checkpoint_path} at step {step}")
+        try:
+            step = learner.load_checkpoint(checkpoint_path)
+            print(f"[Python] Loaded JAX model from {checkpoint_path} at step {step}")
+        except Exception as e:
+            print(f"[Python] Error loading checkpoint {checkpoint_path}: {e}")
+            learner.init(rng_key)
+            print("[Python] Falling back to new JAX model initialization")
     else:
         learner.init(rng_key)
         print("[Python] Initialized new JAX model")
