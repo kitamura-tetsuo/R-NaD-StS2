@@ -44,7 +44,7 @@ class RNaDConfig(NamedTuple):
     hidden_size: int = 256
     num_blocks: int = 4
     log_interval: int = 1
-    save_interval: int = 1000
+    save_interval: int = 10
     unroll_length: int = 200
     model_type: str = "transformer" # "mlp" or "transformer"
     num_heads: int = 4

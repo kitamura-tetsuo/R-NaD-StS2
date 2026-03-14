@@ -171,6 +171,11 @@ class TrainingWorker(threading.Thread):
         self.batch_buffer = []
         self.running = True
         self.step_count = 0
+        self.episode_last_floors = []
+        self.episode_last_rewards = []
+        self.last_known_mean_floor = None
+        self.last_known_mean_reward = None
+        self.lock = threading.Lock()
 
     def run(self):
         print("[Python] TrainingWorker started.")
@@ -187,6 +192,12 @@ class TrainingWorker(threading.Thread):
                 continue
             except Exception as e:
                 print(f"[Python] Error in TrainingWorker: {e}")
+
+    def record_episode_end(self, floor, reward):
+        with self.lock:
+            self.episode_last_floors.append(floor)
+            self.episode_last_rewards.append(reward)
+            print(f"[Python] Recorded episode end at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_last_floors)}")
 
     def perform_update(self):
         # Convert buffer of trajectories to a single batch
@@ -205,9 +216,30 @@ class TrainingWorker(threading.Thread):
         }
 
         metrics = self.learner.update(batch, self.step_count)
+        
+        # Add mean last floor/reward if we have data
+        with self.lock:
+            if self.episode_last_floors:
+                # Calculate mean of episodes that ended since last update
+                self.last_known_mean_floor = sum(self.episode_last_floors) / len(self.episode_last_floors)
+                self.last_known_mean_reward = sum(self.episode_last_rewards) / len(self.episode_last_rewards)
+                self.episode_last_floors = [] # Clear for next update
+                self.episode_last_rewards = []
+            
+            # Report the last known means to keep metrics visible in MLflow
+            if self.last_known_mean_floor is not None:
+                metrics['mean_last_floor'] = self.last_known_mean_floor
+            if self.last_known_mean_reward is not None:
+                metrics['mean_last_reward'] = self.last_known_mean_reward
+
         self.step_count += 1
         
-        print(f"[Python] Training Step {self.step_count}: Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}")
+        log_msg = f"[Python] Training Step {self.step_count}: Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}"
+        if 'mean_last_floor' in metrics:
+            log_msg += f", Mean Last Floor={metrics['mean_last_floor']:.2f}"
+        if 'mean_last_reward' in metrics:
+            log_msg += f", Mean Last Reward={metrics['mean_last_reward']:.2f}"
+        print(log_msg)
         
         if self.experiment_manager:
             self.experiment_manager.log_metrics(self.step_count, metrics)
@@ -372,6 +404,29 @@ def predict_action(state_json):
     try:
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
+        
+        # Track episode end for mean last floor calculation
+        if state_type == "game_over":
+            # Use a flag to record only once per game_over screen. 
+            # Reset the flag when we see any gameplay state.
+            if not getattr(predict_action, 'episode_end_recorded', False):
+                floor = state.get("floor", 1)
+                reward = getattr(predict_action, 'session_cumulative_reward', 0.0)
+                log(f"Episode end detected at floor {floor}, reward {reward:.2f}. Recording...")
+                if training_worker:
+                    training_worker.record_episode_end(floor, reward)
+                predict_action.episode_end_recorded = True
+                # Reset reward for next episode
+                predict_action.session_cumulative_reward = 0.0
+        elif state_type in ["combat", "map", "rewards", "event", "rest_site", "shop", "treasure"]:
+            predict_action.episode_end_recorded = False
+            # Ensure cumulative reward is initialized
+            if not hasattr(predict_action, 'session_cumulative_reward'):
+                predict_action.session_cumulative_reward = 0.0
+        elif state_type in ["main_menu", "none"]:
+            predict_action.session_cumulative_reward = 0.0
+            predict_action.episode_end_recorded = False
+
         log(f"predict_action called. state_type: {state_type}, command_queue size: {command_queue.qsize()}")
         
         # Debug: write last state to a temporary file for monitoring
@@ -454,6 +509,12 @@ def predict_action(state_json):
         # Trajectory collection
         if learning_active:
             reward = compute_reward(state, state_type)
+            
+            # Accumulate session reward
+            if not hasattr(predict_action, 'session_cumulative_reward'):
+                predict_action.session_cumulative_reward = 0.0
+            predict_action.session_cumulative_reward += reward
+
             current_trajectory.append({
                 "obs": state_vec,
                 "act": int(action_idx),

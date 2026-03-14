@@ -5,8 +5,23 @@ import logging
 
 class ExperimentManager:
     def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str = None, log_checkpoints: bool = False):
+        # Ensure logs go to the project root regardless of CWD
+        mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
         mlflow.set_experiment(experiment_name=experiment_name)
         self.log_checkpoints = log_checkpoints
+
+        # If no specific run_id is provided, try to resume the latest run from this experiment
+        if not run_id and not mlflow.active_run():
+            experiment = mlflow.get_experiment_by_name(experiment_name)
+            if experiment:
+                try:
+                    # Search for the most recently started run in this experiment
+                    runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["attributes.start_time DESC"], max_results=1)
+                    if not runs.empty:
+                        run_id = runs.iloc[0].run_id
+                        logging.info(f"Resuming latest MLflow run: {run_id}")
+                except Exception as e:
+                    logging.warning(f"Failed to search for existing runs: {e}")
 
         # Start a run explicitly if not already active
         if run_id:
@@ -22,6 +37,7 @@ class ExperimentManager:
             mlflow.start_run()
 
         self.run_id = mlflow.active_run().info.run_id
+
 
         # We save checkpoints using run_id to avoid conflicts
         self.checkpoint_dir = os.path.abspath(os.path.join(checkpoint_dir, self.run_id))
