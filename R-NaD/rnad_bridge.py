@@ -87,20 +87,23 @@ jnp = None
 np = None
 RNaDLearner = None
 RNaDConfig = None
+ExperimentManager = None
 
 def do_deferred_imports():
-    global jax, jnp, np, RNaDLearner, RNaDConfig
+    global jax, jnp, np, RNaDLearner, RNaDConfig, ExperimentManager
     if jax is None:
         import numpy as np_mod
         import jax as jax_mod
         import jax.numpy as jnp_mod
         from src.rnad import RNaDLearner as Learner, RNaDConfig as Config
+        from experiment import ExperimentManager as ExpManager
         
         jax = jax_mod
         jnp = jnp_mod
         np = np_mod
         RNaDLearner = Learner
         RNaDConfig = Config
+        ExperimentManager = ExpManager
         print("[Python] Deferred imports completed.")
 
 # Global state
@@ -160,10 +163,11 @@ def mark_screenshot_done():
     return True
 
 class TrainingWorker(threading.Thread):
-    def __init__(self, learner, config):
+    def __init__(self, learner, config, experiment_manager=None):
         super().__init__(daemon=True)
         self.learner = learner
         self.config = config
+        self.experiment_manager = experiment_manager
         self.batch_buffer = []
         self.running = True
         self.step_count = 0
@@ -205,10 +209,20 @@ class TrainingWorker(threading.Thread):
         
         print(f"[Python] Training Step {self.step_count}: Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}")
         
+        if self.experiment_manager:
+            self.experiment_manager.log_metrics(self.step_count, metrics)
+
         if self.step_count % 10 == 0:
             checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_{self.step_count}.pkl"
+            if self.experiment_manager:
+                # Use experiment-specific subdir if possible
+                checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_{self.step_count}.pkl")
+            
             self.learner.save_checkpoint(checkpoint_path, self.step_count)
             print(f"[Python] Saved checkpoint to {checkpoint_path}")
+            
+            if self.experiment_manager:
+                self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
 
 training_worker = None
 
@@ -229,6 +243,15 @@ def load_model(checkpoint_path=None):
     )
     learner = RNaDLearner(state_dim, num_actions, config)
     rng_key = jax.random.PRNGKey(42)
+
+    # Initialize ExperimentManager
+    exp_manager = None
+    try:
+        exp_manager = ExperimentManager(experiment_name="R-NaD-StS2", log_checkpoints=True)
+        exp_manager.log_params(config)
+        print(f"[Python] MLflow initialized. Run ID: {exp_manager.run_id}")
+    except Exception as e:
+        print(f"[Python] Warning: Failed to initialize MLflow: {e}")
     
     # If no checkpoint_path is provided, try to find the latest one
     if checkpoint_path is None:
@@ -257,7 +280,7 @@ def load_model(checkpoint_path=None):
     
     # Start training worker if learning behavior is expected
     if training_worker is None:
-        training_worker = TrainingWorker(learner, config)
+        training_worker = TrainingWorker(learner, config, experiment_manager=exp_manager)
         training_worker.start()
 
 def encode_state(state):
@@ -376,7 +399,7 @@ def predict_action(state_json):
         mask_jnp = jnp.array(mask)
         
         # Inference
-        logits, value = learner.network.apply(learner.params, rng_key, state_vec[None, :])
+        logits, value = learner.network.apply(learner.params, None, state_vec[None, :])
         
         # Apply Masking
         # Set illegal actions to a very low value before softmax
