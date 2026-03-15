@@ -282,10 +282,13 @@ public partial class MainFile : Node
         if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom combatRoom)
         {
             var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase || cm.PlayerActionsDisabled) 
+            bool queueProcessing = rm.ActionQueueSet != null && !rm.ActionQueueSet.IsEmpty;
+
+            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase || cm.PlayerActionsDisabled || queueProcessing) 
             {
-                // Only log if it's been a while or debug is on
-                // Logger.Info($"[AutoAI] combat_waiting: cm={(cm==null?"null":"exists")}, IsInProgress={cm?.IsInProgress}, IsPlayPhase={cm?.IsPlayPhase}, Disabled={cm?.PlayerActionsDisabled}");
+                if (queueProcessing) {
+                    Logger.Info("[AutoAI] combat_waiting: ActionQueue is not empty. Waiting for execution.");
+                }
                 return "{\"type\":\"combat_waiting\"}";
             }
 
