@@ -169,6 +169,106 @@ current_seed = os.environ.get("RNAD_SEED")
 if current_seed:
     log(f"Initialized current_seed from environment: {current_seed}")
 
+# Card Vocabulary Mapping
+CARD_VOCAB = {
+    "UNKNOWN": 0,
+    "STRIKE_IRONCLAD": 1,
+    "DEFEND_IRONCLAD": 2,
+    "BASH": 3,
+    "ANGER": 4,
+    "BODY_SLAM": 5,
+    "CLASH": 6,
+    "CLEAVE": 7,
+    "CLOTHESLINE": 8,
+    "FLEX": 9,
+    "HAVOC": 10,
+    "IRON_WAVE": 11,
+    "PERFECTED_STRIKE": 12,
+    "POMMEL_STRIKE": 13,
+    "SHRUG_IT_OFF": 14,
+    "SWORD_BOOMERANG": 15,
+    "THUNDER_CLAP": 16,
+    "TRUE_GRIT": 17,
+    "TWIN_STRIKE": 18,
+    "WARCRY": 19,
+    "WILD_STRIKE": 20,
+    "ARMAMENTS": 21,
+    "BLOOD_FOR_BLOOD": 22,
+    "BLOOD_LETTING": 23,
+    "BURNING_BARRIER": 24, # StS2 specific?
+    "CARNAGE": 25,
+    "COMBUST": 26,
+    "DARK_EMBRACE": 27,
+    "DISARM": 28,
+    "DUAL_WIELD": 29,
+    "ENTRENCH": 30,
+    "EVOLVE": 31,
+    "FEEL_THE_BURN": 32,
+    "FIRE_BREATHING": 33,
+    "FLAME_BARRIER": 34,
+    "GHOSTLY_ARMOR": 35,
+    "HEMOKINESIS": 36,
+    "INFERNAL_BLADE": 37,
+    "INFLAME": 38,
+    "INTIMIDATE": 39,
+    "METALLICIZE": 40,
+    "POWER_THROUGH": 41,
+    "PUMMEL": 42,
+    "RAGE": 43,
+    "RAMPAGE": 44,
+    "RECKLESS_CHARGE": 45,
+    "RUPTURE": 46,
+    "SEARING_BLOW": 47,
+    "SECOND_WIND": 48,
+    "SEEING_RED": 49,
+    "SENTINEL": 50,
+    "SEVER_SOUL": 51,
+    "SHOCKWAVE": 52,
+    "SPOT_WEAKNESS": 53,
+    "UPPERCUT": 54,
+    "WHIRLWIND": 55,
+    "BARRICADE": 56,
+    "BERSERK": 57,
+    "BRUTALITY": 58,
+    "CORRUPTION": 59,
+    "DEMON_FORM": 60,
+    "DOUBLE_TAP": 61,
+    "EXHUME": 62,
+    "FEED": 63,
+    "FIEND_FIRE": 64,
+    "HEAL": 65,
+    "IMMOLATE": 66,
+    "IMPERVIOUS": 67,
+    "JUGGERNAUT": 68,
+    "LIMIT_BREAK": 69,
+    "OFFERING": 70,
+    "REAPER": 71,
+    "SLIMED": 72,
+    "DAZED": 73,
+    "VOID": 74,
+    "BURN": 75,
+    "WOUND": 76,
+    "ASCENDERS_BANE": 77
+}
+VOCAB_SIZE = 100 # Fixed size to allow for new cards
+
+def get_card_idx(card_id):
+    if not card_id: return 0
+    # Clean up (e.g., remove name suffixes if any)
+    cid = card_id.split('+')[0].strip()
+    return CARD_VOCAB.get(cid, 0)
+
+def encode_bow(card_ids):
+    do_deferred_imports()
+    assert np is not None
+    vec = np.zeros(VOCAB_SIZE, dtype=np.float32)
+    if not card_ids: return vec
+    for cid in card_ids:
+        idx = get_card_idx(cid)
+        if idx < VOCAB_SIZE:
+            vec[idx] += 1.0
+    return vec
+
 # Config placeholder (will be initialized in load_model)
 # config = None # Removed as it's handled by the preservation logic above
 # learner = None # Removed as it's handled by the preservation logic above
@@ -215,8 +315,8 @@ class TrainingWorker(threading.Thread):
         self.step_count = 0
         self.episode_last_floors = []
         self.episode_last_rewards = []
-        self.last_known_mean_floor = None
-        self.last_known_mean_reward = None
+        self.last_known_mean_floor: float | None = None
+        self.last_known_mean_reward: float | None = None
         self.lock = threading.Lock()
 
     def run(self):
@@ -242,6 +342,10 @@ class TrainingWorker(threading.Thread):
             print(f"[Python] Recorded episode end at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_last_floors)}")
 
     def perform_update(self):
+        do_deferred_imports()
+        assert np is not None
+        assert jnp is not None
+        
         # Transpose to (T, B, ...)
         # Trajectories might have different lengths, so we pad them
         max_len = self.config.unroll_length
@@ -249,6 +353,10 @@ class TrainingWorker(threading.Thread):
         padded_obs_dict = {
             "global": [],
             "combat": [],
+            "draw_bow": [],
+            "discard_bow": [],
+            "exhaust_bow": [],
+            "master_bow": [],
             "map": [],
             "event": [],
             "state_type": []
@@ -263,7 +371,7 @@ class TrainingWorker(threading.Thread):
             l = len(traj)
             
             # obs_traj is a list of dicts
-            obs_traj = [t['obs'] for t in traj]
+            obs_traj = [t['obs'] for t in (traj if isinstance(traj, list) else [])]
             
             # Pad each element in the dict
             for key in padded_obs_dict.keys():
@@ -382,11 +490,16 @@ def load_model(checkpoint_path=None):
     # Updated dummy state for structured dictionary input
     dummy_obs = {
         "global": jnp.zeros((1, 32)),
-        "combat": jnp.zeros((1, 128)),
+        "combat": jnp.zeros((1, 256)),
         "map": jnp.zeros((1, 64)),
         "event": jnp.zeros((1, 64)),
         "state_type": jnp.zeros((1,), dtype=jnp.int32)
     }
+    do_deferred_imports()
+    assert RNaDLearner is not None
+    assert jax is not None
+    assert ExperimentManager is not None
+    
     learner = RNaDLearner(None, num_actions, config) # state_dim is now unused/ignored in init
     rng_key = jax.random.PRNGKey(42)
 
@@ -441,6 +554,8 @@ def load_model(checkpoint_path=None):
         training_worker.start()
 
 def encode_state(state):
+    do_deferred_imports()
+    assert np is not None
     """Encodes the game state into a structured dictionary of NumPy arrays."""
     state_type = state.get("type", "unknown")
     
@@ -482,34 +597,51 @@ def encode_state(state):
         if potions[i].get("id") != "empty":
             global_vec[10 + i] = 1.0
             
-    # --- Combat Features (Size 128) ---
-    combat_vec = np.zeros(128, dtype=np.float32)
+    # --- Combat Features (Size 256) ---
+    combat_vec = np.zeros(256, dtype=np.float32)
+    draw_bow = np.zeros(VOCAB_SIZE, dtype=np.float32)
+    discard_bow = np.zeros(VOCAB_SIZE, dtype=np.float32)
+    exhaust_bow = np.zeros(VOCAB_SIZE, dtype=np.float32)
+    master_bow = np.zeros(VOCAB_SIZE, dtype=np.float32)
+
     if st_idx == 0:
-        # Pile counts
-        combat_vec[0] = player.get("drawPileCount", 0) / 30.0
-        combat_vec[1] = player.get("discardPileCount", 0) / 30.0
-        combat_vec[2] = player.get("exhaustPileCount", 0) / 30.0
+        # Piles
+        draw_bow = encode_bow(player.get("drawPile", []))
+        discard_bow = encode_bow(player.get("discardPile", []))
+        exhaust_bow = encode_bow(player.get("exhaustPile", []))
+        master_bow = encode_bow(player.get("masterDeck", []))
+
+        # Pile counts for legacy/redundancy
+        combat_vec[0] = len(player.get("drawPile", [])) / 30.0
+        combat_vec[1] = len(player.get("discardPile", [])) / 30.0
+        combat_vec[2] = len(player.get("exhaustPile", [])) / 30.0
         
-        # Hand cards (up to 10 cards, 5 features each)
+        # Hand cards (up to 10 cards, 10 features each)
         hand = state.get("hand", [])
         for i in range(min(len(hand), 10)):
             card = hand[i]
-            base_idx = 10 + i * 5
-            name_sum = sum(ord(c) for c in card.get("id", ""))
-            combat_vec[base_idx] = (name_sum % 100) / 100.0
+            base_idx = 10 + i * 10
+            # Card ID index for embedding
+            combat_vec[base_idx] = get_card_idx(card.get("id", ""))
             combat_vec[base_idx + 1] = 1.0 if card.get("isPlayable") else 0.0
             
             target_type = card.get("targetType", "None")
             tt_map = {"SingleEnemy": 1, "AllEnemy": 2, "RandomEnemy": 3, "None": 0, "Self": 4}
             combat_vec[base_idx + 2] = tt_map.get(target_type, 0) / 10.0
             combat_vec[base_idx + 3] = card.get("cost", 0) / 5.0
-            combat_vec[base_idx + 4] = 1.0 if card.get("upgraded") else 0.0
+            combat_vec[base_idx + 4] = card.get("baseDamage", 0) / 20.0
+            combat_vec[base_idx + 5] = card.get("baseBlock", 0) / 20.0
+            combat_vec[base_idx + 6] = card.get("magicNumber", 0) / 10.0
+            combat_vec[base_idx + 7] = 1.0 if card.get("upgraded") else 0.0
+            combat_vec[base_idx + 8] = card.get("currentDamage", 0) / 50.0
+            combat_vec[base_idx + 9] = card.get("currentBlock", 0) / 50.0
 
         # Enemies (up to 5 enemies, 12 features each)
+        # Offset to 110 to avoid overlap with hand cards
         enemies = state.get("enemies", [])
         for i in range(min(len(enemies), 5)):
             enemy = enemies[i]
-            base_idx = 60 + i * 12
+            base_idx = 110 + i * 12
             combat_vec[base_idx] = 1.0 # Alive
             combat_vec[base_idx + 1] = enemy.get("hp", 0) / 200.0
             combat_vec[base_idx + 2] = enemy.get("maxHp", 1) / 200.0
@@ -563,9 +695,8 @@ def encode_state(state):
                 base_idx = i * 4
                 event_vec[base_idx] = 1.0 # Presence flag
                 
-                # Card ID hash
-                name_sum = sum(ord(c) for c in card.get("id", ""))
-                event_vec[base_idx + 1] = (name_sum % 100) / 100.0
+                # Card ID index
+                event_vec[base_idx + 1] = get_card_idx(card.get("id", ""))
                 
                 event_vec[base_idx + 2] = 1.0 if card.get("upgraded") else 0.0
                 event_vec[base_idx + 3] = card.get("cost", 0) / 5.0
@@ -576,6 +707,10 @@ def encode_state(state):
     return {
         "global": global_vec,
         "combat": combat_vec,
+        "draw_bow": draw_bow,
+        "discard_bow": discard_bow,
+        "exhaust_bow": exhaust_bow,
+        "master_bow": master_bow,
         "map": map_vec,
         "event": event_vec,
         "state_type": np.int32(st_idx)
@@ -601,6 +736,9 @@ def compute_reward(state, state_type=None):
     return reward
 
 def get_action_mask(state, masked_reward_indices=None):
+    do_deferred_imports()
+    assert np is not None
+    assert jnp is not None
     mask = np.zeros(100, dtype=bool)
     state_type = state.get("type", "unknown")
     
@@ -718,6 +856,9 @@ def get_action_mask(state, masked_reward_indices=None):
     return mask
 
 def predict_action(state_json):
+    do_deferred_imports()
+    assert np is not None
+    assert jnp is not None
     global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key
     
     try:
@@ -794,6 +935,9 @@ def predict_action(state_json):
         # Calculate Action Mask
         masked_rewards = getattr(predict_action, 'skipped_reward_indices', set())
         mask = get_action_mask(state, masked_reward_indices=masked_rewards)
+        do_deferred_imports()
+        assert np is not None
+        assert jnp is not None
         mask_jnp = jnp.array(mask)
         
         # Prepare dictionary with leading batch dimensions for inference

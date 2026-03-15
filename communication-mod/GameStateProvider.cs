@@ -1,6 +1,8 @@
 using Godot;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Text.Json;
 
 namespace communication_mod;
 
@@ -293,29 +295,37 @@ public partial class MainFile : Node
                 return "{\"type\":\"combat_waiting\"}";
             }
 
-            // Check if hand is in selection mode (e.g., Armaments)
-            var hand = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
-            if (hand != null)
+            var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
+            var pState = player?.PlayerCombatState;
+
+            // Diagnostic: Log card properties once
+            if (!_diagnosed && pState?.Hand.Cards.Count > 0)
             {
-                var upgradePreviewField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_upgradePreviewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var upgradePreview = upgradePreviewField?.GetValue(hand) as CanvasItem;
-                
-                var simplePreviewField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectedHandCardContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var simplePreview = simplePreviewField?.GetValue(hand) as CanvasItem;
-
-                var confirmBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectModeConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var confirmBtn = confirmBtnField?.GetValue(hand) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
-
-                // Use the explicit Mode enum to distinguish between normal play and selection screens
-                // Mode 2 = SimpleSelect, Mode 3 = UpgradeSelect (based on decompiled enum)
-                bool isSelectionMode = hand.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.SimpleSelect || 
-                                     hand.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.UpgradeSelect;
-
-                if (isSelectionMode || hand.IsInCardSelection)
+                var card = pState.Hand.Cards[0];
+                Logger.Info($"[AutoAI] Diagnosing card properties for {card.GetType().FullName}");
+                foreach (var prop in card.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
                 {
-                    Logger.Info($"[AutoAI] hand_selection detected: Mode={hand.CurrentMode}, IsInCardSelection={hand.IsInCardSelection}");
+                    try {
+                        Logger.Info($"[AutoAI] Property: {prop.Name} Value: {prop.GetValue(card)}");
+                    } catch {}
+                }
+                _diagnosed = true;
+            }
+
+            // Check if hand is in selection mode (e.g., Armaments, Grid selection in combat)
+            var handNode = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
+            if (handNode != null)
+            {
+                var confirmBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectModeConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var confirmBtn = confirmBtnField?.GetValue(handNode) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+
+                bool isSelectionMode = handNode.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.SimpleSelect || 
+                                     handNode.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.UpgradeSelect;
+
+                if (isSelectionMode || handNode.IsInCardSelection)
+                {
                     var cards = new List<object>();
-                    var activeHolders = hand.ActiveHolders;
+                    var activeHolders = handNode.ActiveHolders;
                     for (int i = 0; i < activeHolders.Count; i++)
                     {
                         var holder = activeHolders[i];
@@ -327,31 +337,18 @@ public partial class MainFile : Node
 
                     bool isConfirming = confirmBtn != null && confirmBtn.IsVisibleInTree() && confirmBtn.IsEnabled;
                     
-                    if (confirmBtn != null && confirmBtn.IsVisibleInTree())
-                    {
-                        var selectedCardsField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectedCards", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                        var selectedCards = selectedCardsField?.GetValue(hand) as System.Collections.IEnumerable;
-                        int count = 0;
-                        if (selectedCards != null) foreach (var c in selectedCards) count++;
-
-                        // Logger.Info($"[AutoAI] hand confirmBtn: Enabled={confirmBtn.IsEnabled} Peeking={hand.PeekButton.IsPeeking} count={count}");
-                    }
-
                     return System.Text.Json.JsonSerializer.Serialize(new
                     {
                         type = "hand_selection",
                         floor = runState.TotalFloor,
                         cards = cards,
                         is_confirming = isConfirming,
-                        mode = hand.CurrentMode.ToString()
+                        mode = handNode.CurrentMode.ToString()
                     }, JsonOptions);
                 }
             }
 
             if (cm.PlayerActionsDisabled) return "{\"type\":\"combat_waiting\"}";
-
-            var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
-            var pState = player?.PlayerCombatState;
 
             var combatNode = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
             bool canProceed = combatNode?.ProceedButton?.IsEnabled ?? false;
@@ -369,16 +366,35 @@ public partial class MainFile : Node
                     energy = pState?.Energy ?? 0,
                     maxEnergy = pState?.MaxEnergy ?? 0,
                     stars = pState?.Stars ?? 0,
-                    drawPileCount = pState?.DrawPile.Cards.Count ?? 0,
-                    discardPileCount = pState?.DiscardPile.Cards.Count ?? 0,
-                    exhaustPileCount = pState?.ExhaustPile.Cards.Count ?? 0,
+                    drawPile = pState?.DrawPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
+                    discardPile = pState?.DiscardPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
+                    exhaustPile = pState?.ExhaustPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
+                    masterDeck = GetPropValue<string>(runState, "MasterDeck", GetPropValue<string>(runState, "Deck", GetPropValue<string>(player, "MasterDeck", "[]")))
                 },
-                hand = pState?.Hand.Cards.Select(c => new
-                {
-                    id = c.Id.Entry,
-                    name = c.Title,
-                    isPlayable = c.CanPlay(),
-                    targetType = c.TargetType.ToString()
+                hand = pState?.Hand.Cards.Select(c => {
+                    var dynamicVars = c.DynamicVars;
+                    var firstEnemy = combatRoom.Enemies.FirstOrDefault(e => e.IsAlive);
+                    c.UpdateDynamicVarPreview(MegaCrit.Sts2.Core.Entities.Cards.CardPreviewMode.Normal, firstEnemy, dynamicVars);
+                    
+                    int curDamage = 0;
+                    int curBlock = 0;
+                    if (dynamicVars.ContainsKey("Damage")) curDamage = (int)dynamicVars["Damage"].PreviewValue;
+                    if (dynamicVars.ContainsKey("CalculatedBlock")) curBlock = (int)dynamicVars["CalculatedBlock"].PreviewValue;
+                    else if (dynamicVars.ContainsKey("Block")) curBlock = (int)dynamicVars["Block"].PreviewValue;
+
+                    return new
+                    {
+                        id = c.Id.Entry,
+                        name = c.Title,
+                        isPlayable = c.CanPlay(),
+                        targetType = c.TargetType.ToString(),
+                        baseDamage = GetPropValue(c, "BaseDamage", 0),
+                        baseBlock = GetPropValue(c, "BaseBlock", 0),
+                        magicNumber = GetPropValue(c, "MagicNumber", 0),
+                        cost = GetPropValue(c, "BaseCost", 0),
+                        currentDamage = curDamage,
+                        currentBlock = curBlock
+                    };
                 }).ToList(),
                 potions = player?.PotionSlots.Select((p, i) => new
                 {
@@ -657,5 +673,21 @@ public partial class MainFile : Node
             current_pos = currentPos.HasValue ? new { row = currentPos.Value.row, col = currentPos.Value.col } : null,
             next_nodes = nextNodesData
         }, JsonOptions);
+    }
+
+    private T GetPropValue<T>(object obj, string propName, T defaultValue)
+    {
+        if (obj == null) return defaultValue;
+        var prop = obj.GetType().GetProperty(propName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (prop != null)
+        {
+            try {
+                var val = prop.GetValue(obj);
+                if (val is T t) return t;
+                if (typeof(T) == typeof(int) && val is float f) return (T)(object)(int)f;
+                if (typeof(T) == typeof(string) && val != null) return (T)(object)val.ToString();
+            } catch {}
+        }
+        return defaultValue;
     }
 }

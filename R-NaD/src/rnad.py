@@ -138,6 +138,10 @@ class TransformerBlock: # Defined later to avoid import issues
 class TransformerNet: # Defined later to avoid import issues
     pass
 
+def combat_vec_to_id(val):
+    """Helper to convert float card ID index back to int32 for embedding."""
+    return jnp.round(val).astype(jnp.int32)
+
 def _define_transformer_classes():
     global TransformerBlock, TransformerNet
     _init_libs()
@@ -181,28 +185,60 @@ def _define_transformer_classes():
             self.num_blocks = num_blocks
             self.num_heads = num_heads
             self.seq_len = seq_len
+            self.card_embedding = hk.Embed(vocab_size=100, embed_dim=64)
+        
+        def __call__(self, h_global, combat_obs, bow_obs, is_training=False):
+            # combat_obs: [batch, 256]
+            # h_global: [batch, 32]
+            # bow_obs: dict of vectors
             
-        def __call__(self, h_global, combat_obs, is_training=False):
-            h = jnp.concatenate([h_global, combat_obs], axis=-1)
-            projection_size = self.seq_len * self.hidden_size
-            x = hk.Linear(projection_size, name="combat_proj")(h)
-            x = jnp.reshape(x, (self.seq_len, self.hidden_size))
+            batch_size = combat_obs.shape[0]
             
-            pos_emb = hk.get_parameter("pos_emb_combat", [self.seq_len, self.hidden_size], init=hk.initializers.TruncatedNormal())
-            x = x + pos_emb
+            # 1. Process Global & BoW context
+            bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
+            bow_combined = jnp.concatenate(bow_vecs, axis=-1) # [batch, 400]
+            bow_proj = hk.Linear(128)(bow_combined)
+            bow_proj = jax.nn.relu(bow_proj)
+
+            context = jnp.concatenate([h_global, bow_proj], axis=-1) # [batch, 160]
+            context_proj = hk.Linear(self.hidden_size)(context)
             
-            # Since this will be vmapped, we process one sequence at a time
-            # But TransformerBlock expects (B, SeqLen, D). We add a fake batch dim.
-            x = x[None, ...] 
+            # 2. Extract and Embed hand cards
+            # Multi-feature embedding for hand (10 cards, 10 features each starting at index 10)
+            hand_cards = []
+            for i in range(10):
+                base_idx = 10 + i * 10
+                card_id_idx = combat_vec_to_id(combat_obs[base_idx])
+                card_embed = self.card_embedding(card_id_idx) # [64]
+                
+                # Other features (indices 1 to 9 relative to base_idx)
+                other_feats = combat_obs[base_idx+1 : base_idx+10] # [9]
+                card_feat = jnp.concatenate([card_embed, other_feats], axis=-1)
+                hand_cards.append(hk.Linear(self.hidden_size)(card_feat))
+                
+            # 3. Extract and Embed enemies
+            enemy_nodes = []
+            for i in range(5):
+                base_idx = 110 + i * 12
+                enemy_feat = combat_obs[base_idx : base_idx+12]
+                enemy_nodes.append(hk.Linear(self.hidden_size)(enemy_feat))
+                
+            # 4. Sequence for Transformer
+            # [Context, Hand x 10, Enemy x 5] -> 16 tokens
+            tokens = jnp.stack([context_proj] + hand_cards + enemy_nodes, axis=0) # [16, hidden]
+            
+            pos_emb = hk.get_parameter("pos_emb_combat", [16, self.hidden_size], init=hk.initializers.TruncatedNormal())
+            tokens = tokens + pos_emb
+            
             for i in range(self.num_blocks):
-                x = _TransformerBlock(
+                tokens = _TransformerBlock(
                     num_heads=self.num_heads,
                     key_size=self.hidden_size // self.num_heads,
                     hidden_size=self.hidden_size,
                     name=f"combat_block_{i}"
-                )(x, is_training)
+                )(tokens, is_training)
             
-            return jnp.mean(x[0], axis=0) # Return (hidden_size,)
+            return jnp.mean(tokens, axis=0) # Average pool tokens
 
     class _SimpleExpert(hk.Module):
         def __init__(self, hidden_size, name=None):
@@ -238,8 +274,14 @@ def _define_transformer_classes():
 
             # Expert branches as closures
             def route_expert(st_idx, h_g, s_dict):
+                bow_obs = {
+                    "draw_bow": s_dict["draw_bow"],
+                    "discard_bow": s_dict["discard_bow"],
+                    "exhaust_bow": s_dict["exhaust_bow"],
+                    "master_bow": s_dict["master_bow"]
+                }
                 return jax.lax.switch(st_idx, [
-                    lambda: self.combat_expert(h_g, s_dict["combat"], is_training),
+                    lambda: self.combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
                     lambda: self.map_expert(h_g, s_dict["map"]),
                     lambda: self.event_expert(h_g, s_dict["event"]),
                     lambda: self.grid_expert(h_g, s_dict["event"]), # Reusing event vector
@@ -251,7 +293,13 @@ def _define_transformer_classes():
                 features = jax.vmap(route_expert)(state_dict["state_type"], h_global, state_dict)
             else:
                 # During init, ensure ALL experts are initialized by calling them once
-                self.combat_expert(h_global[0], state_dict["combat"][0], is_training)
+                bow_obs = {
+                    "draw_bow": state_dict["draw_bow"],
+                    "discard_bow": state_dict["discard_bow"],
+                    "exhaust_bow": state_dict["exhaust_bow"],
+                    "master_bow": state_dict["master_bow"]
+                }
+                self.combat_expert(h_global[0], state_dict["combat"][0], {k: v[0] for k, v in bow_obs.items()}, is_training)
                 self.map_expert(h_global[0], state_dict["map"][0])
                 self.event_expert(h_global[0], state_dict["event"][0])
                 self.grid_expert(h_global[0], state_dict["event"][0])
@@ -308,7 +356,7 @@ class RNaDLearner:
         self.state_dim = state_dim
         self.num_actions = num_actions
         
-        def forward(state_dict, mask):
+        def forward(state_dict, mask, is_training=False):
             if config.model_type == "transformer":
                 model = TransformerNet(
                     num_actions=num_actions,
@@ -317,7 +365,7 @@ class RNaDLearner:
                     num_heads=config.num_heads,
                     seq_len=config.seq_len
                 )
-                return model(state_dict, mask)
+                return model(state_dict, mask, is_training=is_training)
             else:
                 # Basic Categorized MLP for non-transformer case
                 h_global = hk.Linear(config.hidden_size)(state_dict["global"])
@@ -356,7 +404,11 @@ class RNaDLearner:
         # Create a dummy dictionary state matching the new structure
         dummy_state = {
             "global": jnp.zeros((1, 32)),
-            "combat": jnp.zeros((1, 128)),
+            "combat": jnp.zeros((1, 256)),
+            "draw_bow": jnp.zeros((1, 100)),
+            "discard_bow": jnp.zeros((1, 100)),
+            "exhaust_bow": jnp.zeros((1, 100)),
+            "master_bow": jnp.zeros((1, 100)),
             "map": jnp.zeros((1, 64)),
             "event": jnp.zeros((1, 64)),
             "state_type": jnp.zeros((1,), dtype=jnp.int32)
