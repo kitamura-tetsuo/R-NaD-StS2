@@ -32,7 +32,7 @@ public partial class MainFile : Node
                     if (canPlay)
                     {
                         MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
-                        // Only provide a target if the card requires one
+                        
                         if (targetType.Contains("Enemy") || targetType.Contains("Single"))
                         {
                             int targetIdx = dict.ContainsKey("target_index") ? (int)dict["target_index"].AsInt64() : 0;
@@ -47,10 +47,15 @@ public partial class MainFile : Node
                             }
                             Logger.Info($"[AutoAI] Targeted enemy index {targetIdx}: {target?.Name ?? "None"}");
                         }
+                        else if (targetType.Contains("Player") || targetType.Contains("Ally"))
+                        {
+                            target = player.Creature;
+                            Logger.Info($"[AutoAI] Targeted player: {target?.Name ?? "None"}");
+                        }
 
                         // TryManualPlay's signature might vary, typically it's TryManualPlay(target)
                         card.TryManualPlay(target);
-                        Logger.Info($"[AutoAI] Called TryManualPlay for {card.Title}");
+                        Logger.Info($"[AutoAI] Called TryManualPlay for {card.Title} (Target: {target?.Name ?? "None"})");
                     }
                     else
                     {
@@ -91,8 +96,13 @@ public partial class MainFile : Node
                             }
                             Logger.Info($"[AutoAI] Potion targeted enemy index {targetIdx}: {target?.Name ?? "None"}");
                         }
+                        else if (targetType.Contains("Player") || targetType.Contains("Ally"))
+                        {
+                            target = player.Creature;
+                            Logger.Info($"[AutoAI] Potion targeted player: {target?.Name ?? "None"}");
+                        }
                         
-                        Logger.Info($"[AutoAI] Using potion: {potion.Title.GetRawText()}");
+                        Logger.Info($"[AutoAI] Using potion: {potion.Title.GetRawText()} (TargetType: {targetType}, ResolvedTarget: {target?.Name ?? "None"})");
                         potion.EnqueueManualUse(target);
                     }
                     else
