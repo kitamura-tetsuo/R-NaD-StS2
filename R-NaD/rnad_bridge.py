@@ -119,7 +119,7 @@ except ImportError:
 
 # Configure JAX to not preallocate all memory and force CPU if needed
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["JAX_PLATFORMS"] = "cpu"
+# os.environ["JAX_PLATFORMS"] = "cpu"
 
 # Placeholders for deferred imports
 jax = None
@@ -377,7 +377,7 @@ def load_model(checkpoint_path=None):
         num_blocks=8,
         num_heads=8,
         seq_len=16,
-        accumulation_steps=8 # Can be changed to test
+        accumulation_steps=2 # Can be changed to test
     )
     # Updated dummy state for structured dictionary input
     dummy_obs = {
