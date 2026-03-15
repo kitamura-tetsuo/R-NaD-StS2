@@ -6,6 +6,9 @@ import subprocess
 import requests
 import json
 import signal
+import mlflow
+import glob
+import re
 
 logging.basicConfig(level=logging.INFO)
 
@@ -66,6 +69,58 @@ def wait_for_server(url, timeout=30):
     logging.error("Server did not start in time.")
     return False
 
+def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
+    """Finds the latest checkpoint in the specified MLflow experiment."""
+    mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+    experiment = mlflow.get_experiment_by_name(experiment_name)
+    if not experiment:
+        logging.info(f"Experiment {experiment_name} not found.")
+        return None
+
+    try:
+        # Search for the latest run in this experiment
+        runs = mlflow.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            order_by=["attributes.start_time DESC"],
+            max_results=5
+        )
+        
+        if runs.empty:
+            logging.info("No runs found in experiment.")
+            return None
+
+        # Iterate through runs to find one with checkpoint artifacts
+        for _, run in runs.iterrows():
+            run_id = run.run_id
+            client = mlflow.tracking.MlflowClient()
+            artifacts = client.list_artifacts(run_id, "checkpoints")
+            
+            if artifacts:
+                # Sort artifacts by step number to find the latest
+                # Artifact names are like 'checkpoints/step_10'
+                checkpoint_steps = []
+                for art in artifacts:
+                    match = re.search(r"step_(\d+)", art.path)
+                    if match:
+                        checkpoint_steps.append((int(match.group(1)), art.path))
+                
+                if checkpoint_steps:
+                    latest_step, latest_art_path = max(checkpoint_steps, key=lambda x: x[0])
+                    logging.info(f"Found latest checkpoint at step {latest_step} in run {run_id}")
+                    
+                    # Download the artifact
+                    local_path = client.download_artifacts(run_id, latest_art_path)
+                    # The downloaded path will be a directory containing the .pkl file
+                    pkl_files = glob.glob(os.path.join(local_path, "*.pkl"))
+                    if pkl_files:
+                        return pkl_files[0]
+        
+        logging.info("No checkpoint artifacts found in recent runs.")
+        return None
+    except Exception as e:
+        logging.warning(f"Failed to fetch checkpoint from MLflow: {e}")
+        return None
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--max_steps", type=int, default=1000)
@@ -73,8 +128,19 @@ def main():
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint file (.pkl) to resume from")
     args = parser.parse_args()
     
+    
     cleanup_processes()
-    process = launch_game(checkpoint=args.checkpoint, seed=args.seed)
+    
+    checkpoint = args.checkpoint
+    if not checkpoint:
+        logging.info("Searching for latest checkpoint in MLflow...")
+        checkpoint = get_latest_mlflow_checkpoint()
+        if checkpoint:
+            logging.info(f"Resuming from MLflow checkpoint: {checkpoint}")
+        else:
+            logging.info("No MLflow checkpoint found, starting from scratch.")
+
+    process = launch_game(checkpoint=checkpoint, seed=args.seed)
 
     try:
         # Wait for game to initialize by checking status endpoint
