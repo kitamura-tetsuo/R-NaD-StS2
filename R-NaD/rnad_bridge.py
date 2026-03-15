@@ -514,6 +514,10 @@ def get_action_mask(state, masked_reward_indices=None):
         
         # 75: End Turn
         mask[75] = True
+        
+        # 86: Proceed (Victory Bag)
+        if state.get("can_proceed"):
+            mask[86] = True
     
     elif state_type == "rewards":
         rewards = state.get("rewards", [])
@@ -545,13 +549,32 @@ def get_action_mask(state, masked_reward_indices=None):
         if state.get("can_proceed"):
             mask[86] = True # Proceed
 
-    # Action 99 (Wait) is a fallback
-    if state_type in ["grid_selection", "hand_selection"]:
-        mask[86] = True # Proceed/Confirm
-        mask[99] = False
+    elif state_type in ["grid_selection", "hand_selection"]:
+        mask[90] = True # Confirm/Interact
         
+    elif state_type == "shop":
+        mask[86] = True # Shop Proceed (heuristic for now)
+        
+    elif state_type == "treasure":
+        if state.get("has_chest"):
+            mask[91] = True # Open Chest
+        if state.get("can_proceed"):
+            mask[86] = True # Proceed
+            
+    elif state_type == "treasure_relics":
+        mask[92] = True # Select Treasure Relic (heuristic)
+        
+    elif state_type == "card_reward":
+        mask[93] = True # Card Reward interaction (heuristic)
+
+    # Action 99 (Wait) is disabled since waiting is handled in C#
+    mask[99] = False
+    
     if not np.any(mask):
-        mask[99] = True
+        # If no actions are possible, we should ideally not be here due to C# busy check.
+        # But if we are, we must ensure the model doesn't crash.
+        # Since we want to AVOID wait, let's log this situation.
+        log(f"WARNING: No valid actions in mask for state {state_type}. Current mask: {mask}")
         
     return mask
 
@@ -757,13 +780,11 @@ def predict_action(state_json):
 def get_heuristic_action(state):
     state_type = state.get("type", "unknown")
     if state_type == "combat":
+        if state.get("can_proceed"):
+            return {"action": "proceed"}
+            
         hand = state.get("hand", [])
         if not hand:
-            # If the hand is completely empty, we might be in the middle of a draw animation
-            # Or recovering from a hand disruption. It's safer to wait just a bit.
-            # But what if we actually have 0 cards? We have to ensure we don't infinite wait.
-            # For this simple heuristic, let's look at player state. If we have no playable cards,
-            # and hand is not empty, then end turn. If hand IS empty, wait.
             return {"action": "wait"}
             
         playable_cards = [c for c in hand if c.get("isPlayable")]

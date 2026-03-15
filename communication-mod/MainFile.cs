@@ -15,6 +15,8 @@ using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Settings;
 using MegaCrit.Sts2.Core.Runs;
 using System;
+using System.Threading;
+using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 
 namespace communication_mod;
 
@@ -45,7 +47,39 @@ public partial class MainFile : Node
         CallDeferred(nameof(TriggerAI));
     }
 
-    private void TriggerAI()
+    private bool IsGameBusy()
+    {
+        var rm = RunManager.Instance;
+        if (rm == null) return false;
+
+        var runState = rm.DebugOnlyGetState();
+        if (runState == null) return false;
+
+        // Action queue is processing
+        if (rm.ActionQueueSet != null && !rm.ActionQueueSet.IsEmpty)
+        {
+            return true;
+        }
+
+        // Combat animations or play phase not ready
+        if (runState.CurrentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom)
+        {
+            var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
+            if (cm != null && cm.IsInProgress)
+            {
+                if (!cm.IsPlayPhase || cm.PlayerActionsDisabled)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private CancellationTokenSource? _uiWaitCts;
+
+    private async void TriggerAI()
     {
         _aiPending = false;
         if (AiBridge == null) return;
@@ -56,12 +90,28 @@ public partial class MainFile : Node
             long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
             // Skip polling if state hasn't changed, unless 200ms passed (heartbeat)
-            if (stateJson == _lastStateJson && (currentTime - _lastPollTime < 200))
-            {
-                return;
-            }
             _lastPollTime = currentTime;
             _lastStateJson = stateJson;
+
+            // Wait if the game is busy with animations/queues
+            if (IsGameBusy())
+            {
+                _uiWaitCts?.Cancel();
+                _uiWaitCts = new CancellationTokenSource();
+                try
+                {
+                    await WaitHelper.Until(() => !IsGameBusy(), _uiWaitCts.Token);
+                    // Refresh state after wait
+                    stateJson = GetJsonState();
+                    _lastStateJson = stateJson;
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex)
+                {
+                    Logger.Info($"[AutoAI] WaitHelper error: {ex.Message}");
+                    return;
+                }
+            }
 
             var responseVariant = AiBridge.Call("predict_action", stateJson);
             if (responseVariant.VariantType == Variant.Type.Nil) return;

@@ -596,6 +596,15 @@ public partial class MainFile : Node
                         treasureRoomNode.ProceedButton.Call("ForceClick");
                     }
                 }
+                else if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom)
+                {
+                    var combatRoomNode = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
+                    if (combatRoomNode?.ProceedButton != null && combatRoomNode.ProceedButton.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Clicking Combat proceed button (Victory Bag).");
+                        combatRoomNode.ProceedButton.Call("ForceClick");
+                    }
+                }
                 else
                 {
                     await rm.ProceedFromTerminalRewardsScreen();

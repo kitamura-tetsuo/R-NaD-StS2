@@ -284,7 +284,8 @@ public partial class MainFile : Node
             var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
             bool queueProcessing = rm.ActionQueueSet != null && !rm.ActionQueueSet.IsEmpty;
 
-            if (cm == null || !cm.IsInProgress || !cm.IsPlayPhase || cm.PlayerActionsDisabled || queueProcessing) 
+            bool combatBusy = cm != null && cm.IsInProgress && (!cm.IsPlayPhase || cm.PlayerActionsDisabled);
+            if (combatBusy || queueProcessing) 
             {
                 if (queueProcessing) {
                     Logger.Info("[AutoAI] combat_waiting: ActionQueue is not empty. Waiting for execution.");
@@ -352,10 +353,14 @@ public partial class MainFile : Node
             var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
             var pState = player?.PlayerCombatState;
 
+            var combatNode = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
+            bool canProceed = combatNode?.ProceedButton?.IsEnabled ?? false;
+
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "combat",
                 floor = runState.TotalFloor,
+                can_proceed = canProceed,
                 player = new
                 {
                     hp = player?.Creature.CurrentHp ?? 0,
