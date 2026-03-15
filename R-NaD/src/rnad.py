@@ -240,6 +240,42 @@ def _define_transformer_classes():
             
             return jnp.mean(tokens, axis=0) # Average pool tokens
 
+    class _MapExpert(hk.Module):
+        def __init__(self, hidden_size, num_blocks, num_heads, seq_len, name=None):
+            super().__init__(name=name)
+            self.hidden_size = hidden_size
+            self.num_blocks = num_blocks
+            self.num_heads = num_heads
+            self.seq_len = seq_len
+        
+        def __call__(self, h_global, map_obs, is_training=False):
+            # map_obs: [2048]
+            # h_global: [64]
+            # 1. Process Global context
+            context_proj = hk.Linear(self.hidden_size)(h_global)
+            
+            # 2. Extract node features
+            # 256 nodes, 8 features each
+            node_feats = map_obs.reshape(256, 8)
+            nodes_proj = hk.Linear(self.hidden_size)(node_feats) # [256, hidden]
+            
+            # 3. Sequence for Transformer
+            # [Context, Nodes x 256] -> 257 tokens
+            tokens = jnp.concatenate([context_proj[None, :], nodes_proj], axis=0) # [257, hidden]
+            
+            pos_emb = hk.get_parameter("pos_emb_map", [257, self.hidden_size], init=hk.initializers.TruncatedNormal())
+            tokens = tokens + pos_emb
+            
+            for i in range(self.num_blocks):
+                tokens = _TransformerBlock(
+                    num_heads=self.num_heads,
+                    key_size=self.hidden_size // self.num_heads,
+                    hidden_size=self.hidden_size,
+                    name=f"map_block_{i}"
+                )(tokens, is_training)
+            
+            return jnp.mean(tokens, axis=0)
+
     class _SimpleExpert(hk.Module):
         def __init__(self, hidden_size, name=None):
             super().__init__(name=name)
@@ -261,7 +297,7 @@ def _define_transformer_classes():
             # Define sub-modules here for stable parameter registration
             self.global_proj = hk.Linear(self.hidden_size, name="global_proj")
             self.combat_expert = _CombatExpert(hidden_size, num_blocks, num_heads, seq_len, name="combat_expert")
-            self.map_expert = _SimpleExpert(hidden_size, name="map_expert")
+            self.map_expert = _MapExpert(hidden_size, num_blocks, num_heads, seq_len, name="map_expert")
             self.event_expert = _SimpleExpert(hidden_size, name="event_expert")
             self.grid_expert = _SimpleExpert(hidden_size, name="grid_expert")
             self.hand_expert = _SimpleExpert(hidden_size, name="hand_expert")
@@ -300,7 +336,7 @@ def _define_transformer_classes():
                     "master_bow": state_dict["master_bow"]
                 }
                 self.combat_expert(h_global[0], state_dict["combat"][0], {k: v[0] for k, v in bow_obs.items()}, is_training)
-                self.map_expert(h_global[0], state_dict["map"][0])
+                self.map_expert(h_global[0], state_dict["map"][0], is_training)
                 self.event_expert(h_global[0], state_dict["event"][0])
                 self.grid_expert(h_global[0], state_dict["event"][0])
                 self.hand_expert(h_global[0], state_dict["event"][0])
@@ -403,13 +439,13 @@ class RNaDLearner:
     def init(self, key):
         # Create a dummy dictionary state matching the new structure
         dummy_state = {
-            "global": jnp.zeros((1, 32)),
+            "global": jnp.zeros((1, 64)),
             "combat": jnp.zeros((1, 256)),
             "draw_bow": jnp.zeros((1, 100)),
             "discard_bow": jnp.zeros((1, 100)),
             "exhaust_bow": jnp.zeros((1, 100)),
             "master_bow": jnp.zeros((1, 100)),
-            "map": jnp.zeros((1, 64)),
+            "map": jnp.zeros((1, 2048)),
             "event": jnp.zeros((1, 64)),
             "state_type": jnp.zeros((1,), dtype=jnp.int32)
         }

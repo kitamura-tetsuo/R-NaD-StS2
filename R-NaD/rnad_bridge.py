@@ -252,6 +252,27 @@ CARD_VOCAB = {
 }
 VOCAB_SIZE = 100 # Fixed size to allow for new cards
 
+BOSS_VOCAB = {
+    "UNKNOWN": 0,
+    "SLIME_BOSS": 1,
+    "THE_GUARDIAN": 2,
+    "HEXAGHOST": 3,
+    "COLLECTOR": 4,
+    "AUTOMATON": 5,
+    "CHAMP": 6,
+    "AWAKENED_ONE": 7,
+    "TIME_EATER": 8,
+    "DONU_DECA": 9,
+    "THE_TWINS": 10,
+    "THE_CONJURER": 11,
+    "THE_GHOST": 12
+}
+BOSS_VOCAB_SIZE = 20
+
+def get_boss_idx(boss_id):
+    if not boss_id: return 0
+    return BOSS_VOCAB.get(boss_id, 0)
+
 def get_card_idx(card_id):
     if not card_id: return 0
     # Clean up (e.g., remove name suffixes if any)
@@ -489,9 +510,9 @@ def load_model(checkpoint_path=None):
     )
     # Updated dummy state for structured dictionary input
     dummy_obs = {
-        "global": jnp.zeros((1, 32)),
+        "global": jnp.zeros((1, 64)),
         "combat": jnp.zeros((1, 256)),
-        "map": jnp.zeros((1, 64)),
+        "map": jnp.zeros((1, 2048)),
         "event": jnp.zeros((1, 64)),
         "state_type": jnp.zeros((1,), dtype=jnp.int32)
     }
@@ -579,8 +600,8 @@ def encode_state(state):
     }
     st_idx = type_map.get(state_type, 2)
     
-    # --- Global Features (Size 32) ---
-    global_vec = np.zeros(32, dtype=np.float32)
+    # --- Global Features (Size 64) ---
+    global_vec = np.zeros(64, dtype=np.float32)
     global_vec[0] = state.get("floor", 0) / 50.0
     global_vec[1] = state.get("gold", 0) / 500.0
     
@@ -597,6 +618,10 @@ def encode_state(state):
         if potions[i].get("id") != "empty":
             global_vec[10 + i] = 1.0
             
+    # Boss ID
+    boss_id = state.get("boss", "Unknown")
+    global_vec[20] = get_boss_idx(boss_id) / float(BOSS_VOCAB_SIZE)
+    
     # --- Combat Features (Size 256) ---
     combat_vec = np.zeros(256, dtype=np.float32)
     draw_bow = np.zeros(VOCAB_SIZE, dtype=np.float32)
@@ -656,18 +681,29 @@ def encode_state(state):
                 combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
                 combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
                 
-    # --- Map Features (Size 64) ---
-    map_vec = np.zeros(64, dtype=np.float32)
+    # --- Map Features (Size 2048) ---
+    map_vec = np.zeros(2048, dtype=np.float32)
     if st_idx == 1:
-        next_nodes = state.get("next_nodes", [])
-        for i in range(min(len(next_nodes), 12)):
-            node = next_nodes[i]
-            base_idx = i * 4
+        nodes = state.get("nodes", [])
+        current_pos = state.get("current_pos", {})
+        
+        # Encode up to 256 nodes, 8 features each
+        # [presence, row, col, type, is_current]
+        for i in range(min(len(nodes), 256)):
+            node = nodes[i]
+            base_idx = i * 8
+            row = node.get("row", 0)
+            col = node.get("col", 0)
+            
             map_vec[base_idx] = 1.0
-            map_vec[base_idx + 1] = node.get("row", 0) / 20.0
-            map_vec[base_idx + 2] = node.get("col", 0) / 7.0
+            map_vec[base_idx + 1] = row / 20.0
+            map_vec[base_idx + 2] = col / 7.0
+            
             nt_map = {"Monster": 1, "Elite": 2, "Event": 3, "Rest": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
             map_vec[base_idx + 3] = nt_map.get(node.get("type"), 0) / 10.0
+            
+            if current_pos and row == current_pos.get("row") and col == current_pos.get("col"):
+                map_vec[base_idx + 4] = 1.0
 
     # --- Event Features (Size 64) ---
     event_vec = np.zeros(64, dtype=np.float32)

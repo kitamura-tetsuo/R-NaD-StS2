@@ -601,69 +601,64 @@ public partial class MainFile : Node
     private string GetMapJson(MegaCrit.Sts2.Core.Runs.RunState runState)
     {
         var currentPos = runState.CurrentMapCoord;
-        var nextNodesData = new List<object>();
+        var nodes = new List<object>();
+        var edges = new List<object>();
 
-        // New Logic: Try to use NMapScreen's internal state to find Travelable nodes
-        var mapScreen = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance;
-        bool foundViaScreen = false;
-
-        if (mapScreen != null)
+        // Collect all nodes and their outgoing edges
+        // The map in StS2 usually has around 15-20 rows.
+        for (int row = 0; row < 30; row++) 
         {
-            try
+            var pointsInRow = runState.Map.GetPointsInRow(row);
+            if (pointsInRow == null || !pointsInRow.Any()) 
             {
-                var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen).GetField("_mapPointDictionary", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var dict = field?.GetValue(mapScreen) as System.Collections.IDictionary;
+                if (row > 5) break; 
+                continue;
+            }
 
-                if (dict != null)
+            foreach (var p in pointsInRow)
+            {
+                nodes.Add(new { 
+                    row = p.coord.row, 
+                    col = p.coord.col, 
+                    type = p.PointType.ToString() 
+                });
+
+                if (p.Children != null)
                 {
-                    foreach (System.Collections.DictionaryEntry entry in dict)
+                    foreach (var child in p.Children)
                     {
-                        var nPoint = entry.Value as MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapPoint;
-                        if (nPoint != null)
-                        {
-                            // Check the private IsTravelable property or State
-                            // According to decompilation, IsTravelable checks Debug state OR (IsTravelEnabled && State == Travelable)
-                            // We can use reflection to get IsTravelable
-                            var prop = typeof(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapPoint).GetProperty("IsTravelable", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                            bool isTravelable = (bool)(prop?.GetValue(nPoint) ?? false);
-
-                            if (isTravelable)
-                            {
-                                var p = nPoint.Point;
-                                nextNodesData.Add(new { row = p.coord.row, col = p.coord.col, type = p.PointType.ToString() });
-                                foundViaScreen = true;
-                            }
-                        }
+                        edges.Add(new {
+                            src_row = p.coord.row,
+                            src_col = p.coord.col,
+                            dst_row = child.coord.row,
+                            dst_col = child.coord.col
+                        });
                     }
                 }
             }
-            catch (System.Exception ex)
-            {
-                Logger.Error($"[AutoAI] Error accessing _mapPointDictionary via reflection: {ex.Message}");
-            }
         }
 
-        if (!foundViaScreen)
-        {
-            Logger.Info("[AutoAI] MapScreen not available or empty. Falling back to Children-based next_nodes logic.");
-            System.Collections.Generic.IEnumerable<MegaCrit.Sts2.Core.Map.MapPoint> nextPoints;
-            if (currentPos.HasValue)
-            {
-                var point = runState.Map.GetPoint(currentPos.Value);
-                nextPoints = point?.Children ?? new System.Collections.Generic.HashSet<MegaCrit.Sts2.Core.Map.MapPoint>();
-            }
-            else
-            {
-                nextPoints = runState.Map.StartingMapPoint?.Children ?? new System.Collections.Generic.HashSet<MegaCrit.Sts2.Core.Map.MapPoint>();
-                if (!nextPoints.Any())
-                {
-                    nextPoints = runState.Map.GetPointsInRow(0);
+        // Add Boss nodes if they aren't in GetPointsInRow
+        if (runState.Map.BossMapPoint != null) {
+            var b = runState.Map.BossMapPoint;
+            nodes.Add(new { row = b.coord.row, col = b.coord.col, type = b.PointType.ToString() });
+        }
+
+        // Try to get Boss information
+        string bossId = "Unknown";
+        try {
+            var currentAct = GetPropValue<object>(runState, "CurrentAct", null);
+            if (currentAct != null) {
+                var bossEncounter = GetPropValue<object>(currentAct, "BossEncounter", null);
+                if (bossEncounter != null) {
+                    var idObj = GetPropValue<object>(bossEncounter, "Id", null);
+                    if (idObj != null) {
+                        bossId = GetPropValue<string>(idObj, "Entry", bossId);
+                    }
                 }
             }
-            foreach (var p in nextPoints)
-            {
-                nextNodesData.Add(new { row = p.coord.row, col = p.coord.col, type = p.PointType.ToString() });
-            }
+        } catch (System.Exception ex) {
+            Logger.Error($"[AutoAI] Error getting BossId: {ex.Message}");
         }
 
         return System.Text.Json.JsonSerializer.Serialize(new
@@ -671,7 +666,9 @@ public partial class MainFile : Node
             type = "map",
             floor = runState.TotalFloor,
             current_pos = currentPos.HasValue ? new { row = currentPos.Value.row, col = currentPos.Value.col } : null,
-            next_nodes = nextNodesData
+            nodes = nodes,
+            edges = edges,
+            boss = bossId
         }, JsonOptions);
     }
 
