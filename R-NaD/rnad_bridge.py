@@ -111,6 +111,7 @@ import socket
 import queue
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
+from event_dict import get_event_features
 try:
     from PIL import ImageGrab
     HAS_PIL = True
@@ -513,7 +514,7 @@ def load_model(checkpoint_path=None):
         "global": jnp.zeros((1, 64)),
         "combat": jnp.zeros((1, 256)),
         "map": jnp.zeros((1, 2048)),
-        "event": jnp.zeros((1, 64)),
+        "event": jnp.zeros((1, 128)),
         "state_type": jnp.zeros((1,), dtype=jnp.int32)
     }
     do_deferred_imports()
@@ -705,8 +706,8 @@ def encode_state(state):
             if current_pos and row == current_pos.get("row") and col == current_pos.get("col"):
                 map_vec[base_idx + 4] = 1.0
 
-    # --- Event Features (Size 64) ---
-    event_vec = np.zeros(64, dtype=np.float32)
+    # --- Event Features (Size 128) ---
+    event_vec = np.zeros(128, dtype=np.float32)
     if st_idx == 2:
         if state_type == "rewards":
             rewards = state.get("rewards", [])
@@ -718,8 +719,15 @@ def encode_state(state):
                 event_vec[base_idx + 1] = rt_map.get(reward.get("type"), 0) / 10.0
         elif state_type == "event":
             options = state.get("options", [])
+            event_id = state.get("id", "Unknown")
             for i in range(min(len(options), 10)):
+                # Base features: presence and locked status
                 event_vec[i] = 1.0 if not options[i].get("is_locked") else 0.5
+                
+                # Rich features from dictionary (10 features per option, offset by 20)
+                rich_feats = get_event_features(event_id, i)
+                base_idx = 20 + i * 10
+                event_vec[base_idx : base_idx + 10] = rich_feats
         elif state_type == "shop":
              # Placeholder for shop
              event_vec[0] = 1.0
@@ -736,9 +744,12 @@ def encode_state(state):
                 
                 event_vec[base_idx + 2] = 1.0 if card.get("upgraded") else 0.0
                 event_vec[base_idx + 3] = card.get("cost", 0) / 5.0
-            
-            # Differentiation flag: 1.0 for permanent grid, -1.0 for temporary hand
-            event_vec[40] = 1.0 if state_type == "grid_selection" else -1.0
+    
+    # Differentiation flag: 1.0 for permanent grid, -1.0 for temporary hand
+    if state_type == "grid_selection":
+        event_vec[90] = 1.0
+    elif state_type == "hand_selection":
+        event_vec[90] = -1.0
 
     return {
         "global": global_vec,

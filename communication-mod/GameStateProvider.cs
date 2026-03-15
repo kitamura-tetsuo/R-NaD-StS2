@@ -478,6 +478,7 @@ public partial class MainFile : Node
             {
                 type = "event",
                 floor = runState.TotalFloor,
+                id = ev.Id.Entry,
                 title = ev.Title.GetRawText(),
                 options = options
             }, JsonOptions);

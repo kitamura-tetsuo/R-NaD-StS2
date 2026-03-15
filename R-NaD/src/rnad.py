@@ -446,7 +446,7 @@ class RNaDLearner:
             "exhaust_bow": jnp.zeros((1, 100)),
             "master_bow": jnp.zeros((1, 100)),
             "map": jnp.zeros((1, 2048)),
-            "event": jnp.zeros((1, 64)),
+            "event": jnp.zeros((1, 128)),
             "state_type": jnp.zeros((1,), dtype=jnp.int32)
         }
         dummy_mask = jnp.ones((1, self.num_actions))
