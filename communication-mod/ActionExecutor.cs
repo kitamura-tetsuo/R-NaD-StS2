@@ -634,6 +634,33 @@ public partial class MainFile : Node
                     }
                 }
             }
+            else if (action == "discard_potion")
+            {
+                int index = (int)dict["index"].AsInt64();
+                var potions = player.PotionSlots;
+                if (index >= 0 && index < potions.Count)
+                {
+                    var potion = potions[index];
+                    if (potion != null)
+                    {
+                        Logger.Info($"[AutoAI] Discarding potion: {potion.Title.GetRawText()} (Index: {index})");
+                        // We use reflection or direct call if we know the method.
+                        // Based on standard Sts2 patterns, it's often Discard() or a similar method on the Potion object.
+                        // If that fails, we might need a GameAction.
+                        try {
+                            var method = potion.GetType().GetMethod("Discard", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                            if (method != null) {
+                                method.Invoke(potion, null);
+                            } else {
+                                // Fallback: many things in Sts2 use a Discard() method on the slot or the item.
+                                potion.Call("Discard");
+                            }
+                        } catch (Exception ex) {
+                            Logger.Error($"[AutoAI] Error discarding potion: {ex.Message}");
+                        }
+                    }
+                }
+            }
             else if (action == "select_treasure_relic")
             {
                 int index = (int)dict["index"].AsInt64();

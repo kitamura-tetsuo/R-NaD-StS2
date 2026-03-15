@@ -454,6 +454,13 @@ def encode_state(state):
             rt_map = {"Gold": 1, "Card": 2, "Relic": 3, "Potion": 4}
             vec[base_idx + 1] = rt_map.get(reward.get("type"), 0) / 10.0
 
+    # 201-205: Potion slots (up to 5 slots)
+    potions = state.get("potions", [])
+    for i in range(min(len(potions), 5)):
+        potion = potions[i]
+        if potion.get("id") != "empty":
+            vec[201 + i] = 1.0
+
     return vec
 
 def compute_reward(state, state_type=None):
@@ -521,9 +528,16 @@ def get_action_mask(state, masked_reward_indices=None):
     
     elif state_type == "rewards":
         rewards = state.get("rewards", [])
+        has_open_potion_slots = state.get("has_open_potion_slots", True)
         for i in range(min(len(rewards), 10)):
             if masked_reward_indices and i in masked_reward_indices:
                 continue
+            
+            # Mask potion acquisition if slots are full
+            reward = rewards[i]
+            if reward.get("type") == "Potion" and not has_open_potion_slots:
+                continue
+
             mask[76 + i] = True
         if state.get("can_proceed"):
             mask[86] = True # Proceed
@@ -566,6 +580,13 @@ def get_action_mask(state, masked_reward_indices=None):
         
     elif state_type == "card_reward":
         mask[93] = True # Card Reward interaction (heuristic)
+
+    # 94-98: Discard Potion (indices 0-4)
+    # This should be available in combat or potentially other states where potions are visible
+    potions = state.get("potions", [])
+    for i in range(min(len(potions), 5)):
+        if potions[i].get("id") != "empty":
+            mask[94 + i] = True
 
     # Action 99 (Wait) is disabled since waiting is handled in C#
     mask[99] = False
@@ -702,6 +723,10 @@ def predict_action(state_json):
         
         elif action_idx == 86: # Dual mapping for proceed
              action = {"action": "proceed"}
+        
+        elif 94 <= action_idx < 99:
+            potion_idx = action_idx - 94
+            action = {"action": "discard_potion", "index": potion_idx}
 
         # Fallback to heuristic for complex types not fully mapped to action_idx yet
         if action["action"] == "wait" and state_type not in ["unknown"]:
