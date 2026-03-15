@@ -1,5 +1,8 @@
 write comments in english.
 
+Read docs/architecture.md
+
+
 ## Screenshot API
 You can take a screenshot of the game by calling the following API:
 `GET http://127.0.0.1:8081/screenshot`

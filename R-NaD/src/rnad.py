@@ -227,6 +227,8 @@ def _define_transformer_classes():
             self.combat_expert = _CombatExpert(hidden_size, num_blocks, num_heads, seq_len, name="combat_expert")
             self.map_expert = _SimpleExpert(hidden_size, name="map_expert")
             self.event_expert = _SimpleExpert(hidden_size, name="event_expert")
+            self.grid_expert = _SimpleExpert(hidden_size, name="grid_expert")
+            self.hand_expert = _SimpleExpert(hidden_size, name="hand_expert")
             self.policy_head = hk.Linear(num_actions, name="policy_head")
             self.value_head = hk.Linear(1, name="value_head")
 
@@ -239,7 +241,9 @@ def _define_transformer_classes():
                 return jax.lax.switch(st_idx, [
                     lambda: self.combat_expert(h_g, s_dict["combat"], is_training),
                     lambda: self.map_expert(h_g, s_dict["map"]),
-                    lambda: self.event_expert(h_g, s_dict["event"])
+                    lambda: self.event_expert(h_g, s_dict["event"]),
+                    lambda: self.grid_expert(h_g, s_dict["event"]), # Reusing event vector
+                    lambda: self.hand_expert(h_g, s_dict["event"])  # Reusing event vector
                 ])
 
             # Use vmap to apply switch across batch
@@ -247,11 +251,11 @@ def _define_transformer_classes():
                 features = jax.vmap(route_expert)(state_dict["state_type"], h_global, state_dict)
             else:
                 # During init, ensure ALL experts are initialized by calling them once
-                # We use a dummy index to trigger them or just call them directly
-                # Haiku modules must be called to register params.
                 self.combat_expert(h_global[0], state_dict["combat"][0], is_training)
                 self.map_expert(h_global[0], state_dict["map"][0])
                 self.event_expert(h_global[0], state_dict["event"][0])
+                self.grid_expert(h_global[0], state_dict["event"][0])
+                self.hand_expert(h_global[0], state_dict["event"][0])
                 features = jax.vmap(route_expert)(state_dict["state_type"], h_global, state_dict)
 
             # Unified Heads

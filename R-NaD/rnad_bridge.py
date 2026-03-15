@@ -459,8 +459,8 @@ def encode_state(state):
         "game_over": 2,
         "treasure_relics": 2,
         "card_reward": 2,
-        "grid_selection": 2,
-        "hand_selection": 2
+        "grid_selection": 3,
+        "hand_selection": 4
     }
     st_idx = type_map.get(state_type, 2)
     
@@ -555,6 +555,23 @@ def encode_state(state):
         elif state_type == "shop":
              # Placeholder for shop
              event_vec[0] = 1.0
+        elif state_type in ["grid_selection", "hand_selection"]:
+            # Feature encoding for card selection
+            cards = state.get("cards", [])
+            for i in range(min(len(cards), 10)):
+                card = cards[i]
+                base_idx = i * 4
+                event_vec[base_idx] = 1.0 # Presence flag
+                
+                # Card ID hash
+                name_sum = sum(ord(c) for c in card.get("id", ""))
+                event_vec[base_idx + 1] = (name_sum % 100) / 100.0
+                
+                event_vec[base_idx + 2] = 1.0 if card.get("upgraded") else 0.0
+                event_vec[base_idx + 3] = card.get("cost", 0) / 5.0
+            
+            # Differentiation flag: 1.0 for permanent grid, -1.0 for temporary hand
+            event_vec[40] = 1.0 if state_type == "grid_selection" else -1.0
 
     return {
         "global": global_vec,
