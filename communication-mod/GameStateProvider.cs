@@ -372,14 +372,16 @@ public partial class MainFile : Node
                 {
                     id = c.Id.Entry,
                     name = c.Title,
-                    isPlayable = c.CanPlay()
+                    isPlayable = c.CanPlay(),
+                    targetType = c.TargetType.ToString()
                 }).ToList(),
                 potions = player?.PotionSlots.Select((p, i) => new
                 {
                     index = i,
                     id = p?.Id.Entry ?? "empty",
                     name = p?.Title.GetRawText() ?? "Empty Slot",
-                    canUse = p != null && p.PassesCustomUsabilityCheck && (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime || (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly && MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress))
+                    canUse = p != null && p.PassesCustomUsabilityCheck && (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime || (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly && MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress)),
+                    targetType = p?.TargetType.ToString() ?? "None"
                 }).ToList(),
                 enemies = combatRoom.Enemies.Where(e => e.IsAlive).Select(e => {
                     var mModel = e.Monster;

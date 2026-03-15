@@ -305,8 +305,7 @@ def load_model(checkpoint_path=None):
     global learner, rng_key, training_worker, config
     do_deferred_imports()
     
-    state_dim = 256
-    num_actions = 50
+    num_actions = 100
     config = RNaDConfig(
         batch_size=8, 
         unroll_length=32, 
@@ -317,6 +316,7 @@ def load_model(checkpoint_path=None):
         seq_len=8,
         accumulation_steps=1 # Can be changed to test
     )
+    state_dim = 256
     learner = RNaDLearner(state_dim, num_actions, config)
     rng_key = jax.random.PRNGKey(42)
 
@@ -402,8 +402,12 @@ def encode_state(state):
         name_sum = sum(ord(c) for c in card.get("id", ""))
         vec[base_idx] = (name_sum % 100) / 100.0
         vec[base_idx + 1] = 1.0 if card.get("isPlayable") else 0.0
-        # Placeholder for cost if available in future
-        # vec[base_idx + 2] = card.get("cost", 0) / 5.0
+        
+        # Target type encoding (12 bits/features after basic ones)
+        # Simplified encoding: single, all, random, none
+        target_type = card.get("targetType", "None")
+        tt_map = {"SingleEnemy": 1, "AllEnemy": 2, "RandomEnemy": 3, "None": 0, "Self": 4}
+        vec[base_idx + 2] = tt_map.get(target_type, 0) / 10.0
     
     # 60-119: Enemies (up to 5 enemies, 12 features each)
     enemies = state.get("enemies", [])
@@ -472,61 +476,82 @@ def compute_reward(state, state_type=None):
     return reward
 
 def get_action_mask(state, masked_reward_indices=None):
-    mask = np.zeros(50, dtype=bool)
+    mask = np.zeros(100, dtype=bool)
     state_type = state.get("type", "unknown")
     
     if state_type == "combat":
         hand = state.get("hand", [])
-        for i in range(min(len(hand), 10)):
-            if hand[i].get("isPlayable"):
-                mask[i] = True
+        enemies = [e for e in state.get("enemies", []) if e.get("hp", 0) > 0]
+        num_enemies = len(enemies)
         
+        # 0-49: Cards (up to 10 cards * 5 targets)
+        for i in range(min(len(hand), 10)):
+            card = hand[i]
+            if card.get("isPlayable"):
+                target_type = card.get("targetType", "None")
+                needs_target = "Enemy" in target_type or "Single" in target_type
+                
+                if needs_target:
+                    for t in range(min(num_enemies, 5)):
+                        mask[i * 5 + t] = True
+                else:
+                    # Self or No target cards use target_idx 0
+                    mask[i * 5] = True
+        
+        # 50-74: Potions (up to 5 potions * 5 targets)
         potions = state.get("potions", [])
         for i in range(min(len(potions), 5)):
-            if potions[i].get("canUse"):
-                mask[10 + i] = True
+            potion = potions[i]
+            if potion.get("canUse"):
+                target_type = potion.get("targetType", "None")
+                needs_target = "Enemy" in target_type or "Single" in target_type
+                
+                if needs_target:
+                    for t in range(min(num_enemies, 5)):
+                        mask[50 + i * 5 + t] = True
+                else:
+                    mask[50 + i * 5] = True
         
-        mask[15] = True # End turn is almost always valid in play phase
+        # 75: End Turn
+        mask[75] = True
     
     elif state_type == "rewards":
         rewards = state.get("rewards", [])
         for i in range(min(len(rewards), 10)):
             if masked_reward_indices and i in masked_reward_indices:
                 continue
-            mask[16 + i] = True
+            mask[76 + i] = True
         if state.get("can_proceed"):
-            mask[26] = True
+            mask[86] = True # Proceed
             
     elif state_type == "map":
         next_nodes = state.get("next_nodes", [])
         if next_nodes:
-            mask[27] = True # Simple mapping for now: 27 means "take first valid map node"
+            mask[87] = True # Map Node heuristic
             
     elif state_type == "event":
         options = state.get("options", [])
         for i in range(min(len(options), 10)):
             if not options[i].get("is_locked"):
-                mask[28] = True # Using 28 as a generic event action for now
+                mask[88] = True # Event Option
                 break
                 
     elif state_type == "rest_site":
         options = state.get("options", [])
         for i in range(min(len(options), 5)):
             if options[i].get("is_enabled"):
-                mask[29] = True
+                mask[89] = True # Rest Site Option
                 break
         if state.get("can_proceed"):
-            mask[26] = True
+            mask[86] = True # Proceed
 
-    # Action 49 (Wait) is a fallback
+    # Action 99 (Wait) is a fallback
     if state_type in ["grid_selection", "hand_selection"]:
-        # Ensure we always have a valid action in selection screens
-        # Actions for grid/hand selection start from 26 (proceed/confirm) or higher
-        mask[26] = True # Proceed/Confirm
-        mask[49] = False # Avoid waiting in selection screens if possible
+        mask[86] = True # Proceed/Confirm
+        mask[99] = False
         
     if not np.any(mask):
-        mask[49] = True
+        mask[99] = True
         
     return mask
 
@@ -621,31 +646,39 @@ def predict_action(state_json):
         
         action = {"action": "wait"} # Default
         
-        if action_idx == 49:
+        if action_idx == 99:
             pass # already wait
         
         elif state_type == "combat":
             hand = state.get("hand", [])
             potions = state.get("potions", [])
             
-            if action_idx < 10 and action_idx < len(hand):
-                card = hand[action_idx]
-                action = {"action": "play_card", "card_id": card.get("id")}
-            elif 10 <= action_idx < 15:
-                potion_idx = action_idx - 10
+            if action_idx < 50:
+                card_idx = action_idx // 5
+                target_idx = action_idx % 5
+                if card_idx < len(hand):
+                    card = hand[card_idx]
+                    action = {"action": "play_card", "card_id": card.get("id"), "target_index": target_idx}
+            elif 50 <= action_idx < 75:
+                potion_linear_idx = action_idx - 50
+                potion_idx = potion_linear_idx // 5
+                target_idx = potion_linear_idx % 5
                 if potion_idx < len(potions):
-                    action = {"action": "use_potion", "index": potion_idx}
-            elif action_idx == 15:
+                    action = {"action": "use_potion", "index": potion_idx, "target_index": target_idx}
+            elif action_idx == 75:
                 action = {"action": "end_turn"}
         
         elif state_type == "rewards":
             rewards = state.get("rewards", [])
-            if 16 <= action_idx < 26:
-                reward_idx = action_idx - 16
+            if 76 <= action_idx < 86:
+                reward_idx = action_idx - 76
                 if reward_idx < len(rewards):
                     action = {"action": "select_reward", "index": reward_idx}
-            elif action_idx == 26:
+            elif action_idx == 86:
                 action = {"action": "proceed"}
+        
+        elif action_idx == 86: # Dual mapping for proceed
+             action = {"action": "proceed"}
 
         # Fallback to heuristic for complex types not fully mapped to action_idx yet
         if action["action"] == "wait" and state_type not in ["unknown"]:
@@ -654,8 +687,8 @@ def predict_action(state_json):
 
         # Trajectory collection
         if learning_active:
-            # ▼追加: waitアクション(49)の場合は経験として蓄積しない
-            if action_idx != 49:
+            # ▼追加: waitアクション(99)の場合は経験として蓄積しない
+            if action_idx != 99:
                 base_reward = compute_reward(state, state_type)
                 
                 # Intermediate reward for floor progression

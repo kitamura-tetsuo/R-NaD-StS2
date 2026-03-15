@@ -35,8 +35,17 @@ public partial class MainFile : Node
                         // Only provide a target if the card requires one
                         if (targetType.Contains("Enemy") || targetType.Contains("Single"))
                         {
-                            target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
-                            Logger.Info($"[AutoAI] Targeted enemy: {target?.Name ?? "None"}");
+                            int targetIdx = dict.ContainsKey("target_index") ? (int)dict["target_index"].AsInt64() : 0;
+                            var aliveEnemies = combatState.Enemies.Where(e => e.IsAlive).ToList();
+                            if (targetIdx >= 0 && targetIdx < aliveEnemies.Count)
+                            {
+                                target = aliveEnemies[targetIdx];
+                            }
+                            else
+                            {
+                                target = aliveEnemies.FirstOrDefault();
+                            }
+                            Logger.Info($"[AutoAI] Targeted enemy index {targetIdx}: {target?.Name ?? "None"}");
                         }
 
                         // TryManualPlay's signature might vary, typically it's TryManualPlay(target)
@@ -64,9 +73,24 @@ public partial class MainFile : Node
                     if (potion != null && canUse)
                     {
                         MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
-                        var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-                        var combatState = cm.DebugOnlyGetState();
-                        target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
+                        string targetType = potion.TargetType.ToString();
+                        
+                        if (targetType.Contains("Enemy") || targetType.Contains("Single"))
+                        {
+                            int targetIdx = dict.ContainsKey("target_index") ? (int)dict["target_index"].AsInt64() : 0;
+                            var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
+                            var combatState = cm.DebugOnlyGetState();
+                            var aliveEnemies = combatState.Enemies.Where(e => e.IsAlive).ToList();
+                            if (targetIdx >= 0 && targetIdx < aliveEnemies.Count)
+                            {
+                                target = aliveEnemies[targetIdx];
+                            }
+                            else
+                            {
+                                target = aliveEnemies.FirstOrDefault();
+                            }
+                            Logger.Info($"[AutoAI] Potion targeted enemy index {targetIdx}: {target?.Name ?? "None"}");
+                        }
                         
                         Logger.Info($"[AutoAI] Using potion: {potion.Title.GetRawText()}");
                         potion.EnqueueManualUse(target);
