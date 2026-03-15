@@ -304,7 +304,7 @@ def load_model(checkpoint_path=None):
     global learner, rng_key, training_worker, config
     do_deferred_imports()
     
-    state_dim = 128
+    state_dim = 256
     num_actions = 50
     config = RNaDConfig(
         batch_size=8, 
@@ -370,14 +370,86 @@ def load_model(checkpoint_path=None):
         training_worker.start()
 
 def encode_state(state):
-    vec = np.zeros(128, dtype=np.float32)
-    vec[3] = state.get("floor", 0) / 50.0  # Normalize floor
-    if state.get("type") == "combat":
-        vec[0] = 1.0
-        player = state.get("player", {})
-        vec[1] = player.get("hp", 0) / 100.0
-        vec[2] = player.get("block", 0) / 100.0
-    return vec # Return numpy for easier handling before jnp
+    """Encodes the game state into a 256-dimensional vector."""
+    vec = np.zeros(256, dtype=np.float32)
+    state_type = state.get("type", "unknown")
+    
+    # 0-9: State type and Common global stats
+    type_map = {"combat": 1, "map": 2, "rewards": 3, "event": 4, "rest_site": 5, "shop": 6, "treasure": 7, "game_over": 8}
+    vec[0] = type_map.get(state_type, 0) / 10.0
+    vec[1] = state.get("floor", 0) / 50.0
+    
+    player = state.get("player", {})
+    vec[2] = player.get("hp", 0) / 100.0
+    vec[3] = player.get("maxHp", 100) / 100.0
+    vec[4] = player.get("block", 0) / 50.0
+    vec[5] = player.get("energy", 0) / 5.0
+    vec[6] = player.get("stars", 0) / 10.0
+    vec[7] = state.get("gold", 0) / 500.0
+    
+    # 10-19: Pile counts
+    vec[10] = player.get("drawPileCount", 0) / 30.0
+    vec[11] = player.get("discardPileCount", 0) / 30.0
+    vec[12] = player.get("exhaustPileCount", 0) / 30.0
+    
+    # 20-59: Hand cards (up to 10 cards, 4 features each)
+    hand = state.get("hand", [])
+    for i in range(min(len(hand), 10)):
+        card = hand[i]
+        base_idx = 20 + i * 4
+        # Simple hash-like mapping for card ID
+        name_sum = sum(ord(c) for c in card.get("id", ""))
+        vec[base_idx] = (name_sum % 100) / 100.0
+        vec[base_idx + 1] = 1.0 if card.get("isPlayable") else 0.0
+        # Placeholder for cost if available in future
+        # vec[base_idx + 2] = card.get("cost", 0) / 5.0
+    
+    # 60-119: Enemies (up to 5 enemies, 12 features each)
+    enemies = state.get("enemies", [])
+    for i in range(min(len(enemies), 5)):
+        enemy = enemies[i]
+        base_idx = 60 + i * 12
+        vec[base_idx] = 1.0 # Alive
+        vec[base_idx + 1] = enemy.get("hp", 0) / 200.0
+        vec[base_idx + 2] = enemy.get("maxHp", 1) / 200.0
+        vec[base_idx + 3] = enemy.get("block", 0) / 50.0
+        
+        # Intents (up to 2 intents per enemy)
+        intents = enemy.get("intents", [])
+        for j in range(min(len(intents), 2)):
+            intent = intents[j]
+            intent_idx = base_idx + 4 + j * 4
+            # map intent type
+            it_map = {"Attack": 1, "Defense": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "Stun": 7}
+            vec[intent_idx] = it_map.get(intent.get("type"), 0) / 10.0
+            vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
+            vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
+
+    # 120-159: Space for relics or map info
+    if state_type == "map":
+        next_nodes = state.get("next_nodes", [])
+        for i in range(min(len(next_nodes), 8)):
+            node = next_nodes[i]
+            base_idx = 120 + i * 4
+            vec[base_idx] = 1.0
+            vec[base_idx + 1] = node.get("row", 0) / 20.0
+            vec[base_idx + 2] = node.get("col", 0) / 7.0
+            # map node type
+            nt_map = {"Monster": 1, "Elite": 2, "Event": 3, "Rest": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
+            vec[base_idx + 3] = nt_map.get(node.get("type"), 0) / 10.0
+
+    # 160-200: Space for rewards or shop items
+    if state_type == "rewards":
+        rewards = state.get("rewards", [])
+        for i in range(min(len(rewards), 10)):
+            reward = rewards[i]
+            base_idx = 160 + i * 4
+            vec[base_idx] = 1.0
+            # map reward type
+            rt_map = {"Gold": 1, "Card": 2, "Relic": 3, "Potion": 4}
+            vec[base_idx + 1] = rt_map.get(reward.get("type"), 0) / 10.0
+
+    return vec
 
 def compute_reward(state, state_type=None):
     """Compute the reward for the current state.

@@ -358,7 +358,12 @@ public partial class MainFile : Node
                     hp = player?.Creature.CurrentHp ?? 0,
                     maxHp = player?.Creature.MaxHp ?? 0,
                     block = player?.Creature.Block ?? 0,
-                    energy = pState?.Energy ?? 0
+                    energy = pState?.Energy ?? 0,
+                    maxEnergy = pState?.MaxEnergy ?? 0,
+                    stars = pState?.Stars ?? 0,
+                    drawPileCount = pState?.DrawPile.Cards.Count ?? 0,
+                    discardPileCount = pState?.DiscardPile.Cards.Count ?? 0,
+                    exhaustPileCount = pState?.ExhaustPile.Cards.Count ?? 0,
                 },
                 hand = pState?.Hand.Cards.Select(c => new
                 {
@@ -373,11 +378,33 @@ public partial class MainFile : Node
                     name = p?.Title.GetRawText() ?? "Empty Slot",
                     canUse = p != null && p.PassesCustomUsabilityCheck && (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime || (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly && MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress))
                 }).ToList(),
-                enemies = combatRoom.Enemies.Where(e => e.IsAlive).Select(e => new
-                {
-                    id = e.ModelId.Entry,
-                    name = e.Name,
-                    hp = e.CurrentHp
+                enemies = combatRoom.Enemies.Where(e => e.IsAlive).Select(e => {
+                    var mModel = e.Monster;
+                    var intents = new List<object>();
+                    if (mModel != null) {
+                        foreach (var intent in mModel.NextMove.Intents) {
+                            int damage = 0;
+                            int repeats = 0;
+                            if (intent is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent attackIntent) {
+                                damage = attackIntent.GetSingleDamage(combatRoom.CombatState.PlayerCreatures, e);
+                                repeats = attackIntent.Repeats;
+                            }
+                            intents.Add(new {
+                                type = intent.IntentType.ToString(),
+                                damage = damage,
+                                repeats = repeats
+                            });
+                        }
+                    }
+                    return new
+                    {
+                        id = e.ModelId.Entry,
+                        name = e.Name,
+                        hp = e.CurrentHp,
+                        maxHp = e.MaxHp,
+                        block = e.Block,
+                        intents = intents
+                    };
                 }).ToList()
             }, JsonOptions);
         }
