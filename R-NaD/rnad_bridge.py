@@ -254,6 +254,7 @@ class TrainingWorker(threading.Thread):
             'obs': jnp.array(obs.transpose(1, 0, 2)),
             'act': jnp.array(act.transpose(1, 0)),
             'rew': jnp.array(rew.transpose(1, 0)),
+            'mask': jnp.array(np.array([ [t['mask'] for t in traj] for traj in self.batch_buffer ]).transpose(1, 0, 2)),
             'log_prob': jnp.array(log_prob.transpose(1, 0))
         }
 
@@ -602,23 +603,21 @@ def predict_action(state_json):
         mask_jnp = jnp.array(mask)
         
         # Inference
-        logits, value = learner.network.apply(learner.params, None, state_vec[None, :])
+        # Now passing mask to the network for awareness and filtering
+        logits, value = learner.network.apply(learner.params, None, state_vec[None, :], mask[None, :].astype(jnp.float32))
         
-        # Apply Masking
-        # Set illegal actions to a very low value before softmax
-        masked_logits = jnp.where(mask_jnp, logits, -1e9)
-        
-        probs = jax.nn.softmax(masked_logits, axis=-1)
+        # Probs are calculated from logits which are already masked in the network
+        probs = jax.nn.softmax(logits, axis=-1)
         
         # Sample action from masked distribution
         rng_key, subkey = jax.random.split(rng_key)
-        action_idx = jax.random.categorical(subkey, masked_logits).item()
-        log_prob = jax.nn.log_softmax(masked_logits)[0, action_idx].item()
+        action_idx = jax.random.categorical(subkey, logits).item()
+        log_prob = jax.nn.log_softmax(logits)[0, action_idx].item()
         
-        # Log if the model's preferred (original top) action was masked
+        # Log if the model's preferred (original top) action was masked.
+        # Note: Since the network now applies masking, we'd need to check raw logits before masking
+        # to see what it "originally" wanted, but the network internally hides that.
         original_top_action = jnp.argmax(logits).item()
-        if not mask[original_top_action]:
-             log(f"Model preferred action {original_top_action} but it was masked. Masked selected: {action_idx}")
         
         action = {"action": "wait"} # Default
         
@@ -690,6 +689,7 @@ def predict_action(state_json):
                     "obs": state_vec,
                     "act": int(action_idx),
                     "rew": float(reward),
+                    "mask": mask.astype(np.float32),
                     "log_prob": float(log_prob)
                 })
                 
@@ -817,7 +817,7 @@ def get_heuristic_action(state):
 
 class CommandHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        global learning_active, command_queue
+        global learning_active, command_queue, current_seed
         parsed_path = urlparse(self.path)
         
         if parsed_path.path == "/status":

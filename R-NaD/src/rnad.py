@@ -87,15 +87,20 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     obs = batch['obs'] # (T, B, dim)
     act = batch['act'] # (T, B)
     rew = batch['rew'] # (T, B)
+    mask = batch['mask'] # (T, B, num_actions)
     log_prob_bhv = batch['log_prob'] # (T, B)
     
     T, B, _ = obs.shape
     
-    logits, values = apply_fn(params, jax.random.PRNGKey(0), obs.reshape(-1, obs.shape[-1]))
+    # Flatten T and B for forward pass
+    obs_flat = obs.reshape(-1, obs.shape[-1])
+    mask_flat = mask.reshape(-1, mask.shape[-1])
+    
+    logits, values = apply_fn(params, jax.random.PRNGKey(0), obs_flat, mask_flat)
     logits = logits.reshape(T, B, -1)
     values = values.reshape(T, B)
     
-    fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), obs.reshape(-1, obs.shape[-1]))
+    fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), obs_flat, mask_flat)
     fixed_logits = fixed_logits.reshape(T, B, -1)
     
     log_probs = jax.nn.log_softmax(logits)
@@ -175,36 +180,43 @@ def _define_transformer_classes():
             self.num_heads = num_heads
             self.seq_len = seq_len
 
-        def __call__(self, x, is_training=False):
-            # x: (B, ObsDim)
+        def __call__(self, x, mask, is_training=False):
+            # x: (B, ObsDim), mask: (B, NumActions)
             if x.ndim > 2:
                 x = jnp.reshape(x, (x.shape[0], -1))
 
-            batch_size = x.shape[0]
+            # Concat mask to observations for "mask-awareness"
+            x_combined = jnp.concatenate([x, mask.astype(jnp.float32)], axis=-1)
+            
+            batch_size = x_combined.shape[0]
             
             # Feature Projection to sequence
             projection_size = self.seq_len * self.hidden_size
-            x = hk.Linear(projection_size)(x)
-            x = jnp.reshape(x, (batch_size, self.seq_len, self.hidden_size))
+            x_combined = hk.Linear(projection_size)(x_combined)
+            x_combined = jnp.reshape(x_combined, (batch_size, self.seq_len, self.hidden_size))
 
             # Position Embeddings
             pos_emb = hk.get_parameter("pos_emb", [self.seq_len, self.hidden_size], init=hk.initializers.TruncatedNormal())
-            x = x + pos_emb
+            x_combined = x_combined + pos_emb
 
             # Transformer Blocks
             for i in range(self.num_blocks):
-                x = _TransformerBlock(
+                x_combined = _TransformerBlock(
                     num_heads=self.num_heads,
                     key_size=self.hidden_size // self.num_heads,
                     hidden_size=self.hidden_size,
                     name=f"block_{i}"
-                )(x, is_training)
+                )(x_combined, is_training)
 
             # Global Pooling (Mean)
-            features = jnp.mean(x, axis=1)
+            features = jnp.mean(x_combined, axis=1)
 
             # Heads
             logits = hk.Linear(self.num_actions)(features)
+            
+            # Apply Mask Filtering directly to logits
+            logits = jnp.where(mask.astype(bool), logits, -1e9)
+            
             value = hk.Linear(1)(features)
             return logits, jnp.squeeze(value, axis=-1)
             
@@ -219,7 +231,7 @@ class RNaDLearner:
         self.state_dim = state_dim
         self.num_actions = num_actions
         
-        def forward(x):
+        def forward(x, mask):
             if config.model_type == "transformer":
                 model = TransformerNet(
                     num_actions=num_actions,
@@ -228,15 +240,21 @@ class RNaDLearner:
                     num_heads=config.num_heads,
                     seq_len=config.seq_len
                 )
-                return model(x)
+                return model(x, mask)
             else:
+                # MLP version with mask-awareness
+                x_combined = jnp.concatenate([x, mask.astype(jnp.float32)], axis=-1)
                 net = hk.Sequential([
                     hk.Linear(config.hidden_size), jax.nn.relu,
                     hk.Linear(config.hidden_size), jax.nn.relu,
                     hk.Linear(config.hidden_size), jax.nn.relu,
                 ])
-                features = net(x)
+                features = net(x_combined)
                 logits = hk.Linear(num_actions)(features)
+                
+                # Apply Mask Filtering
+                logits = jnp.where(mask.astype(bool), logits, -1e9)
+                
                 value = hk.Linear(1)(features)
                 return logits, jnp.squeeze(value, axis=-1)
             
@@ -256,7 +274,8 @@ class RNaDLearner:
 
     def init(self, key):
         dummy_obs = jnp.zeros((1, self.state_dim))
-        self.params = self.network.init(key, dummy_obs)
+        dummy_mask = jnp.ones((1, self.num_actions))
+        self.params = self.network.init(key, dummy_obs, dummy_mask)
         self.fixed_params = self.params
         self.opt_state = self.optimizer.init(self.params)
 

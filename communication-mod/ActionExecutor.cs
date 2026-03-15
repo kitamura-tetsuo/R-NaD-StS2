@@ -23,17 +23,34 @@ public partial class MainFile : Node
                 var combatState = cm.DebugOnlyGetState();
                 var card = player.PlayerCombatState.Hand.Cards.FirstOrDefault(c => c.Id.Entry == cardId);
 
-                if (card != null && card.CanPlay())
+                if (card != null)
                 {
-                    MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
-                    target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
+                    bool canPlay = card.CanPlay();
+                    string targetType = card.TargetType.ToString();
+                    Logger.Info($"[AutoAI] Playing card: {card.Title} (ID: {cardId}, CanPlay: {canPlay}, TargetType: {targetType})");
 
-                    Logger.Info($"[AutoAI] Playing card: {card.Title}");
-                    card.TryManualPlay(target);
+                    if (canPlay)
+                    {
+                        MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
+                        // Only provide a target if the card requires one
+                        if (targetType.Contains("Enemy") || targetType.Contains("Single"))
+                        {
+                            target = combatState.Enemies.FirstOrDefault(e => e.IsAlive);
+                            Logger.Info($"[AutoAI] Targeted enemy: {target?.Name ?? "None"}");
+                        }
+
+                        // TryManualPlay's signature might vary, typically it's TryManualPlay(target)
+                        card.TryManualPlay(target);
+                        Logger.Info($"[AutoAI] Called TryManualPlay for {card.Title}");
+                    }
+                    else
+                    {
+                        Logger.Info($"[AutoAI] Cannot play card: {card.Title} (CanPlay returned false)");
+                    }
                 }
                 else
                 {
-                    Logger.Info($"[AutoAI] Cannot play card: {cardId} (card exists: {card != null}, CanPlay: {card?.CanPlay()})");
+                    Logger.Info($"[AutoAI] Card not found in hand: {cardId}");
                 }
             }
             else if (action == "use_potion")
