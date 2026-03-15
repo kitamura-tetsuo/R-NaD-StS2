@@ -245,7 +245,14 @@ class TrainingWorker(threading.Thread):
         # Transpose to (T, B, ...)
         # Trajectories might have different lengths, so we pad them
         max_len = self.config.unroll_length
-        padded_obs = []
+        # obs is now a dictionary of lists of lists
+        padded_obs_dict = {
+            "global": [],
+            "combat": [],
+            "map": [],
+            "event": [],
+            "state_type": []
+        }
         padded_act = []
         padded_rew = []
         padded_mask = []
@@ -254,10 +261,19 @@ class TrainingWorker(threading.Thread):
 
         for traj in self.batch_buffer:
             l = len(traj)
-            # Pad obs
+            
+            # obs_traj is a list of dicts
             obs_traj = [t['obs'] for t in traj]
-            obs_traj += [np.zeros_like(obs_traj[0])] * (max_len - l)
-            padded_obs.append(obs_traj)
+            
+            # Pad each element in the dict
+            for key in padded_obs_dict.keys():
+                val_traj = [o[key] for o in obs_traj]
+                # Pad with zeros (or last for state_type if preferred, but 2 is fine as default)
+                if key == "state_type":
+                    val_traj += [np.int32(2)] * (max_len - l)
+                else:
+                    val_traj += [np.zeros_like(val_traj[0])] * (max_len - l)
+                padded_obs_dict[key].append(val_traj)
 
             # Pad act
             act_traj = [t['act'] for t in traj]
@@ -283,7 +299,13 @@ class TrainingWorker(threading.Thread):
             v_mask = [1.0] * l + [0.0] * (max_len - l)
             valid_mask.append(v_mask)
 
-        obs = np.array(padded_obs)
+        # Build JAX-ready obs dictionary
+        # Each element should be (T, B, dim) - currently (B, T, dim)
+        jax_obs = {
+            k: jnp.array(np.array(v).transpose(1, 0, *range(2, np.array(v).ndim)))
+            for k, v in padded_obs_dict.items()
+        }
+        
         act = np.array(padded_act)
         rew = np.array(padded_rew)
         mask = np.array(padded_mask)
@@ -291,7 +313,7 @@ class TrainingWorker(threading.Thread):
         valid = np.array(valid_mask)
 
         batch = {
-            'obs': jnp.array(obs.transpose(1, 0, 2)),
+            'obs': jax_obs,
             'act': jnp.array(act.transpose(1, 0)),
             'rew': jnp.array(rew.transpose(1, 0)),
             'mask': jnp.array(mask.transpose(1, 0, 2)),
@@ -357,8 +379,15 @@ def load_model(checkpoint_path=None):
         seq_len=16,
         accumulation_steps=8 # Can be changed to test
     )
-    state_dim = 256
-    learner = RNaDLearner(state_dim, num_actions, config)
+    # Updated dummy state for structured dictionary input
+    dummy_obs = {
+        "global": jnp.zeros((1, 32)),
+        "combat": jnp.zeros((1, 128)),
+        "map": jnp.zeros((1, 64)),
+        "event": jnp.zeros((1, 64)),
+        "state_type": jnp.zeros((1,), dtype=jnp.int32)
+    }
+    learner = RNaDLearner(None, num_actions, config) # state_dim is now unused/ignored in init
     rng_key = jax.random.PRNGKey(42)
 
     # Initialize ExperimentManager
@@ -412,97 +441,128 @@ def load_model(checkpoint_path=None):
         training_worker.start()
 
 def encode_state(state):
-    """Encodes the game state into a 256-dimensional vector."""
-    vec = np.zeros(256, dtype=np.float32)
+    """Encodes the game state into a structured dictionary of NumPy arrays."""
     state_type = state.get("type", "unknown")
     
-    # 0-9: State type and Common global stats
-    type_map = {"combat": 1, "map": 2, "rewards": 3, "event": 4, "rest_site": 5, "shop": 6, "treasure": 7, "game_over": 8}
-    vec[0] = type_map.get(state_type, 0) / 10.0
-    vec[1] = state.get("floor", 0) / 50.0
+    # State type mapping
+    # 0: Combat
+    # 1: Map
+    # 2: Event-like (Rewards, Event, Shop, Rest, Treasure, etc.)
+    type_map = {
+        "combat": 0,
+        "map": 1,
+        "rewards": 2,
+        "event": 2,
+        "rest_site": 2,
+        "shop": 2,
+        "treasure": 2,
+        "game_over": 2,
+        "treasure_relics": 2,
+        "card_reward": 2,
+        "grid_selection": 2,
+        "hand_selection": 2
+    }
+    st_idx = type_map.get(state_type, 2)
+    
+    # --- Global Features (Size 32) ---
+    global_vec = np.zeros(32, dtype=np.float32)
+    global_vec[0] = state.get("floor", 0) / 50.0
+    global_vec[1] = state.get("gold", 0) / 500.0
     
     player = state.get("player", {})
-    vec[2] = player.get("hp", 0) / 100.0
-    vec[3] = player.get("maxHp", 100) / 100.0
-    vec[4] = player.get("block", 0) / 50.0
-    vec[5] = player.get("energy", 0) / 5.0
-    vec[6] = player.get("stars", 0) / 10.0
-    vec[7] = state.get("gold", 0) / 500.0
+    global_vec[2] = player.get("hp", 0) / 100.0
+    global_vec[3] = player.get("maxHp", 100) / 100.0
+    global_vec[4] = player.get("block", 0) / 50.0
+    global_vec[5] = player.get("energy", 0) / 5.0
+    global_vec[6] = player.get("stars", 0) / 10.0
     
-    # 10-19: Pile counts
-    vec[10] = player.get("drawPileCount", 0) / 30.0
-    vec[11] = player.get("discardPileCount", 0) / 30.0
-    vec[12] = player.get("exhaustPileCount", 0) / 30.0
-    
-    # 20-59: Hand cards (up to 10 cards, 4 features each)
-    hand = state.get("hand", [])
-    for i in range(min(len(hand), 10)):
-        card = hand[i]
-        base_idx = 20 + i * 4
-        # Simple hash-like mapping for card ID
-        name_sum = sum(ord(c) for c in card.get("id", ""))
-        vec[base_idx] = (name_sum % 100) / 100.0
-        vec[base_idx + 1] = 1.0 if card.get("isPlayable") else 0.0
-        
-        # Target type encoding (12 bits/features after basic ones)
-        # Simplified encoding: single, all, random, none
-        target_type = card.get("targetType", "None")
-        tt_map = {"SingleEnemy": 1, "AllEnemy": 2, "RandomEnemy": 3, "None": 0, "Self": 4}
-        vec[base_idx + 2] = tt_map.get(target_type, 0) / 10.0
-    
-    # 60-119: Enemies (up to 5 enemies, 12 features each)
-    enemies = state.get("enemies", [])
-    for i in range(min(len(enemies), 5)):
-        enemy = enemies[i]
-        base_idx = 60 + i * 12
-        vec[base_idx] = 1.0 # Alive
-        vec[base_idx + 1] = enemy.get("hp", 0) / 200.0
-        vec[base_idx + 2] = enemy.get("maxHp", 1) / 200.0
-        vec[base_idx + 3] = enemy.get("block", 0) / 50.0
-        
-        # Intents (up to 2 intents per enemy)
-        intents = enemy.get("intents", [])
-        for j in range(min(len(intents), 2)):
-            intent = intents[j]
-            intent_idx = base_idx + 4 + j * 4
-            # map intent type
-            it_map = {"Attack": 1, "Defense": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "Stun": 7}
-            vec[intent_idx] = it_map.get(intent.get("type"), 0) / 10.0
-            vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
-            vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
-
-    # 120-159: Space for relics or map info
-    if state_type == "map":
-        next_nodes = state.get("next_nodes", [])
-        for i in range(min(len(next_nodes), 8)):
-            node = next_nodes[i]
-            base_idx = 120 + i * 4
-            vec[base_idx] = 1.0
-            vec[base_idx + 1] = node.get("row", 0) / 20.0
-            vec[base_idx + 2] = node.get("col", 0) / 7.0
-            # map node type
-            nt_map = {"Monster": 1, "Elite": 2, "Event": 3, "Rest": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
-            vec[base_idx + 3] = nt_map.get(node.get("type"), 0) / 10.0
-
-    # 160-200: Space for rewards or shop items
-    if state_type == "rewards":
-        rewards = state.get("rewards", [])
-        for i in range(min(len(rewards), 10)):
-            reward = rewards[i]
-            base_idx = 160 + i * 4
-            vec[base_idx] = 1.0
-            # map reward type
-            rt_map = {"Gold": 1, "Card": 2, "Relic": 3, "Potion": 4}
-            vec[base_idx + 1] = rt_map.get(reward.get("type"), 0) / 10.0
-
-    # 201-205: Potion slots (up to 5 slots)
+    # Potion presence
     potions = state.get("potions", [])
     for i in range(min(len(potions), 5)):
-        potion = potions[i]
-        if potion.get("id") != "empty":
-            vec[201 + i] = 1.0
+        if potions[i].get("id") != "empty":
+            global_vec[10 + i] = 1.0
+            
+    # --- Combat Features (Size 128) ---
+    combat_vec = np.zeros(128, dtype=np.float32)
+    if st_idx == 0:
+        # Pile counts
+        combat_vec[0] = player.get("drawPileCount", 0) / 30.0
+        combat_vec[1] = player.get("discardPileCount", 0) / 30.0
+        combat_vec[2] = player.get("exhaustPileCount", 0) / 30.0
+        
+        # Hand cards (up to 10 cards, 5 features each)
+        hand = state.get("hand", [])
+        for i in range(min(len(hand), 10)):
+            card = hand[i]
+            base_idx = 10 + i * 5
+            name_sum = sum(ord(c) for c in card.get("id", ""))
+            combat_vec[base_idx] = (name_sum % 100) / 100.0
+            combat_vec[base_idx + 1] = 1.0 if card.get("isPlayable") else 0.0
+            
+            target_type = card.get("targetType", "None")
+            tt_map = {"SingleEnemy": 1, "AllEnemy": 2, "RandomEnemy": 3, "None": 0, "Self": 4}
+            combat_vec[base_idx + 2] = tt_map.get(target_type, 0) / 10.0
+            combat_vec[base_idx + 3] = card.get("cost", 0) / 5.0
+            combat_vec[base_idx + 4] = 1.0 if card.get("upgraded") else 0.0
 
-    return vec
+        # Enemies (up to 5 enemies, 12 features each)
+        enemies = state.get("enemies", [])
+        for i in range(min(len(enemies), 5)):
+            enemy = enemies[i]
+            base_idx = 60 + i * 12
+            combat_vec[base_idx] = 1.0 # Alive
+            combat_vec[base_idx + 1] = enemy.get("hp", 0) / 200.0
+            combat_vec[base_idx + 2] = enemy.get("maxHp", 1) / 200.0
+            combat_vec[base_idx + 3] = enemy.get("block", 0) / 50.0
+            
+            intents = enemy.get("intents", [])
+            for j in range(min(len(intents), 2)):
+                intent = intents[j]
+                intent_idx = base_idx + 4 + j * 4
+                it_map = {"Attack": 1, "Defense": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "Stun": 7}
+                combat_vec[intent_idx] = it_map.get(intent.get("type"), 0) / 10.0
+                combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
+                combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
+                
+    # --- Map Features (Size 64) ---
+    map_vec = np.zeros(64, dtype=np.float32)
+    if st_idx == 1:
+        next_nodes = state.get("next_nodes", [])
+        for i in range(min(len(next_nodes), 12)):
+            node = next_nodes[i]
+            base_idx = i * 4
+            map_vec[base_idx] = 1.0
+            map_vec[base_idx + 1] = node.get("row", 0) / 20.0
+            map_vec[base_idx + 2] = node.get("col", 0) / 7.0
+            nt_map = {"Monster": 1, "Elite": 2, "Event": 3, "Rest": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
+            map_vec[base_idx + 3] = nt_map.get(node.get("type"), 0) / 10.0
+
+    # --- Event Features (Size 64) ---
+    event_vec = np.zeros(64, dtype=np.float32)
+    if st_idx == 2:
+        if state_type == "rewards":
+            rewards = state.get("rewards", [])
+            for i in range(min(len(rewards), 10)):
+                reward = rewards[i]
+                base_idx = i * 4
+                event_vec[base_idx] = 1.0
+                rt_map = {"Gold": 1, "Card": 2, "Relic": 3, "Potion": 4, "Curse": 5}
+                event_vec[base_idx + 1] = rt_map.get(reward.get("type"), 0) / 10.0
+        elif state_type == "event":
+            options = state.get("options", [])
+            for i in range(min(len(options), 10)):
+                event_vec[i] = 1.0 if not options[i].get("is_locked") else 0.5
+        elif state_type == "shop":
+             # Placeholder for shop
+             event_vec[0] = 1.0
+
+    return {
+        "global": global_vec,
+        "combat": combat_vec,
+        "map": map_vec,
+        "event": event_vec,
+        "state_type": np.int32(st_idx)
+    }
 
 def compute_reward(state, state_type=None):
     """Compute the reward for the current state.
@@ -712,16 +772,22 @@ def predict_action(state_json):
 
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
-        state_vec = encode_state(state)
+        state_dict = encode_state(state)
         
         # Calculate Action Mask
         masked_rewards = getattr(predict_action, 'skipped_reward_indices', set())
         mask = get_action_mask(state, masked_reward_indices=masked_rewards)
         mask_jnp = jnp.array(mask)
         
+        # Prepare dictionary with leading batch dimensions for inference
+        # state_dict has elements like (dim,) or (), need (1, dim) or (1,)
+        batched_state = {
+            k: jnp.array(v)[None, ...] for k, v in state_dict.items()
+        }
+        
         # Inference
-        # Now passing mask to the network for awareness and filtering
-        logits, value = learner.network.apply(learner.params, None, state_vec[None, :], mask[None, :].astype(jnp.float32))
+        # Now passing batched_state dictionary to the network
+        logits, value = learner.network.apply(learner.params, None, batched_state, mask[None, :].astype(jnp.float32))
         
         # Probs are calculated from logits which are already masked in the network
         probs = jax.nn.softmax(logits, axis=-1)
@@ -815,7 +881,7 @@ def predict_action(state_json):
                 predict_action.session_cumulative_reward += reward
 
                 current_trajectory.append({
-                    "obs": state_vec,
+                    "obs": state_dict,
                     "act": int(action_idx),
                     "rew": float(reward),
                     "mask": mask.astype(np.float32),

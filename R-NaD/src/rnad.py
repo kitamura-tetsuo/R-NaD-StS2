@@ -84,18 +84,20 @@ def v_trace(
     return vs, pg_advantages
 
 def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rnad: float):
-    obs = batch['obs'] # (T, B, dim)
+    obs = batch['obs'] # Dictionary (PyTree) of (T, B, ...)
     act = batch['act'] # (T, B)
     rew = batch['rew'] # (T, B)
     mask = batch['mask'] # (T, B, num_actions)
     log_prob_bhv = batch['log_prob'] # (T, B)
+    
+    # Get any element to find T and B
+    any_val = jax.tree_util.tree_leaves(obs)[0]
+    T, B = any_val.shape[:2]
     valid_mask = batch.get('valid', jnp.ones((T, B))) # (T, B)
     
-    T, B, _ = obs.shape
-    
-    # Flatten T and B for forward pass
-    obs_flat = obs.reshape(-1, obs.shape[-1])
-    mask_flat = mask.reshape(-1, mask.shape[-1])
+    # Flatten T and B for forward pass using PyTree map
+    obs_flat = jax.tree_util.tree_map(lambda x: x.reshape(T * B, *x.shape[2:]), obs)
+    mask_flat = mask.reshape(T * B, -1)
     
     logits, values = apply_fn(params, jax.random.PRNGKey(0), obs_flat, mask_flat)
     logits = logits.reshape(T, B, -1)
@@ -124,7 +126,6 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     value_loss = 0.5 * jnp.sum((jax.lax.stop_gradient(vs) - values) ** 2 * valid_mask) / jnp.maximum(jnp.sum(valid_mask), 1.0)
     policy_loss = -jnp.sum(log_pi_a * jax.lax.stop_gradient(pg_adv) * valid_mask) / jnp.maximum(jnp.sum(valid_mask), 1.0)
     
-
     return policy_loss + value_loss, (policy_loss, value_loss)
 
 def _get_hk_module():
@@ -173,6 +174,45 @@ def _define_transformer_classes():
             x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + mlp_out)
             return x
 
+    class _CombatExpert(hk.Module):
+        def __init__(self, hidden_size, num_blocks, num_heads, seq_len, name=None):
+            super().__init__(name=name)
+            self.hidden_size = hidden_size
+            self.num_blocks = num_blocks
+            self.num_heads = num_heads
+            self.seq_len = seq_len
+            
+        def __call__(self, h_global, combat_obs, is_training=False):
+            h = jnp.concatenate([h_global, combat_obs], axis=-1)
+            projection_size = self.seq_len * self.hidden_size
+            x = hk.Linear(projection_size, name="combat_proj")(h)
+            x = jnp.reshape(x, (self.seq_len, self.hidden_size))
+            
+            pos_emb = hk.get_parameter("pos_emb_combat", [self.seq_len, self.hidden_size], init=hk.initializers.TruncatedNormal())
+            x = x + pos_emb
+            
+            # Since this will be vmapped, we process one sequence at a time
+            # But TransformerBlock expects (B, SeqLen, D). We add a fake batch dim.
+            x = x[None, ...] 
+            for i in range(self.num_blocks):
+                x = _TransformerBlock(
+                    num_heads=self.num_heads,
+                    key_size=self.hidden_size // self.num_heads,
+                    hidden_size=self.hidden_size,
+                    name=f"combat_block_{i}"
+                )(x, is_training)
+            
+            return jnp.mean(x[0], axis=0) # Return (hidden_size,)
+
+    class _SimpleExpert(hk.Module):
+        def __init__(self, hidden_size, name=None):
+            super().__init__(name=name)
+            self.hidden_size = hidden_size
+            
+        def __call__(self, h_global, expert_obs):
+            h = jnp.concatenate([h_global, expert_obs], axis=-1)
+            return hk.nets.MLP([self.hidden_size * 2, self.hidden_size], name="mlp")(h)
+
     class _TransformerNet(hk.Module):
         def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len):
             super().__init__()
@@ -181,45 +221,44 @@ def _define_transformer_classes():
             self.num_blocks = num_blocks
             self.num_heads = num_heads
             self.seq_len = seq_len
-
-        def __call__(self, x, mask, is_training=False):
-            # x: (B, ObsDim), mask: (B, NumActions)
-            if x.ndim > 2:
-                x = jnp.reshape(x, (x.shape[0], -1))
-
-            # Concat mask to observations for "mask-awareness"
-            x_combined = jnp.concatenate([x, mask.astype(jnp.float32)], axis=-1)
             
-            batch_size = x_combined.shape[0]
-            
-            # Feature Projection to sequence
-            projection_size = self.seq_len * self.hidden_size
-            x_combined = hk.Linear(projection_size)(x_combined)
-            x_combined = jnp.reshape(x_combined, (batch_size, self.seq_len, self.hidden_size))
+            # Define sub-modules here for stable parameter registration
+            self.global_proj = hk.Linear(self.hidden_size, name="global_proj")
+            self.combat_expert = _CombatExpert(hidden_size, num_blocks, num_heads, seq_len, name="combat_expert")
+            self.map_expert = _SimpleExpert(hidden_size, name="map_expert")
+            self.event_expert = _SimpleExpert(hidden_size, name="event_expert")
+            self.policy_head = hk.Linear(num_actions, name="policy_head")
+            self.value_head = hk.Linear(1, name="value_head")
 
-            # Position Embeddings
-            pos_emb = hk.get_parameter("pos_emb", [self.seq_len, self.hidden_size], init=hk.initializers.TruncatedNormal())
-            x_combined = x_combined + pos_emb
+        def __call__(self, state_dict, mask, is_training=False):
+            # Process Global Backbone (shared)
+            h_global = jax.vmap(lambda x: jax.nn.relu(self.global_proj(x)))(state_dict["global"])
 
-            # Transformer Blocks
-            for i in range(self.num_blocks):
-                x_combined = _TransformerBlock(
-                    num_heads=self.num_heads,
-                    key_size=self.hidden_size // self.num_heads,
-                    hidden_size=self.hidden_size,
-                    name=f"block_{i}"
-                )(x_combined, is_training)
+            # Expert branches as closures
+            def route_expert(st_idx, h_g, s_dict):
+                return jax.lax.switch(st_idx, [
+                    lambda: self.combat_expert(h_g, s_dict["combat"], is_training),
+                    lambda: self.map_expert(h_g, s_dict["map"]),
+                    lambda: self.event_expert(h_g, s_dict["event"])
+                ])
 
-            # Global Pooling (Mean)
-            features = jnp.mean(x_combined, axis=1)
+            # Use vmap to apply switch across batch
+            if not hk.running_init():
+                features = jax.vmap(route_expert)(state_dict["state_type"], h_global, state_dict)
+            else:
+                # During init, ensure ALL experts are initialized by calling them once
+                # We use a dummy index to trigger them or just call them directly
+                # Haiku modules must be called to register params.
+                self.combat_expert(h_global[0], state_dict["combat"][0], is_training)
+                self.map_expert(h_global[0], state_dict["map"][0])
+                self.event_expert(h_global[0], state_dict["event"][0])
+                features = jax.vmap(route_expert)(state_dict["state_type"], h_global, state_dict)
 
-            # Heads
-            logits = hk.Linear(self.num_actions)(features)
-            
-            # Apply Mask Filtering directly to logits
+            # Unified Heads
+            logits = self.policy_head(features)
             logits = jnp.where(mask.astype(bool), logits, -1e9)
+            value = self.value_head(features)
             
-            value = hk.Linear(1)(features)
             return logits, jnp.squeeze(value, axis=-1)
             
     TransformerBlock = _TransformerBlock
@@ -265,7 +304,7 @@ class RNaDLearner:
         self.state_dim = state_dim
         self.num_actions = num_actions
         
-        def forward(x, mask):
+        def forward(state_dict, mask):
             if config.model_type == "transformer":
                 model = TransformerNet(
                     num_actions=num_actions,
@@ -274,21 +313,24 @@ class RNaDLearner:
                     num_heads=config.num_heads,
                     seq_len=config.seq_len
                 )
-                return model(x, mask)
+                return model(state_dict, mask)
             else:
-                # MLP version with mask-awareness
-                x_combined = jnp.concatenate([x, mask.astype(jnp.float32)], axis=-1)
-                net = hk.Sequential([
-                    hk.Linear(config.hidden_size), jax.nn.relu,
-                    hk.Linear(config.hidden_size), jax.nn.relu,
-                    hk.Linear(config.hidden_size), jax.nn.relu,
-                ])
-                features = net(x_combined)
+                # Basic Categorized MLP for non-transformer case
+                h_global = hk.Linear(config.hidden_size)(state_dict["global"])
+                h_global = jax.nn.relu(h_global)
+                
+                def process_combat(state):
+                     return hk.nets.MLP([config.hidden_size, config.hidden_size])(jnp.concatenate([h_global, state["combat"]], axis=-1))
+                def process_map(state):
+                     return hk.nets.MLP([config.hidden_size, config.hidden_size])(jnp.concatenate([h_global, state["map"]], axis=-1))
+                def process_event(state):
+                     return hk.nets.MLP([config.hidden_size, config.hidden_size])(jnp.concatenate([h_global, state["event"]], axis=-1))
+                
+                branches = [process_combat, process_map, process_event]
+                features = jax.vmap(lambda idx, s: jax.lax.switch(idx, branches, s))(state_dict["state_type"], state_dict)
+                
                 logits = hk.Linear(num_actions)(features)
-                
-                # Apply Mask Filtering
                 logits = jnp.where(mask.astype(bool), logits, -1e9)
-                
                 value = hk.Linear(1)(features)
                 return logits, jnp.squeeze(value, axis=-1)
             
@@ -307,9 +349,16 @@ class RNaDLearner:
         self._update_fn = jax.jit(self._update_pure)
 
     def init(self, key):
-        dummy_obs = jnp.zeros((1, self.state_dim))
+        # Create a dummy dictionary state matching the new structure
+        dummy_state = {
+            "global": jnp.zeros((1, 32)),
+            "combat": jnp.zeros((1, 128)),
+            "map": jnp.zeros((1, 64)),
+            "event": jnp.zeros((1, 64)),
+            "state_type": jnp.zeros((1,), dtype=jnp.int32)
+        }
         dummy_mask = jnp.ones((1, self.num_actions))
-        self.params = self.network.init(key, dummy_obs, dummy_mask)
+        self.params = self.network.init(key, dummy_state, dummy_mask)
         self.fixed_params = self.params
         self.opt_state = self.optimizer.init(self.params)
 
