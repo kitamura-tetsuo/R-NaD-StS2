@@ -439,8 +439,8 @@ class RNaDLearner:
     def init(self, key):
         # Create a dummy dictionary state matching the new structure
         dummy_state = {
-            "global": jnp.zeros((1, 64)),
-            "combat": jnp.zeros((1, 256)),
+            "global": jnp.zeros((1, 128)),
+            "combat": jnp.zeros((1, 384)),
             "draw_bow": jnp.zeros((1, 100)),
             "discard_bow": jnp.zeros((1, 100)),
             "exhaust_bow": jnp.zeros((1, 100)),

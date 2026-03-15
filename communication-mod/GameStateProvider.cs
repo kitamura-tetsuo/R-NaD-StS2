@@ -108,6 +108,7 @@ public partial class MainFile : Node
                 floor = runState.TotalFloor,
                 rewards = rewards,
                 has_open_potion_slots = hasOpenPotionSlots,
+                relics = player?.Relics.Select(r => r.Model.Id.Entry).ToList() ?? new List<string>(),
                 can_proceed = MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState)
             }, JsonOptions);
         }
@@ -312,6 +313,18 @@ public partial class MainFile : Node
                 _diagnosed = true;
             }
 
+            // Diagnostic: Log creature (player) properties once
+            if (!_diagnosed && player != null)
+            {
+                Logger.Info($"[AutoAI] Diagnosing creature properties for {player.Creature.GetType().FullName}");
+                foreach (var prop in player.Creature.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                {
+                    try {
+                        Logger.Info($"[AutoAI] Property: {prop.Name}");
+                    } catch {}
+                }
+            }
+
             // Check if hand is in selection mode (e.g., Armaments, Grid selection in combat)
             var handNode = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
             if (handNode != null)
@@ -369,7 +382,9 @@ public partial class MainFile : Node
                     drawPile = pState?.DrawPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
                     discardPile = pState?.DiscardPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
                     exhaustPile = pState?.ExhaustPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
-                    masterDeck = GetPropValue<string>(runState, "MasterDeck", GetPropValue<string>(runState, "Deck", GetPropValue<string>(player, "MasterDeck", "[]")))
+                    masterDeck = GetPropValue<string>(runState, "MasterDeck", GetPropValue<string>(runState, "Deck", GetPropValue<string>(player, "MasterDeck", "[]"))),
+                    relics = player?.Relics.Select(r => r.Model.Id.Entry).ToList() ?? new List<string>(),
+                    powers = player?.Creature.Powers.Select(p => new { id = p.Model.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>()
                 },
                 hand = pState?.Hand.Cards.Select(c => {
                     var dynamicVars = c.DynamicVars;
@@ -429,6 +444,7 @@ public partial class MainFile : Node
                         hp = e.CurrentHp,
                         maxHp = e.MaxHp,
                         block = e.Block,
+                        powers = e.Powers.Select(p => new { id = p.Model.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>(),
                         intents = intents
                     };
                 }).ToList()

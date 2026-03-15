@@ -253,6 +253,66 @@ CARD_VOCAB = {
 }
 VOCAB_SIZE = 100 # Fixed size to allow for new cards
 
+RELIC_VOCAB = {
+    "UNKNOWN": 0,
+    "BURNING_BLOOD": 1,
+    "RING_OF_THE_SNAKE": 2,
+    "CRACKED_CORE": 3,
+    "PURE_WATER": 4,
+    "AKABEKO": 5,
+    "ANCHOR": 6,
+    "ANCIENT_TEA_SET": 7,
+    "ART_OF_WAR": 8,
+    "BAG_OF_MARBLES": 9,
+    "BAG_OF_PREPARATION": 10,
+    "BLOOD_VIAL": 11,
+    "BRONZE_SCALES": 12,
+    "CENTENNIAL_PUZZLE": 13,
+    "CERAMIC_FISH": 14,
+    "DREAM_CATCHER": 15,
+    "HAPPY_FLOWER": 16,
+    "LANTERN": 17,
+    "MEAD_WHIP": 18,
+    "NUNCHAKU": 19,
+    "ODDLY_SMOOTH_STONE": 20,
+    "ORICHALCUM": 21,
+    "PEN_NIB": 22,
+    "POTION_BELT": 23,
+    "PRESERVED_INSECT": 24,
+    "REGAL_PILLOW": 25,
+    "SMILING_MASK": 26,
+    "STRAW_DOLL": 27,
+    "TOY_ORNITHOPTER": 28,
+    "VAJRA": 29,
+    "WAR_PAINT": 30,
+    "WHETSTONE": 31
+}
+RELIC_VOCAB_SIZE = 50
+
+POWER_VOCAB = {
+    "UNKNOWN": 0,
+    "STRENGTH": 1,
+    "DEXTERITY": 2,
+    "FOCUS": 3,
+    "VULNERABLE": 4,
+    "WEAK": 5,
+    "FRAIL": 6,
+    "NO_BLOCK_NEXT_TURN": 7,
+    "ARTIFACT": 8,
+    "THORNS": 9,
+    "METALLICIZE": 10,
+    "PLATED_ARMOR": 11,
+    "REGEN": 12,
+    "RITUAL": 13,
+    "COMBUST": 14,
+    "DARK_EMBRACE": 15,
+    "EVOLVE": 16,
+    "FEEL_THE_BURN": 17,
+    "FIRE_BREATHING": 18,
+    "FLAME_BARRIER": 19
+}
+POWER_VOCAB_SIZE = 20
+
 BOSS_VOCAB = {
     "UNKNOWN": 0,
     "SLIME_BOSS": 1,
@@ -277,8 +337,18 @@ def get_boss_idx(boss_id):
 def get_card_idx(card_id):
     if not card_id: return 0
     # Clean up (e.g., remove name suffixes if any)
-    cid = card_id.split('+')[0].strip()
+    cid = card_id.split('+')[0].strip().upper()
     return CARD_VOCAB.get(cid, 0)
+
+def get_relic_idx(relic_id):
+    if not relic_id: return 0
+    rid = relic_id.upper()
+    return RELIC_VOCAB.get(rid, 0)
+
+def get_power_idx(power_id):
+    if not power_id: return 0
+    pid = power_id.upper()
+    return POWER_VOCAB.get(pid, 0)
 
 def encode_bow(card_ids):
     do_deferred_imports()
@@ -511,8 +581,8 @@ def load_model(checkpoint_path=None):
     )
     # Updated dummy state for structured dictionary input
     dummy_obs = {
-        "global": jnp.zeros((1, 64)),
-        "combat": jnp.zeros((1, 256)),
+        "global": jnp.zeros((1, 128)),
+        "combat": jnp.zeros((1, 384)),
         "map": jnp.zeros((1, 2048)),
         "event": jnp.zeros((1, 128)),
         "state_type": jnp.zeros((1,), dtype=jnp.int32)
@@ -601,8 +671,8 @@ def encode_state(state):
     }
     st_idx = type_map.get(state_type, 2)
     
-    # --- Global Features (Size 64) ---
-    global_vec = np.zeros(64, dtype=np.float32)
+    # --- Global Features (Size 128) ---
+    global_vec = np.zeros(128, dtype=np.float32)
     global_vec[0] = state.get("floor", 0) / 50.0
     global_vec[1] = state.get("gold", 0) / 500.0
     
@@ -623,8 +693,17 @@ def encode_state(state):
     boss_id = state.get("boss", "Unknown")
     global_vec[20] = get_boss_idx(boss_id) / float(BOSS_VOCAB_SIZE)
     
-    # --- Combat Features (Size 256) ---
-    combat_vec = np.zeros(256, dtype=np.float32)
+    # Relics (Multi-hot, size 50, starting at index 30)
+    relics = state.get("relics", [])
+    if not relics and player: # Fallback for combat state where player is a child
+        relics = player.get("relics", [])
+    for rid in relics:
+        idx = get_relic_idx(rid)
+        if 0 < idx < RELIC_VOCAB_SIZE:
+            global_vec[30 + idx] = 1.0
+
+    # --- Combat Features (Size 384) ---
+    combat_vec = np.zeros(384, dtype=np.float32)
     draw_bow = np.zeros(VOCAB_SIZE, dtype=np.float32)
     discard_bow = np.zeros(VOCAB_SIZE, dtype=np.float32)
     exhaust_bow = np.zeros(VOCAB_SIZE, dtype=np.float32)
@@ -681,6 +760,25 @@ def encode_state(state):
                 combat_vec[intent_idx] = it_map.get(intent.get("type"), 0) / 10.0
                 combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
                 combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
+                
+        # Powers (starting at 200)
+        # Player powers (up to 10, index 200-219)
+        p_powers = player.get("powers", [])
+        for i in range(min(len(p_powers), 10)):
+            p = p_powers[i]
+            base_idx = 200 + i * 2
+            combat_vec[base_idx] = get_power_idx(p.get("id")) / float(POWER_VOCAB_SIZE)
+            combat_vec[base_idx + 1] = p.get("amount", 0) / 10.0
+            
+        # Enemy powers (up to 5 enemies, 10 powers each, starting at 220)
+        for i in range(min(len(enemies), 5)):
+            e_powers = enemies[i].get("powers", [])
+            enemy_base = 220 + i * 20
+            for j in range(min(len(e_powers), 10)):
+                p = e_powers[j]
+                idx = enemy_base + j * 2
+                combat_vec[idx] = get_power_idx(p.get("id")) / float(POWER_VOCAB_SIZE)
+                combat_vec[idx + 1] = p.get("amount", 0) / 10.0
                 
     # --- Map Features (Size 2048) ---
     map_vec = np.zeros(2048, dtype=np.float32)
