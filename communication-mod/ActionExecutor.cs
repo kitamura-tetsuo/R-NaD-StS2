@@ -652,8 +652,7 @@ public partial class MainFile : Node
                             if (method != null) {
                                 method.Invoke(potion, null);
                             } else {
-                                // Fallback: many things in Sts2 use a Discard() method on the slot or the item.
-                                potion.Call("Discard");
+                                Logger.Error($"[AutoAI] Could not find Discard method on {potion.GetType().FullName}");
                             }
                         } catch (Exception ex) {
                             Logger.Error($"[AutoAI] Error discarding potion: {ex.Message}");

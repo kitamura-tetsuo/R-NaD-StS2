@@ -89,6 +89,7 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     rew = batch['rew'] # (T, B)
     mask = batch['mask'] # (T, B, num_actions)
     log_prob_bhv = batch['log_prob'] # (T, B)
+    valid_mask = batch.get('valid', jnp.ones((T, B))) # (T, B)
     
     T, B, _ = obs.shape
     
@@ -119,8 +120,9 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     v_next = jnp.concatenate([values[1:], jnp.zeros((1, B))], axis=0)
     vs, pg_adv = v_trace(values, v_next, r_reg, rho, gamma=config.discount_factor)
     
-    value_loss = 0.5 * jnp.mean((jax.lax.stop_gradient(vs) - values) ** 2)
-    policy_loss = -jnp.mean(log_pi_a * jax.lax.stop_gradient(pg_adv))
+    # Mask losses by validity
+    value_loss = 0.5 * jnp.sum((jax.lax.stop_gradient(vs) - values) ** 2 * valid_mask) / jnp.maximum(jnp.sum(valid_mask), 1.0)
+    policy_loss = -jnp.sum(log_pi_a * jax.lax.stop_gradient(pg_adv) * valid_mask) / jnp.maximum(jnp.sum(valid_mask), 1.0)
     
 
     return policy_loss + value_loss, (policy_loss, value_loss)
@@ -223,6 +225,38 @@ def _define_transformer_classes():
     TransformerBlock = _TransformerBlock
     TransformerNet = _TransformerNet
 
+def partial_load_params(target_params, source_params):
+    """Recursively copies parameters from source to target, handling shape mismatches by slicing."""
+    new_params = {}
+    for key, target_val in target_params.items():
+        if key not in source_params:
+            print(f"[R-NaD] Parameter {key} not found in checkpoint. Using initialized values.")
+            new_params[key] = target_val
+            continue
+            
+        source_val = source_params[key]
+        if isinstance(target_val, dict):
+            new_params[key] = partial_load_params(target_val, source_val)
+        else:
+            # target_val and source_val are jnp.ndarrays
+            if target_val.shape == source_val.shape:
+                new_params[key] = source_val
+            else:
+                print(f"[R-NaD] Shape mismatch for {key}: target {target_val.shape}, source {source_val.shape}. Loading partial weights.")
+                # Create a new array with target shape, initialized with target values
+                merged = jnp.copy(target_val)
+                
+                # Compute overlap slices
+                slices = []
+                for t_dim, s_dim in zip(target_val.shape, source_val.shape):
+                    slices.append(slice(0, min(t_dim, s_dim)))
+                
+                # Copy overlapping part
+                merged = merged.at[tuple(slices)].set(source_val[tuple(slices)])
+                new_params[key] = merged
+                
+    return new_params
+
 class RNaDLearner:
     def __init__(self, state_dim: int, num_actions: int, config: RNaDConfig):
         _init_libs()
@@ -290,6 +324,7 @@ class RNaDLearner:
     def update(self, batch, step: int):
         progress = min(1.0, step / self.config.max_steps)
         alpha = self.config.entropy_schedule_start + progress * (self.config.entropy_schedule_end - self.config.entropy_schedule_start)
+        valid = batch.get('valid', jnp.ones((batch['obs'].shape[0], batch['obs'].shape[1])))
         self.params, self.opt_state, loss, aux = self._update_fn(self.params, self.fixed_params, self.opt_state, batch, alpha)
         return {"loss": loss, "policy_loss": aux[0], "value_loss": aux[1], "alpha": alpha}
 
@@ -301,7 +336,38 @@ class RNaDLearner:
     def load_checkpoint(self, path):
         with open(path, 'rb') as f:
             data = pickle.load(f)
-            self.params = data['params']
-            self.fixed_params = data['fixed_params']
-            self.opt_state = data['opt_state']
+            
+            # Partial load params
+            print(f"[R-NaD] Attempting to load partial weights from {path}")
+            new_params = partial_load_params(self.params, data['params'])
+            
+            # Check if shapes matched exactly for opt_state compatibility
+            def check_shapes_match(t1, t2):
+                try:
+                    leaves1 = jax.tree_util.tree_leaves(t1)
+                    leaves2 = jax.tree_util.tree_leaves(t2)
+                    if len(leaves1) != len(leaves2):
+                        return False
+                    for l1, l2 in zip(leaves1, leaves2):
+                        if l1.shape != l2.shape:
+                            return False
+                    return True
+                except:
+                    return False
+            
+            params_changed = not check_shapes_match(self.params, data['params'])
+
+            self.params = new_params
+            if 'fixed_params' in data:
+                self.fixed_params = partial_load_params(self.fixed_params, data['fixed_params'])
+            else:
+                self.fixed_params = self.params
+            
+            # Reset opt_state if parameters changed shape, as Adam/MultiSteps state depends on param shapes
+            if params_changed:
+                print("[R-NaD] Parameter shapes changed. Resetting optimizer state.")
+                self.opt_state = self.optimizer.init(self.params)
+            else:
+                self.opt_state = data['opt_state']
+                
             return data['step']

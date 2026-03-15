@@ -242,20 +242,61 @@ class TrainingWorker(threading.Thread):
             print(f"[Python] Recorded episode end at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_last_floors)}")
 
     def perform_update(self):
-        # Convert buffer of trajectories to a single batch
-        # buffer shape: (B, T, ...)
-        obs = np.array([ [t['obs'] for t in traj] for traj in self.batch_buffer ]) # (B, T, dim)
-        act = np.array([ [t['act'] for t in traj] for traj in self.batch_buffer ]) # (B, T)
-        rew = np.array([ [t['rew'] for t in traj] for traj in self.batch_buffer ]) # (B, T)
-        log_prob = np.array([ [t['log_prob'] for t in traj] for traj in self.batch_buffer ]) # (B, T)
-
         # Transpose to (T, B, ...)
+        # Trajectories might have different lengths, so we pad them
+        max_len = self.config.unroll_length
+        padded_obs = []
+        padded_act = []
+        padded_rew = []
+        padded_mask = []
+        padded_log_prob = []
+        valid_mask = []
+
+        for traj in self.batch_buffer:
+            l = len(traj)
+            # Pad obs
+            obs_traj = [t['obs'] for t in traj]
+            obs_traj += [np.zeros_like(obs_traj[0])] * (max_len - l)
+            padded_obs.append(obs_traj)
+
+            # Pad act
+            act_traj = [t['act'] for t in traj]
+            act_traj += [0] * (max_len - l)
+            padded_act.append(act_traj)
+
+            # Pad rew
+            rew_traj = [t['rew'] for t in traj]
+            rew_traj += [0.0] * (max_len - l)
+            padded_rew.append(rew_traj)
+
+            # Pad mask
+            mask_traj = [t['mask'] for t in traj]
+            mask_traj += [np.zeros_like(mask_traj[0])] * (max_len - l)
+            padded_mask.append(mask_traj)
+
+            # Pad log_prob
+            lp_traj = [t['log_prob'] for t in traj]
+            lp_traj += [0.0] * (max_len - l)
+            padded_log_prob.append(lp_traj)
+
+            # Valid mask
+            v_mask = [1.0] * l + [0.0] * (max_len - l)
+            valid_mask.append(v_mask)
+
+        obs = np.array(padded_obs)
+        act = np.array(padded_act)
+        rew = np.array(padded_rew)
+        mask = np.array(padded_mask)
+        log_prob = np.array(padded_log_prob)
+        valid = np.array(valid_mask)
+
         batch = {
             'obs': jnp.array(obs.transpose(1, 0, 2)),
             'act': jnp.array(act.transpose(1, 0)),
             'rew': jnp.array(rew.transpose(1, 0)),
-            'mask': jnp.array(np.array([ [t['mask'] for t in traj] for traj in self.batch_buffer ]).transpose(1, 0, 2)),
-            'log_prob': jnp.array(log_prob.transpose(1, 0))
+            'mask': jnp.array(mask.transpose(1, 0, 2)),
+            'log_prob': jnp.array(log_prob.transpose(1, 0)),
+            'valid': jnp.array(valid.transpose(1, 0))
         }
 
         metrics = self.learner.update(batch, self.step_count)
@@ -308,13 +349,13 @@ def load_model(checkpoint_path=None):
     num_actions = 100
     config = RNaDConfig(
         batch_size=8, 
-        unroll_length=32, 
+        unroll_length=256, 
         model_type="transformer",
-        hidden_size=256,
-        num_blocks=4,
-        num_heads=4,
-        seq_len=8,
-        accumulation_steps=1 # Can be changed to test
+        hidden_size=512,
+        num_blocks=8,
+        num_heads=8,
+        seq_len=16,
+        accumulation_steps=8 # Can be changed to test
     )
     state_dim = 256
     learner = RNaDLearner(state_dim, num_actions, config)
@@ -619,6 +660,13 @@ def predict_action(state_json):
                 if training_worker:
                     training_worker.record_episode_end(floor, total_reward)
                 predict_action.episode_end_recorded = True
+                
+                # Flush trajectory if it exists
+                if current_trajectory:
+                    log(f"Flushing terminal trajectory of length {len(current_trajectory)}")
+                    experience_queue.put(list(current_trajectory))
+                    current_trajectory = []
+                
                 # Reset reward for next episode (will be reset below too, but safe)
                 predict_action.session_cumulative_reward = 0.0
             predict_action.skipped_reward_indices = set()
