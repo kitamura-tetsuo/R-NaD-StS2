@@ -108,7 +108,7 @@ public partial class MainFile : Node
                 floor = runState.TotalFloor,
                 rewards = rewards,
                 has_open_potion_slots = hasOpenPotionSlots,
-                relics = player?.Relics.Select(r => r.Model.Id.Entry).ToList() ?? new List<string>(),
+                relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
                 can_proceed = MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState)
             }, JsonOptions);
         }
@@ -383,8 +383,8 @@ public partial class MainFile : Node
                     discardPile = pState?.DiscardPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
                     exhaustPile = pState?.ExhaustPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
                     masterDeck = GetPropValue<string>(runState, "MasterDeck", GetPropValue<string>(runState, "Deck", GetPropValue<string>(player, "MasterDeck", "[]"))),
-                    relics = player?.Relics.Select(r => r.Model.Id.Entry).ToList() ?? new List<string>(),
-                    powers = player?.Creature.Powers.Select(p => new { id = p.Model.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>()
+                    relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
+                    powers = player?.Creature.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>()
                 },
                 hand = pState?.Hand.Cards.Select(c => {
                     var dynamicVars = c.DynamicVars;
@@ -444,7 +444,7 @@ public partial class MainFile : Node
                         hp = e.CurrentHp,
                         maxHp = e.MaxHp,
                         block = e.Block,
-                        powers = e.Powers.Select(p => new { id = p.Model.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>(),
+                        powers = e.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>(),
                         intents = intents
                     };
                 }).ToList()
