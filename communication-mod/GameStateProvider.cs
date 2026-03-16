@@ -678,11 +678,37 @@ public partial class MainFile : Node
             Logger.Error($"[AutoAI] Error getting BossId: {ex.Message}");
         }
 
+        // Calculate next available nodes
+        var nextNodes = new List<object>();
+        if (!currentPos.HasValue)
+        {
+            var firstRow = runState.Map.GetPointsInRow(0);
+            if (firstRow != null)
+            {
+                foreach (var p in firstRow)
+                {
+                    nextNodes.Add(new { row = p.coord.row, col = p.coord.col });
+                }
+            }
+        }
+        else
+        {
+            var currentPoint = runState.Map.GetPoint(currentPos.Value);
+            if (currentPoint != null && currentPoint.Children != null)
+            {
+                foreach (var child in currentPoint.Children)
+                {
+                    nextNodes.Add(new { row = child.coord.row, col = child.coord.col });
+                }
+            }
+        }
+
         return System.Text.Json.JsonSerializer.Serialize(new
         {
             type = "map",
             floor = runState.TotalFloor,
             current_pos = currentPos.HasValue ? new { row = currentPos.Value.row, col = currentPos.Value.col } : null,
+            next_nodes = nextNodes,
             nodes = nodes,
             edges = edges,
             boss = bossId
