@@ -77,12 +77,17 @@ public partial class MainFile : Node
         return false;
     }
 
-    private CancellationTokenSource? _uiWaitCts;
 
-    private async void TriggerAI()
+    private void TriggerAI()
     {
         _aiPending = false;
         if (AiBridge == null) return;
+
+        // Skip if playability is not met
+        if (IsGameBusy())
+        {
+            return;
+        }
 
         try
         {
@@ -92,26 +97,6 @@ public partial class MainFile : Node
             // Skip polling if state hasn't changed, unless 200ms passed (heartbeat)
             _lastPollTime = currentTime;
             _lastStateJson = stateJson;
-
-            // Wait if the game is busy with animations/queues
-            if (IsGameBusy())
-            {
-                _uiWaitCts?.Cancel();
-                _uiWaitCts = new CancellationTokenSource();
-                try
-                {
-                    await WaitHelper.Until(() => !IsGameBusy(), _uiWaitCts.Token);
-                    // Refresh state after wait
-                    stateJson = GetJsonState();
-                    _lastStateJson = stateJson;
-                }
-                catch (OperationCanceledException) { return; }
-                catch (Exception ex)
-                {
-                    Logger.Info($"[AutoAI] WaitHelper error: {ex.Message}");
-                    return;
-                }
-            }
 
             var responseVariant = AiBridge.Call("predict_action", stateJson);
             if (responseVariant.VariantType == Variant.Type.Nil) return;
