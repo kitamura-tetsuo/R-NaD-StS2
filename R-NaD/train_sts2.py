@@ -39,6 +39,9 @@ def launch_game(checkpoint=None, seed=None):
         env["RNAD_CHECKPOINT"] = os.path.abspath(checkpoint)
         logging.info(f"Setting RNAD_CHECKPOINT environment variable to: {env['RNAD_CHECKPOINT']}")
 
+    if env.get("RNAD_RUN_ID"):
+        logging.info(f"Setting RNAD_RUN_ID environment variable to: {env['RNAD_RUN_ID']}")
+
     if seed:
         env["RNAD_SEED"] = seed
         logging.info(f"Setting RNAD_SEED environment variable to: {seed}")
@@ -111,15 +114,14 @@ def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
                     # Download the artifact
                     local_path = client.download_artifacts(run_id, latest_art_path)
                     # The downloaded path will be a directory containing the .pkl file
-                    pkl_files = glob.glob(os.path.join(local_path, "*.pkl"))
                     if pkl_files:
-                        return pkl_files[0]
+                        return pkl_files[0], run_id
         
         logging.info("No checkpoint artifacts found in recent runs.")
-        return None
+        return None, None
     except Exception as e:
         logging.warning(f"Failed to fetch checkpoint from MLflow: {e}")
-        return None
+        return None, None
 
 def main():
     parser = argparse.ArgumentParser()
@@ -132,11 +134,13 @@ def main():
     cleanup_processes()
     
     checkpoint = args.checkpoint
+    run_id = None
     if not checkpoint:
         logging.info("Searching for latest checkpoint in MLflow...")
-        checkpoint = get_latest_mlflow_checkpoint()
+        checkpoint, run_id = get_latest_mlflow_checkpoint()
         if checkpoint:
-            logging.info(f"Resuming from MLflow checkpoint: {checkpoint}")
+            logging.info(f"Resuming from MLflow checkpoint: {checkpoint} (Run ID: {run_id})")
+            os.environ["RNAD_RUN_ID"] = run_id
         else:
             logging.info("No MLflow checkpoint found, starting from scratch.")
 

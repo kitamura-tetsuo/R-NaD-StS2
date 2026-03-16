@@ -397,14 +397,14 @@ def mark_screenshot_done():
     return True
 
 class TrainingWorker(threading.Thread):
-    def __init__(self, learner, config, experiment_manager=None):
+    def __init__(self, learner, config, experiment_manager=None, step_count=0):
         super().__init__(daemon=True)
         self.learner = learner
         self.config = config
         self.experiment_manager = experiment_manager
         self.batch_buffer = []
         self.running = True
-        self.step_count = 0
+        self.step_count = step_count
         self.episode_last_floors = []
         self.episode_last_rewards = []
         self.last_known_mean_floor: float | None = None
@@ -597,8 +597,9 @@ def load_model(checkpoint_path=None):
 
     # Initialize ExperimentManager
     exp_manager = None
+    run_id = os.environ.get("RNAD_RUN_ID")
     try:
-        exp_manager = ExperimentManager(experiment_name="R-NaD-StS2", log_checkpoints=True)
+        exp_manager = ExperimentManager(experiment_name="R-NaD-StS2", log_checkpoints=True, run_id=run_id)
         exp_manager.log_params(config)
         print(f"[Python] MLflow initialized. Run ID: {exp_manager.run_id}")
     except Exception as e:
@@ -628,6 +629,7 @@ def load_model(checkpoint_path=None):
                 checkpoint_path = latest_checkpoint
                 print(f"[Python] Auto-detected latest checkpoint: {checkpoint_path}")
 
+    step = 0
     if checkpoint_path and os.path.exists(checkpoint_path):
         try:
             step = learner.load_checkpoint(checkpoint_path)
@@ -642,7 +644,7 @@ def load_model(checkpoint_path=None):
     
     # Start training worker if learning behavior is expected
     if training_worker is None:
-        training_worker = TrainingWorker(learner, config, experiment_manager=exp_manager)
+        training_worker = TrainingWorker(learner, config, experiment_manager=exp_manager, step_count=step)
         training_worker.start()
 
 def encode_state(state):
