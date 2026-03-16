@@ -207,7 +207,14 @@ public partial class MainFile : Node
                 var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(grid);
                 for (int i = 0; i < holders.Count; i++)
                 {
-                    cards.Add(new { index = i, name = holders[i].CardModel?.Title ?? "Unknown" });
+                    var model = holders[i].CardModel;
+                    cards.Add(new { 
+                        index = i, 
+                        name = model?.Title ?? "Unknown",
+                        id = model?.Id.Entry ?? "unknown",
+                        upgraded = model?.Upgraded ?? false,
+                        cost = model != null ? GetPropValue(model, "BaseCost", 0) : 0
+                    });
                 }
             }
 
@@ -224,7 +231,12 @@ public partial class MainFile : Node
             {
                 var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_previewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 var preview = field?.GetValue(transformScreen) as CanvasItem;
-                isConfirming = preview != null && preview.Visible;
+                
+                // If there's a multi-preview variant, check it too (mirroring upgrade logic refinement)
+                var fieldMulti = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_transformMultiPreviewContainer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var multi = fieldMulti?.GetValue(transformScreen) as CanvasItem;
+
+                isConfirming = (preview != null && preview.Visible) || (multi != null && multi.Visible);
             }
             else if (gridSelection is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen cardSelectScreen)
             {

@@ -840,7 +840,8 @@ def encode_state(state):
                 event_vec[base_idx] = 1.0 # Presence flag
                 
                 # Card ID index
-                event_vec[base_idx + 1] = get_card_idx(card.get("id", ""))
+                card_id = card.get("id") or card.get("name", "")
+                event_vec[base_idx + 1] = get_card_idx(card_id)
                 
                 event_vec[base_idx + 2] = 1.0 if card.get("upgraded") else 0.0
                 event_vec[base_idx + 3] = card.get("cost", 0) / 5.0

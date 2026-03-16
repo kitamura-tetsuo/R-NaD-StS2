@@ -419,6 +419,10 @@ public partial class MainFile : Node
                 {
                     var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                     confirmBtn = field?.GetValue(transformScreen) as Node;
+                    if (confirmBtn == null || !((Godot.CanvasItem)confirmBtn).IsVisibleInTree()) {
+                        var fieldMulti = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_multiPreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        confirmBtn = fieldMulti?.GetValue(transformScreen) as Node;
+                    }
                 }
                 else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen cardSelectScreen)
                 {
