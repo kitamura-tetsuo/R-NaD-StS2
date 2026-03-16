@@ -212,7 +212,7 @@ public partial class MainFile : Node
                         index = i, 
                         name = model?.Title ?? "Unknown",
                         id = model?.Id.Entry ?? "unknown",
-                        upgraded = model?.Upgraded ?? false,
+                        upgraded = GetPropValue(model, "TimesUpgraded", 0) > 0,
                         cost = model != null ? GetPropValue(model, "BaseCost", 0) : 0
                     });
                 }
@@ -419,6 +419,7 @@ public partial class MainFile : Node
                         baseBlock = GetPropValue(c, "BaseBlock", 0),
                         magicNumber = GetPropValue(c, "MagicNumber", 0),
                         cost = GetPropValue(c, "BaseCost", 0),
+                        upgraded = GetPropValue(c, "TimesUpgraded", 0) > 0,
                         currentDamage = curDamage,
                         currentBlock = curBlock
                     };
