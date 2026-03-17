@@ -129,51 +129,53 @@ public partial class MainFile : Node
             {
                 int index = (int)dict["index"].AsInt64();
                 var eventRoom = MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance;
+                
                 if (eventRoom != null)
                 {
-                    var eventRoomLayout = eventRoom.Layout;
-                    if (eventRoomLayout != null)
-                    {
-                        // Get the option buttons from the layout's current options list
-                        var er = runState?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.EventRoom;
-                        if (er != null)
-                        {
-                            var ev = er.LocalMutableEvent;
-                            if (ev != null)
-                            {
-                                // If event is finished, we need to click the proceed option
-                                if (ev.IsFinished)
-                                {
-                                    Logger.Info("[AutoAI] Event is finished, triggering proceed via NEventRoom.");
-                                    await MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Proceed();
-                                }
-                                else
-                                {
-                                    var options = ev.CurrentOptions;
-                                    if (index >= 0 && index < options.Count)
-                                    {
-                                        var option = options[index];
-                                        Logger.Info($"[AutoAI] Selecting event option [{index}]: locked={option.IsLocked}");
-                                        eventRoom.OptionButtonClicked(option, index);
+                    var er = runState?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.EventRoom;
+                    var ev = er?.LocalMutableEvent;
 
-                                        // OptionButtonClicked runs async – the event becomes IsFinished
-                                        // after the animation chain completes, so AfterActionExecuted
-                                        // won't fire here. Schedule a deferred retry so the next AI step
-                                        // can detect IsFinished and call NEventRoom.Proceed().
-                                        GetTree().CreateTimer(0.8).Connect("timeout",
-                                            new Callable(this, nameof(ScheduleAI)));
-                                    }
-                                }
-                            }
+                    if (ev != null)
+                    {
+                        if (ev.IsFinished)
+                        {
+                            Logger.Info("[AutoAI] Event is finished, triggering proceed via NEventRoom.");
+                            await MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Proceed();
+                            return;
+                        }
+
+                        var options = ev.CurrentOptions;
+                        if (index >= 0 && index < options.Count)
+                        {
+                            var option = options[index];
+                            Logger.Info($"[AutoAI] Selecting event option [{index}]: {option.Title.GetFormattedText()}");
+                            eventRoom.OptionButtonClicked(option, index);
+                            return;
                         }
                     }
+
+                    // UI Fallback: If model is out of sync or empty, find buttons in the scene
+                    var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(eventRoom)
+                        .OrderBy(b => b.GlobalPosition.Y)
+                        .ToList();
+
+                    if (index >= 0 && index < buttons.Count)
+                    {
+                        var btn = buttons[index];
+                        Logger.Info($"[AutoAI] Selecting event option via UI button index {index} (Button: {btn.Name})");
+                        // We can't always call OnReleased directly if it's protected, 
+                        // but NEventOptionButton usually has a way to trigger.
+                        // Try calling the handler if possible or just emit signal.
+                        if (btn.Option != null) {
+                            eventRoom.OptionButtonClicked(btn.Option, index);
+                        } else {
+                            btn.Call("OnReleased"); 
+                        }
+                        return;
+                    }
                 }
-                else
-                {
-                    // Fallback: try via synchronizer
-                    Logger.Info($"[AutoAI] Fallback: selecting event option via synchronizer index={index}");
-                    MegaCrit.Sts2.Core.Runs.RunManager.Instance.EventSynchronizer?.ChooseLocalOption(index);
-                }
+                
+                Logger.Error($"[AutoAI] Could not find event option index {index} on {eventRoom?.GetType().Name ?? "null"}");
             }
             else if (action == "select_map_node")
             {
@@ -411,6 +413,55 @@ public partial class MainFile : Node
                                      confirmBtn.Call("ForceClick");
                                  }
                              }
+                             
+                             // Automatic confirmation for card select screen (e.g. Shop Removal)
+                             if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen deckCardSelectScreen)
+                             {
+                                 Logger.Info($"[AutoAI] Automatically confirming deck card selection on {deckCardSelectScreen.GetType().Name}");
+                                 await Task.Delay(500); // Wait for preview to appear
+
+                                 var field = deckCardSelectScreen.GetType().GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                 var confirmBtn = field?.GetValue(deckCardSelectScreen) as Node;
+                                 
+                                 if (confirmBtn == null || !((CanvasItem)confirmBtn).IsVisibleInTree())
+                                 {
+                                     field = deckCardSelectScreen.GetType().GetField("_confirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                     confirmBtn = field?.GetValue(deckCardSelectScreen) as Node;
+                                 }
+
+                                 if (confirmBtn != null && ((CanvasItem)confirmBtn).IsVisibleInTree())
+                                 {
+                                     Logger.Info("[AutoAI] Clicking deck card confirm button automatically.");
+                                     confirmBtn.Call("ForceClick");
+                                 }
+                                 else
+                                 {
+                                     Logger.Warn($"[AutoAI] Confirm button not found or not visible on {deckCardSelectScreen.GetType().Name}");
+                                 }
+                             }
+
+                             // Automatic confirmation for transform screen
+                             if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen transformSelectScreen)
+                             {
+                                 Logger.Info("[AutoAI] Automatically confirming transform selection.");
+                                 await Task.Delay(500); // Wait for preview to appear
+
+                                 var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                 var multiField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_multiPreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                 
+                                 var singleBtn = field?.GetValue(transformSelectScreen) as Node;
+                                 var multiBtn = multiField?.GetValue(transformSelectScreen) as Node;
+                                 
+                                 Node? confirmBtn = null;
+                                 if (singleBtn != null && ((CanvasItem)singleBtn).IsVisibleInTree()) confirmBtn = singleBtn;
+                                 else if (multiBtn != null && ((CanvasItem)multiBtn).IsVisibleInTree()) confirmBtn = multiBtn;
+
+                                 if (confirmBtn != null)
+                                 {
+                                     Logger.Info("[AutoAI] Clicking transform confirm button automatically.");
+                                     confirmBtn.Call("ForceClick");
+                                 }
+                             }
                          }
                     }
                 }
@@ -492,8 +543,13 @@ public partial class MainFile : Node
                 }
                 else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen cardSelectScreen)
                 {
-                    var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var field = cardSelectScreen.GetType().GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                     confirmBtn = field?.GetValue(cardSelectScreen) as Node;
+                    if (confirmBtn == null || !((Godot.CanvasItem)confirmBtn).IsVisibleInTree())
+                    {
+                        field = cardSelectScreen.GetType().GetField("_confirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        confirmBtn = field?.GetValue(cardSelectScreen) as Node;
+                    }
                 }
                 else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen enchantScreen)
                 {

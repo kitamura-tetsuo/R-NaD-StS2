@@ -35,9 +35,8 @@ public partial class MainFile : Node
     private static System.Diagnostics.Stopwatch _frameStopwatch = new();
     private AiSlayer _aiSlayer;
     private long _lastActionTime = 0;
-    public bool _gymMode = false;
-    private bool _noSpeedup = false;
     private string _defaultSeed = "";
+    private long _lastPollTime = 0;
     private bool _isSteppingAI = false;
 
     private void ScheduleAI()
@@ -45,45 +44,6 @@ public partial class MainFile : Node
         // No longer used, handled by AiSlayer
     }
 
-    public static bool IsGameBusy()
-    {
-        var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
-        if (rm == null) return false;
-
-        var runState = rm.DebugOnlyGetState();
-        if (runState == null) return false;
-
-        // If an overlay is open, we need the AI to process it, so it's not "busy" in a blocking sense
-        if (MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance != null && MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance.ScreenCount > 0)
-        {
-            return false;
-        }
-
-        // If hand is in selection mode, we need the AI to act
-        var handNode = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
-        if (handNode != null && (handNode.IsInCardSelection || handNode.CurrentMode != MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.Play))
-        {
-            return false;
-        }
-
-        // Action queue is processing
-        if (rm.ActionQueueSet != null && !rm.ActionQueueSet.IsEmpty)
-        {
-            return true;
-        }
-
-        // Combat animations or play phase not ready
-        if (runState.CurrentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom)
-        {
-            var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-            if (cm != null && cm.IsInProgress)
-            {
-                if (!cm.IsPlayPhase) return true;
-            }
-        }
-
-        return false;
-    }
 
 
 
@@ -133,14 +93,13 @@ public partial class MainFile : Node
 
             if (action == "command")
             {
-                string command = dict["command"].AsString();
-                ProcessCommand(command);
+                // Background commands are now handled by PollCommands()
+                return;
             }
             else if (action == "take_screenshot")
             {
-                string path = dict["path"].AsString();
-                TakeScreenshot(path);
-                AiBridge.Call("mark_screenshot_done");
+                // Screenshot requests are now handled by PollScreenshotRequest()
+                return;
             }
             else
             {
@@ -308,21 +267,18 @@ public partial class MainFile : Node
         // Even if AiSlayer is running its own loop, we poll StepAI periodically
         // to handle background commands (like start_game) and keep the server alive/responsive.
         long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-        if (currentTime - _lastActionTime > 500) // Poll every 500ms when idle
+        if (currentTime - _lastPollTime > 500) // Poll every 500ms
         {
+            _lastPollTime = currentTime;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             // Poll for screenshot requests from the bridge
             PollScreenshotRequest();
-            long screenshotTime = sw.ElapsedMilliseconds;
-
-            if (!_isSteppingAI)
-            {
-                _ = StepAI(); 
-            }
-            long totalTime = sw.ElapsedMilliseconds;
+            // Poll for background commands (like start_game)
+            PollCommands();
+            long pollTime = sw.ElapsedMilliseconds;
             
-            if (totalTime > 100) {
-                 Logger.Info($"[PERF] StepAI/PollScreenshot took {totalTime}ms (Bridge: {totalTime-screenshotTime}ms)");
+            if (pollTime > 100) {
+                 Logger.Info($"[PERF] Background polling took {pollTime}ms");
             }
         }
         
@@ -346,6 +302,30 @@ public partial class MainFile : Node
                 TakeScreenshot(path);
                 AiBridge.Call("mark_screenshot_done");
             }
+        }
+    }
+
+    private void PollCommands()
+    {
+        if (AiBridge == null) return;
+
+        var responseVariant = AiBridge.Call("check_commands");
+        if (responseVariant.VariantType == Variant.Type.Nil) return;
+
+        string response = responseVariant.AsString();
+        if (string.IsNullOrEmpty(response)) return;
+
+        var json = new Json();
+        if (json.Parse(response) != Error.Ok) return;
+
+        var dict = json.Data.AsGodotDictionary();
+        if (!dict.ContainsKey("action")) return;
+
+        string action = dict["action"].AsString();
+        if (action == "command")
+        {
+            string command = dict["command"].AsString();
+            ProcessCommand(command);
         }
     }
 

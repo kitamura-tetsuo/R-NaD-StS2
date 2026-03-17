@@ -2,6 +2,11 @@ import os
 import sys
 import time
 
+# Set XLA environment variables before JAX/other imports to prevent GPU OOM
+# Godot game and JAX both need GPU memory.
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.7" # Allow game some room
+os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer=" # As suggested by JAX error
+
 # Ensure stdout/stderr are unbuffered and also log to a file
 import io
 BRIDGE_DIR = "/home/ubuntu/src/R-NaD-StS2/R-NaD"
@@ -649,13 +654,13 @@ def load_model(checkpoint_path=None):
     assert ExperimentManager is not None
     
     learner = RNaDLearner(None, num_actions, config) # state_dim is now unused/ignored in init
-    rng_key = jax.random.PRNGKey(42)
+    rng_key = jax.random.PRNGKey(0)
 
     # Define JIT-compiled prediction step to avoid re-compilation
     global _predict_step
     @jax.jit
-    def _predict_step(params, state, mask):
-        logits, value = learner.network.apply(params, None, state, mask)
+    def _predict_step(params, rng, state, mask):
+        logits, value = learner.network.apply(params, rng, state, mask)
         return logits, value
 
     # Pre-warm JAX compilation for all state types
@@ -665,13 +670,17 @@ def load_model(checkpoint_path=None):
         if learner.params is None:
             log("[Python] Initializing JAX model params for pre-warm...")
             learner.init(rng_key)
+            log(f"[Python] Initialized params keys: {list(learner.params.keys())}")
         
-        # Pre-warm for each switch branch (combat:0, map:1, rest:2)
-        for st_idx in [0, 1, 2]:
+        # Pre-warm for each switch branch (combat:0, map:1, event-like:2, grid:3, hand:4)
+        for st_idx in [0, 1, 2, 3, 4]:
             temp_obs = jax.tree_util.tree_map(lambda x: x, dummy_obs)
             temp_obs["state_type"] = jnp.array([st_idx], dtype=jnp.int32)
             dummy_mask = jnp.zeros((1, num_actions), dtype=jnp.float32)
-            _ = _predict_step(learner.params, temp_obs, dummy_mask)
+            
+            # Split key for each pre-warm call to ensure stability
+            predict_key, rng_key = jax.random.split(rng_key)
+            _ = _predict_step(learner.params, predict_key, temp_obs, dummy_mask)
             log(f"[Python] JAX pre-warm for type {st_idx} complete.")
             
         log(f"[Python] All JAX pre-warms complete in {time.time() - t_warm_start:.2f}s")
@@ -1120,9 +1129,20 @@ def get_action_mask(state, masked_reward_indices=None):
         
     return mask
 
+def check_commands():
+    """Poll for background commands (like start_game) without triggering AI inference."""
+    global command_queue
+    if not command_queue.empty():
+        cmd = command_queue.get_nowait()
+        return json.dumps({"action": "command", "command": cmd})
+    return json.dumps({"action": "wait"})
+
 def predict_action(state_json):
     t0 = time.time()
     do_deferred_imports()
+    # Explicitly refer to the global jax module after deferred imports
+    import jax as jax_local
+    
     t_imports = time.time() - t0
     
     global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key, last_activity_time
@@ -1179,13 +1199,13 @@ def predict_action(state_json):
             predict_action.episode_end_recorded = False
             predict_action.skipped_reward_indices = set()
             predict_action.last_processed_floor = -1
-            # Flush trajectory if it exists when going back to menu
-            if current_trajectory:
-                log(f"Flushing non-terminal trajectory of length {len(current_trajectory)} on menu transition")
-                experience_queue.put(list(current_trajectory))
-                current_trajectory = []
-
-        log(f"predict_action called. state_type: {state_type}, command_queue size: {command_queue.qsize()}")
+        if not state_json:
+            return json.dumps({"action": "wait"})
+            
+        state = json.loads(state_json)
+        state_type = state.get("type", "unknown")
+        
+        log(f"predict_action called. state_type: {state_type}")
         
         # Debug: write last state to a local file for monitoring
         try:
@@ -1196,21 +1216,7 @@ def predict_action(state_json):
             pass
 
         if state_type in ["none", "main_menu", "unknown"]:
-            if state_type in ["none", "main_menu"] and learning_active:
-                cmd = f"start_game:{current_seed}" if current_seed else "start_game"
-                log(f"System: Generating {cmd} for {state_type} state.")
-                return json.dumps({"action": "command", "command": cmd})
-            
-            res = json.dumps({"action": "wait"})
-            log(f"Early exit for {state_type}: {res}")
-            return res
-
-        if not command_queue.empty():
-            cmd = command_queue.get_nowait()
-            res = json.dumps({"action": "command", "command": cmd})
-            log(f"Popped command: {cmd}, returning: {res}")
-            print(f"[Python-Bridge] Returning command to Rust: {res}", flush=True)
-            return res
+            return json.dumps({"action": "wait"})
 
         if learner is None:
             load_model()
@@ -1236,20 +1242,21 @@ def predict_action(state_json):
         # Inference
         # Now passing batched_state dictionary to the network
         t_inf_start = time.time()
+        predict_key, rng_key = jax_local.random.split(rng_key)
         if _predict_step is None:
             # Fallback if jit failed
-            logits, value = learner.network.apply(learner.params, None, batched_state, mask[None, :].astype(jnp.float32))
+            logits, value = learner.network.apply(learner.params, predict_key, batched_state, mask[None, :].astype(jnp.float32))
         else:
-            logits, value = _predict_step(learner.params, batched_state, mask[None, :].astype(jnp.float32))
+            logits, value = _predict_step(learner.params, predict_key, batched_state, mask[None, :].astype(jnp.float32))
         t_inference = time.time() - t_inf_start
         
         # Probs are calculated from logits which are already masked in the network
-        probs = jax.nn.softmax(logits, axis=-1)
+        probs = jax_local.nn.softmax(logits, axis=-1)
         
         # Sample action from masked distribution
-        rng_key, subkey = jax.random.split(rng_key)
-        action_idx = jax.random.categorical(subkey, logits).item()
-        log_prob = jax.nn.log_softmax(logits)[0, action_idx].item()
+        rng_key, subkey = jax_local.random.split(rng_key)
+        action_idx = jax_local.random.categorical(subkey, logits).item()
+        log_prob = jax_local.nn.log_softmax(logits)[0, action_idx].item()
         
         # ▼ [DEBUG LOGGING]
         try:

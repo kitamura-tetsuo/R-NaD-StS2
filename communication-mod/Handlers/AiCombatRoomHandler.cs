@@ -6,7 +6,7 @@ using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Rooms;
-
+using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 
 namespace communication_mod.Handlers;
@@ -32,33 +32,33 @@ public class AiCombatRoomHandler : IRoomHandler
                 CombatManager.Instance.IsPlayPhase || 
                 !CombatManager.Instance.IsInProgress ||
                 (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) ||
-                (MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance != null && MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance.IsInCardSelection), 
-                ct, TimeSpan.FromSeconds(30), "Play phase not started and no selection screen found");
+                (NPlayerHand.Instance != null && NPlayerHand.Instance.IsInCardSelection), 
+                ct, TimeSpan.FromSeconds(30), "Play phase not started");
             
             if (!CombatManager.Instance.IsInProgress) break;
 
+            AutoSlayer.CurrentWatchdog?.Reset($"Combat turn {turnCount}");
             MainFile.Logger.Info($"[AiSlayer] Turn {turnCount}: Handling play phase/selection via AI");
-            while (CombatManager.Instance.IsInProgress)
+            
+            int actionsInTurn = 0;
+            while (CombatManager.Instance.IsInProgress && actionsInTurn < 100)
             {
                 ct.ThrowIfCancellationRequested();
 
                 bool isPlayPhase = CombatManager.Instance.IsPlayPhase;
                 bool hasOverlay = NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0;
-                bool isHandSelecting = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance != null && MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance.IsInCardSelection;
+                bool isHandSelecting = NPlayerHand.Instance != null && NPlayerHand.Instance.IsInCardSelection;
 
                 if (!isPlayPhase && !hasOverlay && !isHandSelecting)
                 {
-                    break; // Back to outer loop waiting for play phase
+                    // Not our turn or busy
+                    break;
                 }
 
-                if (MainFile.IsGameBusy())
-                {
-                    await Task.Delay(100, ct);
-                    continue;
-                }
 
                 await MainFile.Instance.StepAI();
-                await Task.Delay(200, ct);
+                await Task.Delay(500, ct);
+                actionsInTurn++;
             }
         }
 

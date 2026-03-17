@@ -325,6 +325,43 @@ public partial class MainFile : Node
 
         if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom combatRoom)
         {
+            // Check if hand is in selection mode (e.g., Armaments, Grid selection in combat)
+            // MUST do this before busy/queue check because selection is part of an action execution
+            var handNode = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
+            if (handNode != null)
+            {
+                var confirmBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectModeConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var confirmBtn = confirmBtnField?.GetValue(handNode) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+
+                bool isSelectionMode = handNode.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.SimpleSelect || 
+                                     handNode.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.UpgradeSelect;
+
+                if (isSelectionMode || handNode.IsInCardSelection)
+                {
+                    var cards = new List<object>();
+                    var activeHolders = handNode.ActiveHolders;
+                    for (int i = 0; i < activeHolders.Count; i++)
+                    {
+                        var holder = activeHolders[i];
+                        if (holder.CardNode != null)
+                        {
+                            cards.Add(new { index = i, name = holder.CardNode.Model?.Title ?? "Unknown" });
+                        }
+                    }
+
+                    bool isConfirming = confirmBtn != null && confirmBtn.IsVisibleInTree() && confirmBtn.IsEnabled;
+                    
+                    return System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        type = "hand_selection",
+                        floor = runState.TotalFloor,
+                        cards = cards,
+                        is_confirming = isConfirming,
+                        mode = handNode.CurrentMode.ToString()
+                    }, JsonOptions);
+                }
+            }
+
             var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
             bool queueProcessing = rm.ActionQueueSet != null && !rm.ActionQueueSet.IsEmpty;
 
@@ -363,42 +400,6 @@ public partial class MainFile : Node
                     try {
                         Logger.Info($"[AutoAI] Property: {prop.Name}");
                     } catch {}
-                }
-            }
-
-            // Check if hand is in selection mode (e.g., Armaments, Grid selection in combat)
-            var handNode = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
-            if (handNode != null)
-            {
-                var confirmBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectModeConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var confirmBtn = confirmBtnField?.GetValue(handNode) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
-
-                bool isSelectionMode = handNode.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.SimpleSelect || 
-                                     handNode.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.UpgradeSelect;
-
-                if (isSelectionMode || handNode.IsInCardSelection)
-                {
-                    var cards = new List<object>();
-                    var activeHolders = handNode.ActiveHolders;
-                    for (int i = 0; i < activeHolders.Count; i++)
-                    {
-                        var holder = activeHolders[i];
-                        if (holder.CardNode != null)
-                        {
-                            cards.Add(new { index = i, name = holder.CardNode.Model?.Title ?? "Unknown" });
-                        }
-                    }
-
-                    bool isConfirming = confirmBtn != null && confirmBtn.IsVisibleInTree() && confirmBtn.IsEnabled;
-                    
-                    return System.Text.Json.JsonSerializer.Serialize(new
-                    {
-                        type = "hand_selection",
-                        floor = runState.TotalFloor,
-                        cards = cards,
-                        is_confirming = isConfirming,
-                        mode = handNode.CurrentMode.ToString()
-                    }, JsonOptions);
                 }
             }
 

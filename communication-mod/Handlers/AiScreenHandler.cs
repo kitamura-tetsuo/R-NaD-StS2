@@ -18,11 +18,6 @@ public class AiScreenHandler : IScreenHandler
         MainFile.Logger.Info($"[AiSlayer] Screen handler started for {ScreenType.Name}");
         while (!ct.IsCancellationRequested)
         {
-            if (MainFile.IsGameBusy())
-            {
-                await Task.Delay(100, ct);
-                continue;
-            }
 
             var stack = NOverlayStack.Instance;
             if (stack == null || stack.ScreenCount == 0 || stack.Peek().GetType() != ScreenType) break;

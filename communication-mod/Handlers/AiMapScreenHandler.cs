@@ -26,11 +26,6 @@ public class AiMapScreenHandler : IHandler
         MainFile.Logger.Info("[AiSlayer] Handling map navigation via AI");
         while (!ct.IsCancellationRequested)
         {
-            if (MainFile.IsGameBusy())
-            {
-                await Task.Delay(100, ct);
-                continue;
-            }
 
             // AI model will select a map node
             await MainFile.Instance.StepAI();

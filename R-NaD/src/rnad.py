@@ -45,12 +45,12 @@ class RNaDConfig(NamedTuple):
     log_interval: int = 1
     save_interval: int = 1
     model_type: str = "transformer" # "mlp" or "transformer"
-    num_heads: int = 8
-    num_blocks: int = 4
-    seq_len: int = 16
-    hidden_size: int = 128
-    unroll_length: int = 128
-    seed: int = 42
+    num_heads: int = 4
+    num_blocks: int = 2
+    seq_len: int = 8
+    hidden_size: int = 64
+    unroll_length: int = 64
+    seed: int = None
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -305,11 +305,11 @@ def _define_transformer_classes():
             self.value_head = hk.Linear(1, name="value_head")
 
         def __call__(self, state_dict, mask, is_training=False):
-            # Process Global Backbone (shared)
-            h_global = jax.vmap(lambda x: jax.nn.relu(self.global_proj(x)))(state_dict["global"])
-
             # Expert branches as closures
-            def route_expert(st_idx, h_g, s_dict):
+            def route_expert(st_idx, global_obs, s_dict):
+                # Process Global Backbone inside vmap for consistent scoping
+                h_g = jax.nn.relu(self.global_proj(global_obs))
+                
                 bow_obs = {
                     "draw_bow": s_dict["draw_bow"],
                     "discard_bow": s_dict["discard_bow"],
@@ -318,29 +318,31 @@ def _define_transformer_classes():
                 }
                 return jax.lax.switch(st_idx, [
                     lambda: self.combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
-                    lambda: self.map_expert(h_g, s_dict["map"]),
+                    lambda: self.map_expert(h_g, s_dict["map"], is_training),
                     lambda: self.event_expert(h_g, s_dict["event"]),
-                    lambda: self.grid_expert(h_g, s_dict["event"]), # Reusing event vector
-                    lambda: self.hand_expert(h_g, s_dict["event"])  # Reusing event vector
+                    lambda: self.grid_expert(h_g, s_dict["event"]),
+                    lambda: self.hand_expert(h_g, s_dict["event"])
                 ])
 
-            # Use vmap to apply switch across batch
-            if not hk.running_init():
-                features = jax.vmap(route_expert)(state_dict["state_type"], h_global, state_dict)
-            else:
-                # During init, ensure ALL experts are initialized by calling them once
-                bow_obs = {
+            # During init, we must ensure ALL expert branches are visited
+            if hk.running_init():
+                # Process arbitrary elements to initialize all experts
+                dummy_h_global = jax.nn.relu(self.global_proj(state_dict["global"][0]))
+                dummy_bow_obs = {k: v[0] for k, v in {
                     "draw_bow": state_dict["draw_bow"],
                     "discard_bow": state_dict["discard_bow"],
                     "exhaust_bow": state_dict["exhaust_bow"],
                     "master_bow": state_dict["master_bow"]
-                }
-                self.combat_expert(h_global[0], state_dict["combat"][0], {k: v[0] for k, v in bow_obs.items()}, is_training)
-                self.map_expert(h_global[0], state_dict["map"][0], is_training)
-                self.event_expert(h_global[0], state_dict["event"][0])
-                self.grid_expert(h_global[0], state_dict["event"][0])
-                self.hand_expert(h_global[0], state_dict["event"][0])
-                features = jax.vmap(route_expert)(state_dict["state_type"], h_global, state_dict)
+                }.items()}
+                
+                self.combat_expert(dummy_h_global, state_dict["combat"][0], dummy_bow_obs, is_training)
+                self.map_expert(dummy_h_global, state_dict["map"][0], is_training)
+                self.event_expert(dummy_h_global, state_dict["event"][0])
+                self.grid_expert(dummy_h_global, state_dict["event"][0])
+                self.hand_expert(dummy_h_global, state_dict["event"][0])
+
+            # Apply experts via vmap
+            features = jax.vmap(route_expert)(state_dict["state_type"], state_dict["global"], state_dict)
 
             # Unified Heads
             logits = self.policy_head(features)
