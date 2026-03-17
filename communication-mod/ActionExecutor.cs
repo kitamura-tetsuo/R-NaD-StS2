@@ -114,9 +114,16 @@ public partial class MainFile : Node
             else if (action == "end_turn")
             {
                 var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-                Logger.Info($"[AutoAI] Executing End Turn (Player: {player.Creature.Name})");
-                cm.SetReadyToEndTurn(player, true);
-                Logger.Info("[AutoAI] End Turn requested.");
+                var combatState = cm.DebugOnlyGetState();
+                int currentRound = combatState?.RoundNumber ?? 0;
+                
+                Logger.Info($"[AutoAI] Executing End Turn (Player: {player.Creature.Name}, Round: {currentRound})");
+                
+                // Using EndPlayerTurnAction and RequestEnqueue as recommended for reliability
+                var endTurnAction = new MegaCrit.Sts2.Core.GameActions.EndPlayerTurnAction(player, currentRound);
+                rm.ActionQueueSynchronizer.RequestEnqueue(endTurnAction);
+                
+                Logger.Info("[AutoAI] EndPlayerTurnAction requested via synchronizer.");
             }
             else if (action == "select_event_option")
             {

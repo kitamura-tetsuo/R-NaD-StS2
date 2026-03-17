@@ -166,6 +166,8 @@ else:
     config = None
     np = None
 
+last_activity_time = time.time()
+
 current_seed = os.environ.get("RNAD_SEED")
 if current_seed:
     log(f"Initialized current_seed from environment: {current_seed}")
@@ -336,18 +338,24 @@ def get_boss_idx(boss_id):
 
 def get_card_idx(card_id):
     if not card_id: return 0
+    if isinstance(card_id, dict): card_id = card_id.get("id") or card_id.get("name")
+    if not card_id: return 0
     # Clean up (e.g., remove name suffixes if any)
-    cid = card_id.split('+')[0].strip().upper()
+    cid = str(card_id).split('+')[0].strip().upper()
     return CARD_VOCAB.get(cid, 0)
 
 def get_relic_idx(relic_id):
     if not relic_id: return 0
-    rid = relic_id.upper()
+    if isinstance(relic_id, dict): relic_id = relic_id.get("id") or relic_id.get("name")
+    if not relic_id: return 0
+    rid = str(relic_id).upper()
     return RELIC_VOCAB.get(rid, 0)
 
 def get_power_idx(power_id):
     if not power_id: return 0
-    pid = power_id.upper()
+    if isinstance(power_id, dict): power_id = power_id.get("id") or power_id.get("name")
+    if not power_id: return 0
+    pid = str(power_id).upper()
     return POWER_VOCAB.get(pid, 0)
 
 def encode_bow(card_ids):
@@ -724,7 +732,7 @@ def encode_state(state):
         combat_vec[2] = len(player.get("exhaustPile", [])) / 30.0
         
         # Hand cards (up to 10 cards, 10 features each)
-        hand = state.get("hand", [])
+        hand = state.get("hand") or []
         for i in range(min(len(hand), 10)):
             card = hand[i]
             base_idx = 10 + i * 10
@@ -891,40 +899,49 @@ def get_action_mask(state, masked_reward_indices=None):
     state_type = state.get("type", "unknown")
     
     if state_type == "combat":
-        hand = state.get("hand", [])
+        hand = state.get("hand") or []
         enemies = [e for e in state.get("enemies", []) if e.get("hp", 0) > 0]
         num_enemies = len(enemies)
         
+        actions_disabled = state.get("actions_disabled", False)
+        
         # 0-49: Cards (up to 10 cards * 5 targets)
-        for i in range(min(len(hand), 10)):
-            card = hand[i]
-            if card.get("isPlayable"):
-                target_type = card.get("targetType", "None")
-                needs_target = "Enemy" in target_type or "Single" in target_type
-                
-                if needs_target:
-                    for t in range(min(num_enemies, 5)):
-                        mask[i * 5 + t] = True
-                else:
-                    # Self or No target cards use target_idx 0
-                    mask[i * 5] = True
+        if not actions_disabled:
+            for i in range(min(len(hand), 10)):
+                card = hand[i]
+                if card.get("isPlayable"):
+                    target_type = card.get("targetType", "None")
+                    needs_target = "Enemy" in target_type or "Single" in target_type
+                    
+                    if needs_target:
+                        for t in range(min(num_enemies, 5)):
+                            mask[i * 5 + t] = True
+                    else:
+                        # Self or No target cards use target_idx 0
+                        mask[i * 5] = True
+        else:
+            log("Python-Bridge: actions_disabled detected in combat. Masking cards.")
         
         # 50-74: Potions (up to 5 potions * 5 targets)
-        potions = state.get("potions", [])
-        for i in range(min(len(potions), 5)):
-            potion = potions[i]
-            if potion.get("canUse"):
-                target_type = potion.get("targetType", "None")
-                needs_target = "Enemy" in target_type or "Single" in target_type
-                
-                if needs_target:
-                    for t in range(min(num_enemies, 5)):
-                        mask[50 + i * 5 + t] = True
-                else:
-                    mask[50 + i * 5] = True
+        if not actions_disabled:
+            potions = state.get("potions", [])
+            for i in range(min(len(potions), 5)):
+                potion = potions[i]
+                if potion.get("canUse"):
+                    target_type = potion.get("targetType", "None")
+                    needs_target = "Enemy" in target_type or "Single" in target_type
+                    
+                    if needs_target:
+                        for t in range(min(num_enemies, 5)):
+                            mask[50 + i * 5 + t] = True
+                    else:
+                        mask[50 + i * 5] = True
+        else:
+            log("Python-Bridge: actions_disabled detected in combat. Masking potions.")
         
-        # 75: End Turn
-        mask[75] = True
+        # 75: End Turn (Only if enemies are present)
+        if enemies:
+            mask[75] = True
         
         # 86: Proceed (Victory Bag)
         if state.get("can_proceed"):
@@ -1007,11 +1024,15 @@ def predict_action(state_json):
     do_deferred_imports()
     assert np is not None
     assert jnp is not None
-    global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key
+    global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key, last_activity_time
     
     try:
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
+        
+        # Update last activity time
+        if state_type not in ["none", "main_menu", "unknown"]:
+            last_activity_time = time.time()
         
         # Track episode end for mean last floor calculation
         if state_type == "game_over":
@@ -1117,7 +1138,7 @@ def predict_action(state_json):
             pass # already wait
         
         elif state_type == "combat":
-            hand = state.get("hand", [])
+            hand = state.get("hand") or []
             potions = state.get("potions", [])
             
             if action_idx < 50:
@@ -1231,7 +1252,7 @@ def get_heuristic_action(state):
         if state.get("can_proceed"):
             return {"action": "proceed"}
             
-        hand = state.get("hand", [])
+        hand = state.get("hand") or []
         if not hand:
             return {"action": "wait"}
             
@@ -1239,7 +1260,12 @@ def get_heuristic_action(state):
         if playable_cards:
             chosen_card = random.choice(playable_cards)
             return {"action": "play_card", "card_id": chosen_card.get("id")}
-        return {"action": "end_turn"}
+        
+        enemies = [e for e in state.get("enemies", []) if e.get("hp", 0) > 0]
+        if enemies:
+            return {"action": "end_turn"}
+        
+        return {"action": "wait"}
     
     elif state_type == "map":
         next_nodes = state.get("next_nodes", [])
@@ -1329,9 +1355,21 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({
                 "learning_active": learning_active,
                 "queue_size": experience_queue.qsize(),
-                "step_count": training_worker.step_count if training_worker else 0
+                "step_count": training_worker.step_count if training_worker else 0,
+                "last_activity_time": last_activity_time
             }).encode())
             
+        elif parsed_path.path == "/flush_trajectory":
+            global current_trajectory
+            if current_trajectory:
+                log(f"Manual flush: Moving trajectory of length {len(current_trajectory)} to experience_queue.")
+                experience_queue.put(list(current_trajectory))
+                current_trajectory = []
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "flushed"}).encode())
+
         elif parsed_path.path == "/start":
             learning_active = True
             print("[Python] Learning started!")

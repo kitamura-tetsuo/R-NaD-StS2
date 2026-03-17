@@ -67,7 +67,10 @@ public partial class MainFile : Node
             var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
             if (cm != null && cm.IsInProgress)
             {
-                if (!cm.IsPlayPhase || cm.PlayerActionsDisabled)
+                // We allow TriggerAI even if PlayerActionsDisabled is true,
+                // as long as it's the PlayPhase. This allows us to "End Turn"
+                // or wait explicitly rather than being blocked at the bridge level.
+                if (!cm.IsPlayPhase)
                 {
                     return true;
                 }

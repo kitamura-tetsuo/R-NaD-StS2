@@ -176,6 +176,30 @@ def main():
                     status_data = resp.json()
                     step_count = status_data.get("step_count", 0)
                     queue_size = status_data.get("queue_size", 0)
+                    last_activity_time = status_data.get("last_activity_time", time.time())
+                    if time.time() - last_activity_time > 20:
+                        logging.warning(f"Stall detected! No progress for {time.time() - last_activity_time:.1f}s. Restarting game...")
+                        # Flush trajectory
+                        try:
+                            requests.get("http://127.0.0.1:8081/flush_trajectory")
+                        except Exception:
+                            pass
+                        
+                        # Trigger new game
+                        new_game_url = "http://127.0.0.1:8081/new_game"
+                        if args.seed:
+                            new_game_url += f"?seed={args.seed}"
+                        try:
+                            requests.get(new_game_url)
+                        except Exception:
+                            pass
+                        
+                        # Reset last_activity_time locally to avoid immediate re-trigger
+                        # (The bridge will update its own once it gets a new state)
+                        # We just sleep a bit to let the game start
+                        time.sleep(5)
+                        continue
+
                     if step_count % 10 == 0:
                         logging.info(f"Training Status: Step {step_count}/{args.max_steps}, Queue Size: {queue_size}")
                     

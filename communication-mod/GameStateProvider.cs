@@ -24,8 +24,8 @@ public partial class MainFile : Node
 
         var currentRoom = runState.CurrentRoom;
 
-        var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
-        var topOverlay = (overlayStack?.ScreenCount ?? 0) > 0 ? overlayStack.Peek() : null;
+        var topOverlay = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.Peek();
+        if (topOverlay != null) Logger.Info($"[AutoAI] Top Overlay: {topOverlay.GetType().FullName}");
 
         // Prioritize Map if Screen is actually open OR if we are in a run but have no room yet (initial act start)
         bool mapScreenExists = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance != null;
@@ -179,7 +179,14 @@ public partial class MainFile : Node
             var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(chooseScreen);
             for (int i = 0; i < holders.Count; i++)
             {
-                cards.Add(new { index = i, name = holders[i].CardModel?.Title ?? "Unknown" });
+                var model = holders[i].CardModel;
+                cards.Add(new { 
+                    index = i, 
+                    name = model?.Title ?? "Unknown",
+                    id = model?.Id.Entry ?? "unknown",
+                    upgraded = model != null && (GetPropValue(model, "IsUpgraded", false) || GetPropValue(model, "TimesUpgraded", 0) > 0),
+                    cost = model != null ? GetPropValue(model, "BaseCost", 0) : 0
+                });
             }
 
             var skipBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen).GetField("_skipButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
@@ -212,7 +219,7 @@ public partial class MainFile : Node
                         index = i, 
                         name = model?.Title ?? "Unknown",
                         id = model?.Id.Entry ?? "unknown",
-                        upgraded = GetPropValue(model, "TimesUpgraded", 0) > 0,
+                        upgraded = model != null && (GetPropValue(model, "IsUpgraded", false) || GetPropValue(model, "TimesUpgraded", 0) > 0),
                         cost = model != null ? GetPropValue(model, "BaseCost", 0) : 0
                     });
                 }
@@ -299,7 +306,7 @@ public partial class MainFile : Node
             var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
             bool queueProcessing = rm.ActionQueueSet != null && !rm.ActionQueueSet.IsEmpty;
 
-            bool combatBusy = cm != null && cm.IsInProgress && (!cm.IsPlayPhase || cm.PlayerActionsDisabled);
+            bool combatBusy = cm != null && cm.IsInProgress && !cm.IsPlayPhase;
             if (combatBusy || queueProcessing) 
             {
                 if (queueProcessing) {
@@ -373,7 +380,8 @@ public partial class MainFile : Node
                 }
             }
 
-            if (cm.PlayerActionsDisabled) return "{\"type\":\"combat_waiting\"}";
+            // We no longer block here; we report the state and let Python decide (e.g. End Turn).
+            // if (cm.PlayerActionsDisabled) return "{\"type\":\"combat_waiting\"}";
 
             var combatNode = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
             bool canProceed = combatNode?.ProceedButton?.IsEnabled ?? false;
@@ -383,6 +391,7 @@ public partial class MainFile : Node
                 type = "combat",
                 floor = runState.TotalFloor,
                 can_proceed = canProceed,
+                actions_disabled = cm.PlayerActionsDisabled,
                 player = new
                 {
                     hp = player?.Creature.CurrentHp ?? 0,
@@ -419,7 +428,7 @@ public partial class MainFile : Node
                         baseBlock = GetPropValue(c, "BaseBlock", 0),
                         magicNumber = GetPropValue(c, "MagicNumber", 0),
                         cost = GetPropValue(c, "BaseCost", 0),
-                        upgraded = GetPropValue(c, "TimesUpgraded", 0) > 0,
+                        upgraded = GetPropValue(c, "IsUpgraded", false) || GetPropValue(c, "TimesUpgraded", 0) > 0,
                         currentDamage = curDamage,
                         currentBlock = curBlock
                     };
