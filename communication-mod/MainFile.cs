@@ -38,6 +38,7 @@ public partial class MainFile : Node
     private long _lastPollTime = 0;
     private long _lastEndTurnTime = 0;
     private string _defaultSeed = "";
+    private bool _noSpeedup = false;
 
     private void ScheduleAI()
     {
@@ -212,13 +213,15 @@ public partial class MainFile : Node
         Logger.Info($"[AutoAI] Command line args: {string.Join(", ", args)}");
 
         bool gym = false;
+        bool noSpeedup = false;
         string defaultSeed = "";
         for (int i = 0; i < args.Length; i++) {
             if (args[i] == "--gym" || args[i] == "gym") gym = true;
+            if (args[i] == "--no-speedup") noSpeedup = true;
             if (args[i] == "--seed" && i + 1 < args.Length) defaultSeed = args[i + 1];
         }
 
-        if (gym)
+        if (gym && !noSpeedup)
         {
             Logger.Info("[AutoAI] GYM MODE DETECTED: Initialization acceleration (non-Harmony approach).");
             try
@@ -236,6 +239,7 @@ public partial class MainFile : Node
         _instance = new MainFile();
         _instance.Name = "R_NaD_Controller";
         _instance._gymMode = gym;
+        _instance._noSpeedup = noSpeedup;
         _instance._defaultSeed = defaultSeed;
         _instance?.CallDeferred(nameof(SafeSetup));
     }
@@ -277,7 +281,7 @@ public partial class MainFile : Node
 
     public override void _Process(double delta)
     {
-        if (_gymMode)
+        if (_gymMode && !_noSpeedup)
         {
             if (SaveManager.Instance != null && SaveManager.Instance.PrefsSave != null)
             {

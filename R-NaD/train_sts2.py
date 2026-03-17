@@ -20,12 +20,14 @@ def cleanup_processes():
     except Exception:
         pass
 
-def launch_game(checkpoint=None, seed=None):
+def launch_game(checkpoint=None, seed=None, no_speedup=False):
     logging.info("Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
     cmd = ["./SlayTheSpire2", "--gym"]
     if seed:
         cmd.extend(["--seed", seed])
+    if no_speedup:
+        cmd.append("--no-speedup")
     # cmd = ["./SlayTheSpire2", "--verbose", "--gym"]
     env = os.environ.copy()
     keys_to_remove = [k for k in env if k.startswith("PYTHON") or k.startswith("VIRTUAL_ENV") or k.startswith("LD_") or k.startswith("CONDA_")]
@@ -128,6 +130,7 @@ def main():
     parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument("--seed", type=str, default=None, help="Fixed seed for new games")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint file (.pkl) to resume from")
+    parser.add_argument("--no-speedup", action="store_true", help="Disable game acceleration (Instant mode, preload disabling)")
     args = parser.parse_args()
     
     
@@ -144,7 +147,7 @@ def main():
         else:
             logging.info("No MLflow checkpoint found, starting from scratch.")
 
-    process = launch_game(checkpoint=checkpoint, seed=args.seed)
+    process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup)
 
     try:
         # Wait for game to initialize by checking status endpoint
@@ -178,26 +181,45 @@ def main():
                     queue_size = status_data.get("queue_size", 0)
                     last_activity_time = status_data.get("last_activity_time", time.time())
                     if time.time() - last_activity_time > 20:
-                        logging.warning(f"Stall detected! No progress for {time.time() - last_activity_time:.1f}s. Restarting game...")
-                        # Flush trajectory
+                        logging.warning(f"Stall detected! No progress for {time.time() - last_activity_time:.1f}s. Performing HARD restart...")
+                        
+                        # 1. Attempt to flush trajectory
                         try:
                             requests.get("http://127.0.0.1:8081/flush_trajectory")
                         except Exception:
                             pass
                         
-                        # Trigger new game
+                        # 2. Terminate the game process
+                        logging.info("Terminating game process...")
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                        
+                        # Extra cleanup just in case
+                        cleanup_processes()
+                        
+                        # 3. Relaunch the game
+                        process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup)
+                        
+                        # 4. Wait for server and re-initialize
+                        if not wait_for_server("http://127.0.0.1:8081/status", timeout=60):
+                            logging.error("Failed to recover from stall: game server didn't restart.")
+                            break
+                        
+                        logging.info("Waiting 60 seconds for Game Scene Tree to initialize...")
+                        time.sleep(60)
+                        
+                        logging.info("Re-enabling learning mode...")
+                        requests.get("http://127.0.0.1:8081/start")
+                        
+                        logging.info(f"Starting new game{' with seed ' + args.seed if args.seed else ''}...")
                         new_game_url = "http://127.0.0.1:8081/new_game"
                         if args.seed:
                             new_game_url += f"?seed={args.seed}"
-                        try:
-                            requests.get(new_game_url)
-                        except Exception:
-                            pass
+                        requests.get(new_game_url)
                         
-                        # Reset last_activity_time locally to avoid immediate re-trigger
-                        # (The bridge will update its own once it gets a new state)
-                        # We just sleep a bit to let the game start
-                        time.sleep(5)
                         continue
 
                     if step_count % 10 == 0:

@@ -5,7 +5,6 @@ R-NaD/venv/
 communication-mod/communication-mod.pck
 R-NaD/__pycache__/
 
-StS2_Decompiled/
 tmp/
 **/__pycache__/
 R-NaD/checkpoints/
@@ -16,3 +15,5 @@ R-NaD/libpython_fixer.cpython-312-x86_64-linux-gnu.so
 mlflow.db
 mlruns/
 R-NaD/logs/
+
+StS2_Decompiled/
