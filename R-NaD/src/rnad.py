@@ -33,24 +33,24 @@ class LeagueConfig(NamedTuple):
     fixed_decks: List[str] = []
 
 class RNaDConfig(NamedTuple):
-    batch_size: int = 8
-    learning_rate: float = 1e-2
+    batch_size: int = 2
+    accumulation_steps: int = 1
+    learning_rate: float = 1e-4
     discount_factor: float = 0.99
     max_steps: int = 1000
     entropy_schedule_start: float = 0.1
     entropy_schedule_end: float = 0.01
     clip_rho_threshold: float = 1.0
     clip_pg_rho_threshold: float = 1.0
-    hidden_size: int = 512
-    num_blocks: int = 8
     log_interval: int = 1
     save_interval: int = 1
-    unroll_length: int = 256
     model_type: str = "transformer" # "mlp" or "transformer"
     num_heads: int = 8
+    num_blocks: int = 4
     seq_len: int = 16
+    hidden_size: int = 128
+    unroll_length: int = 128
     seed: int = 42
-    accumulation_steps: int = 1
 
 def v_trace(
     v_tm1: jnp.ndarray, # (T, B)
@@ -463,9 +463,15 @@ class RNaDLearner:
         return new_params, new_opt_state, loss, aux
 
     def update(self, batch, step: int):
+        _init_libs()
+        import jax # Local import for static analysis
         progress = min(1.0, step / self.config.max_steps)
         alpha = self.config.entropy_schedule_start + progress * (self.config.entropy_schedule_end - self.config.entropy_schedule_start)
-        valid = batch.get('valid', jnp.ones((batch['obs'].shape[0], batch['obs'].shape[1])))
+        
+        # obs is a dictionary of (T, B, ...) arrays. Use the first leaf to get T and B.
+        any_obs = jax.tree_util.tree_leaves(batch['obs'])[0]
+        valid = batch.get('valid', jnp.ones(any_obs.shape[:2]))
+        
         self.params, self.opt_state, loss, aux = self._update_fn(self.params, self.fixed_params, self.opt_state, batch, alpha)
         return {"loss": loss, "policy_loss": aux[0], "value_loss": aux[1], "alpha": alpha}
 

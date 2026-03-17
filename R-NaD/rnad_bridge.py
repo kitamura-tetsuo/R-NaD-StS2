@@ -154,6 +154,14 @@ def do_deferred_imports():
         RNaDConfig = Config
         ExperimentManager = ExpManager
         print("[Python] Deferred imports completed.")
+        
+        # Log JAX devices to confirm GPU usage
+        try:
+            import jax
+            print(f"[Python] JAX devices: {jax.devices()}")
+            print(f"[Python] JAX default backend: {jax.default_backend()}")
+        except Exception as e:
+            print(f"[Python] Error checking JAX devices: {e}")
 
 # Global state
 log(f"--- RNAD_BRIDGE MODULE IMPORTED --- PID: {os.getpid()}")
@@ -435,6 +443,8 @@ class TrainingWorker(threading.Thread):
         self.last_known_mean_reward: float | None = None
         self.lock = threading.Lock()
         self.buffer_lock = threading.Lock()
+        self.last_error: str | None = None
+        self.is_updating = False
 
     def run(self):
         print("[Python] TrainingWorker started.")
@@ -443,17 +453,23 @@ class TrainingWorker(threading.Thread):
                 # Wait for a trajectory segment
                 trajectory = experience_queue.get(timeout=1.0)
                 
+                batch = None
                 with self.buffer_lock:
                     self.batch_buffer.append(trajectory)
                     if len(self.batch_buffer) >= self.config.batch_size:
-                        batch = list(self.batch_buffer)
-                        self.batch_buffer = []
-                        # Perform update outside the lock
-                        self.perform_update(batch)
+                        # Ensure constant batch size for JAX JIT stability
+                        batch = self.batch_buffer[:self.config.batch_size]
+                        self.batch_buffer = self.batch_buffer[self.config.batch_size:]
+                
+                if batch:
+                    # Perform update outside the lock
+                    self.perform_update(batch)
             except queue.Empty:
                 continue
             except Exception as e:
+                self.last_error = str(e)
                 print(f"[Python] Error in TrainingWorker: {e}")
+                traceback.print_exc()
 
     def record_episode_end(self, floor, reward):
         with self.lock:
@@ -462,133 +478,150 @@ class TrainingWorker(threading.Thread):
             print(f"[Python] Recorded episode end at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_last_floors)}")
 
     def perform_update(self, batch):
-        do_deferred_imports()
-        assert np is not None
-        assert jnp is not None
-        
-        # Transpose to (T, B, ...)
-        # Trajectories might have different lengths, so we pad them
-        max_len = self.config.unroll_length
-        # obs is now a dictionary of lists of lists
-        padded_obs_dict = {
-            "global": [],
-            "combat": [],
-            "draw_bow": [],
-            "discard_bow": [],
-            "exhaust_bow": [],
-            "master_bow": [],
-            "map": [],
-            "event": [],
-            "state_type": []
-        }
-        padded_act = []
-        padded_rew = []
-        padded_mask = []
-        padded_log_prob = []
-        valid_mask = []
-
-        for traj in batch:
-            l = len(traj)
-            
-            # obs_traj is a list of dicts
-            obs_traj = [t['obs'] for t in (traj if isinstance(traj, list) else [])]
-            
-            # Pad each element in the dict
-            for key in padded_obs_dict.keys():
-                val_traj = [o[key] for o in obs_traj]
-                # Pad with zeros (or last for state_type if preferred, but 2 is fine as default)
-                if key == "state_type":
-                    val_traj += [np.int32(2)] * (max_len - l)
-                else:
-                    val_traj += [np.zeros_like(val_traj[0])] * (max_len - l)
-                padded_obs_dict[key].append(val_traj)
-
-            # Pad act
-            act_traj = [t['act'] for t in traj]
-            act_traj += [0] * (max_len - l)
-            padded_act.append(act_traj)
-
-            # Pad rew
-            rew_traj = [t['rew'] for t in traj]
-            rew_traj += [0.0] * (max_len - l)
-            padded_rew.append(rew_traj)
-
-            # Pad mask
-            mask_traj = [t['mask'] for t in traj]
-            mask_traj += [np.zeros_like(mask_traj[0])] * (max_len - l)
-            padded_mask.append(mask_traj)
-
-            # Pad log_prob
-            lp_traj = [t['log_prob'] for t in traj]
-            lp_traj += [0.0] * (max_len - l)
-            padded_log_prob.append(lp_traj)
-
-            # Valid mask
-            v_mask = [1.0] * l + [0.0] * (max_len - l)
-            valid_mask.append(v_mask)
-
-        # Build JAX-ready obs dictionary
-        # Each element should be (T, B, dim) - currently (B, T, dim)
-        jax_obs = {
-            k: jnp.array(np.array(v).transpose(1, 0, *range(2, np.array(v).ndim)))
-            for k, v in padded_obs_dict.items()
-        }
-        
-        act = np.array(padded_act)
-        rew = np.array(padded_rew)
-        mask = np.array(padded_mask)
-        log_prob = np.array(padded_log_prob)
-        valid = np.array(valid_mask)
-
-        batch = {
-            'obs': jax_obs,
-            'act': jnp.array(act.transpose(1, 0)),
-            'rew': jnp.array(rew.transpose(1, 0)),
-            'mask': jnp.array(mask.transpose(1, 0, 2)),
-            'log_prob': jnp.array(log_prob.transpose(1, 0)),
-            'valid': jnp.array(valid.transpose(1, 0))
-        }
-
-        metrics = self.learner.update(batch, self.step_count)
-        
-        # Add mean last floor/reward if we have data
         with self.lock:
-            if self.episode_last_floors:
-                # Calculate mean of episodes that ended since last update
-                self.last_known_mean_floor = sum(self.episode_last_floors) / len(self.episode_last_floors)
-                self.last_known_mean_reward = sum(self.episode_last_rewards) / len(self.episode_last_rewards)
-                self.episode_last_floors = [] # Clear for next update
-                self.episode_last_rewards = []
-            
-            # Report the last known means to keep metrics visible in MLflow
-            if self.last_known_mean_floor is not None:
-                metrics['mean_last_floor'] = self.last_known_mean_floor
-            if self.last_known_mean_reward is not None:
-                metrics['mean_last_reward'] = self.last_known_mean_reward
-
-        self.step_count += 1
+            self.is_updating = True
         
-        log_msg = f"[Python] Training Step {self.step_count}: Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}"
-        if 'mean_last_floor' in metrics:
-            log_msg += f", Mean Last Floor={metrics['mean_last_floor']:.2f}"
-        if 'mean_last_reward' in metrics:
-            log_msg += f", Mean Last Reward={metrics['mean_last_reward']:.2f}"
-        print(log_msg)
-        
-        if self.experiment_manager:
-            self.experiment_manager.log_metrics(self.step_count, metrics)
+        print("[Python] TrainingWorker: Bridge is performing an update. Waiting...")
 
-        if self.step_count % 10 == 0:
-            checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_{self.step_count}.pkl"
-            if self.experiment_manager:
-                # Use experiment-specific subdir if possible
-                checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_{self.step_count}.pkl")
+        try:
+            do_deferred_imports()
+            assert np is not None
+            assert jnp is not None
             
-            self.learner.save_checkpoint(checkpoint_path, self.step_count)
-            print(f"[Python] Saved checkpoint to {checkpoint_path}")
+            # Transpose to (T, B, ...)
+            # Trajectories might have different lengths, so we pad them
+            max_len = self.config.unroll_length
+            # obs is now a dictionary of lists of lists
+            padded_obs_dict = {
+                "global": [],
+                "combat": [],
+                "draw_bow": [],
+                "discard_bow": [],
+                "exhaust_bow": [],
+                "master_bow": [],
+                "map": [],
+                "event": [],
+                "state_type": []
+            }
+            padded_act = []
+            padded_rew = []
+            padded_mask = []
+            padded_log_prob = []
+            valid_mask = []
+
+            for traj in batch:
+                l = len(traj)
+                
+                # obs_traj is a list of dicts
+                obs_traj = [t['obs'] for t in (traj if isinstance(traj, list) else [])]
+                
+                # Pad each element in the dict
+                for key in padded_obs_dict.keys():
+                    val_traj = [o[key] for o in obs_traj]
+                    # Pad with zeros (or last for state_type if preferred, but 2 is fine as default)
+                    if key == "state_type":
+                        val_traj += [np.int32(2)] * (max_len - l)
+                    else:
+                        val_traj += [np.zeros_like(val_traj[0])] * (max_len - l)
+                    padded_obs_dict[key].append(val_traj)
+
+                # Pad act
+                act_traj = [t['act'] for t in traj]
+                act_traj += [0] * (max_len - l)
+                padded_act.append(act_traj)
+
+                # Pad rew
+                rew_traj = [t['rew'] for t in traj]
+                rew_traj += [0.0] * (max_len - l)
+                padded_rew.append(rew_traj)
+
+                # Pad mask
+                mask_traj = [t['mask'] for t in traj]
+                mask_traj += [np.zeros_like(mask_traj[0])] * (max_len - l)
+                padded_mask.append(mask_traj)
+
+                # Pad log_prob
+                lp_traj = [t['log_prob'] for t in traj]
+                lp_traj += [0.0] * (max_len - l)
+                padded_log_prob.append(lp_traj)
+
+                # Valid mask
+                v_mask = [1.0] * l + [0.0] * (max_len - l)
+                valid_mask.append(v_mask)
+
+            print("[Python] TrainingWorker: Padding done.")
+
+            # Build JAX-ready obs dictionary
+            # Each element should be (T, B, dim) - currently (B, T, dim)
+            jax_obs = {
+                k: jnp.array(np.array(v).transpose(1, 0, *range(2, np.array(v).ndim)))
+                for k, v in padded_obs_dict.items()
+            }
+            
+            act = np.array(padded_act)
+            rew = np.array(padded_rew)
+            mask = np.array(padded_mask)
+            log_prob = np.array(padded_log_prob)
+            valid = np.array(valid_mask)
+
+            batch = {
+                'obs': jax_obs,
+                'act': jnp.array(act.transpose(1, 0)),
+                'rew': jnp.array(rew.transpose(1, 0)),
+                'mask': jnp.array(mask.transpose(1, 0, 2)),
+                'log_prob': jnp.array(log_prob.transpose(1, 0)),
+                'valid': jnp.array(valid.transpose(1, 0))
+            }
+
+            print(f"[Python] TrainingWorker: Batch built. Shape: T={batch['rew'].shape[0]}, B={batch['rew'].shape[1]}")
+
+            t_start = time.time()
+            metrics = self.learner.update(batch, self.step_count)
+            t_end = time.time()
+
+            print(f"[Python] TrainingWorker: Update done in {t_end - t_start:.2f}s.")
+
+            # Add mean last floor/reward if we have data
+            with self.lock:
+                if self.episode_last_floors:
+                    # Calculate mean of episodes that ended since last update
+                    self.last_known_mean_floor = sum(self.episode_last_floors) / len(self.episode_last_floors)
+                    self.last_known_mean_reward = sum(self.episode_last_rewards) / len(self.episode_last_rewards)
+                    self.episode_last_floors = [] # Clear for next update
+                    self.episode_last_rewards = []
+                
+                # Report the last known means to keep metrics visible in MLflow
+                if self.last_known_mean_floor is not None:
+                    metrics['mean_last_floor'] = self.last_known_mean_floor
+                if self.last_known_mean_reward is not None:
+                    metrics['mean_last_reward'] = self.last_known_mean_reward
+
+            self.step_count += 1
+            
+            log_msg = f"[Python] Training Step {self.step_count}: Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}"
+            if 'mean_last_floor' in metrics:
+                log_msg += f", Mean Last Floor={metrics['mean_last_floor']:.2f}"
+            if 'mean_last_reward' in metrics:
+                log_msg += f", Mean Last Reward={metrics['mean_last_reward']:.2f}"
+            print(log_msg)
             
             if self.experiment_manager:
-                self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
+                self.experiment_manager.log_metrics(self.step_count, metrics)
+
+            if self.step_count % self.config.save_interval == 0:
+                checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_{self.step_count}.pkl"
+                if self.experiment_manager:
+                    # Use experiment-specific subdir if possible
+                    checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_{self.step_count}.pkl")
+                
+                self.learner.save_checkpoint(checkpoint_path, self.step_count)
+                print(f"[Python] TrainingWorker: Saved checkpoint to {checkpoint_path}")
+                
+                if self.experiment_manager:
+                    self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
+        finally:
+            with self.lock:
+                self.is_updating = False
 
 training_worker = None
 
@@ -1452,6 +1485,8 @@ class CommandHandler(BaseHTTPRequestHandler):
                 "unroll_length": config.unroll_length if config else 0,
                 "batch_size": config.batch_size if config else 0,
                 "step_count": training_worker.step_count if training_worker else 0,
+                "worker_error": training_worker.last_error if training_worker else None,
+                "is_updating": training_worker.is_updating if training_worker else False,
                 "last_activity_time": last_activity_time
             }).encode())
             

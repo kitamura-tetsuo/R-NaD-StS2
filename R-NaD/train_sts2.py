@@ -171,9 +171,25 @@ def take_screenshot(reason: str):
     except Exception as e:
         logging.warning(f"Failed to take screenshot before restart: {e}")
 
+def wait_for_update_to_finish(status_url="http://127.0.0.1:8081/status"):
+    """Blocks until is_updating is False in the bridge status."""
+    while True:
+        try:
+            resp = requests.get(status_url, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if not data.get("is_updating", False):
+                    break
+                logging.info("Bridge is performing an update. Waiting...")
+            else:
+                break
+        except Exception:
+            break
+        time.sleep(2)
 
 def perform_restart(process, current_checkpoint, args):
     """Performs a full restart of the game and re-initializes training state."""
+    wait_for_update_to_finish()
     logging.info("Performing HARD restart...")
     
     checkpoint = current_checkpoint
@@ -304,6 +320,7 @@ def main():
         requests.get("http://127.0.0.1:8081/start")
 
         # Start first run
+        wait_for_update_to_finish()
         logging.info(f"Starting new game{' with seed ' + args.seed if args.seed else ''}...")
         new_game_url = "http://127.0.0.1:8081/new_game"
         if args.seed:
@@ -342,6 +359,13 @@ def main():
                     last_activity_time = status_data.get("last_activity_time", time.time())
                     
                     consecutive_failures = 0
+                    
+                    # Stop if worker encountered a training error
+                    worker_error = status_data.get("worker_error")
+                    if worker_error:
+                        logging.error(f"FATAL: TrainingWorker error detected: {worker_error}")
+                        logging.error("Stopping train_sts2.py to prevent unmonitored failures.")
+                        raise RuntimeError(f"TrainingWorker error: {worker_error}")
 
                     if time.time() - last_activity_time > 120:
                         logging.warning(f"Stall detected! No progress for {time.time() - last_activity_time:.1f}s.")
@@ -397,12 +421,16 @@ def main():
                         if content.strip() != "{}":
                             state = json.loads(content)
                             if state.get("type") == "game_over":
+                                wait_for_update_to_finish()
                                 logging.info(f"Game over detected. Restarting game run{' with seed ' + args.seed if args.seed else ''} in 5s...")
                                 # time.sleep(5)
                                 new_game_url = "http://127.0.0.1:8081/new_game"
                                 if args.seed:
                                     new_game_url += f"?seed={args.seed}"
-                                requests.get(new_game_url)
+                                try:
+                                    requests.get(new_game_url, timeout=5)
+                                except Exception as e:
+                                    logging.error(f"Failed to start new game: {e}")
                                 # Remove the game_over state so we don't spam restarts
                                 os.remove(last_state_path)
                 except Exception:
