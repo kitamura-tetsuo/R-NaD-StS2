@@ -28,29 +28,26 @@ public partial class MainFile : Node
     public static MegaCrit.Sts2.Core.Logging.Logger Logger { get; } =
         new(ModId, MegaCrit.Sts2.Core.Logging.LogType.Generic);
 
-    private bool _aiPending = false;
+    public static MainFile Instance { get; private set; }
+
+
+    private static long _perfLogTimer = 0;
+    private static System.Diagnostics.Stopwatch _frameStopwatch = new();
+    private AiSlayer _aiSlayer;
     private long _lastActionTime = 0;
-    private int _lastTurnProcessed = -1;
-    private bool _endTurnSentThisTurn = false;
-    private bool _gymMode = false;
-    private long _mainMenuWaitStartTime = 0;
-    private string _lastStateJson = "";
-    private long _lastPollTime = 0;
-    private long _lastEndTurnTime = 0;
-    private string _defaultSeed = "";
+    public bool _gymMode = false;
     private bool _noSpeedup = false;
+    private string _defaultSeed = "";
+    private bool _isSteppingAI = false;
 
     private void ScheduleAI()
     {
-        if (AiBridge == null) return;
-        if (_aiPending) return;
-        _aiPending = true;
-        CallDeferred(nameof(TriggerAI));
+        // No longer used, handled by AiSlayer
     }
 
-    private bool IsGameBusy()
+    public static bool IsGameBusy()
     {
-        var rm = RunManager.Instance;
+        var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
         if (rm == null) return false;
 
         var runState = rm.DebugOnlyGetState();
@@ -68,13 +65,7 @@ public partial class MainFile : Node
             var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
             if (cm != null && cm.IsInProgress)
             {
-                // We allow TriggerAI even if PlayerActionsDisabled is true,
-                // as long as it's the PlayPhase. This allows us to "End Turn"
-                // or wait explicitly rather than being blocked at the bridge level.
-                if (!cm.IsPlayPhase)
-                {
-                    return true;
-                }
+                if (!cm.IsPlayPhase) return true;
             }
         }
 
@@ -82,27 +73,26 @@ public partial class MainFile : Node
     }
 
 
-    private void TriggerAI()
+    public async Task StepAI()
     {
-        _aiPending = false;
         if (AiBridge == null) return;
+        if (_isSteppingAI) return;
 
-        // Skip if playability is not met
-        if (IsGameBusy())
-        {
-            return;
-        }
-
+        _isSteppingAI = true;
         try
         {
             string stateJson = GetJsonState();
             long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
-            // Skip polling if state hasn't changed, unless 200ms passed (heartbeat)
-            _lastPollTime = currentTime;
-            _lastStateJson = stateJson;
-
+            var swBridge = System.Diagnostics.Stopwatch.StartNew();
             var responseVariant = AiBridge.Call("predict_action", stateJson);
+            long bridgeTime = swBridge.ElapsedMilliseconds;
+            
+            if (bridgeTime > 500)
+            {
+                Logger.Warn($"[PERF] AiBridge.predict_action took {bridgeTime}ms");
+            }
+
             if (responseVariant.VariantType == Variant.Type.Nil) return;
 
             string response = responseVariant.AsString();
@@ -116,25 +106,8 @@ public partial class MainFile : Node
 
             string action = dict["action"].AsString();
             
-            // Auto-start if stuck at main menu in gym mode
-            if (_gymMode && action == "wait" && RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom == null)
-            {
-                if (_mainMenuWaitStartTime == 0) _mainMenuWaitStartTime = currentTime;
-                if (currentTime - _mainMenuWaitStartTime > 5000)
-                {
-                    Logger.Info("[AutoAI] Gym Mode auto-start triggered.");
-                    _mainMenuWaitStartTime = currentTime;
-                    StartSts2Run();
-                    return;
-                }
-            }
-            else
-            {
-                _mainMenuWaitStartTime = 0;
-            }
-
             // Minimum delay between actions (except wait/screenshot)
-            if (currentTime - _lastActionTime < 100 && action != "wait" && action != "take_screenshot")
+            if (currentTime - _lastActionTime < 50 && action != "wait" && action != "take_screenshot")
             {
                 return;
             }
@@ -142,7 +115,7 @@ public partial class MainFile : Node
 
             if (action == "wait") return;
 
-            Logger.Info($"[AutoAI] TriggerAI: action={action}");
+            Logger.Info($"[AutoAI] StepAI: action={action}");
 
             if (action == "command")
             {
@@ -154,39 +127,19 @@ public partial class MainFile : Node
                 string path = dict["path"].AsString();
                 TakeScreenshot(path);
                 AiBridge.Call("mark_screenshot_done");
-                ScheduleAI();
-            }
-            else if (action == "end_turn")
-            {
-                var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
-                var combatState = cm?.DebugOnlyGetState();
-                int currentTurn = combatState?.RoundNumber ?? -1;
-
-                if (currentTurn != _lastTurnProcessed)
-                {
-                    _lastTurnProcessed = currentTurn;
-                    _endTurnSentThisTurn = false;
-                }
-
-                // If we already sent it this turn, only allow re-sending after 2 seconds
-                // This handles cases where the game missed the input or is lagging.
-                if (_endTurnSentThisTurn && (currentTime - _lastEndTurnTime < 2000)) 
-                {
-                    return;
-                }
-
-                _endTurnSentThisTurn = true;
-                _lastEndTurnTime = currentTime;
-                ExecuteAction(dict);
             }
             else
             {
-                ExecuteAction(dict);
+                await ExecuteAction(dict);
             }
         }
         catch (Exception ex)
         {
-            Logger.Error($"[AutoAI] Error in TriggerAI: {ex.Message}");
+            Logger.Error($"[AutoAI] Error in StepAI: {ex.Message}");
+        }
+        finally
+        {
+            _isSteppingAI = false;
         }
     }
 
@@ -237,11 +190,13 @@ public partial class MainFile : Node
         }
 
         _instance = new MainFile();
-        _instance.Name = "R_NaD_Controller";
-        _instance._gymMode = gym;
-        _instance._noSpeedup = noSpeedup;
-        _instance._defaultSeed = defaultSeed;
-        _instance?.CallDeferred(nameof(SafeSetup));
+        Instance = _instance;
+        Instance.Name = "R_NaD_Controller";
+        Instance._gymMode = gym;
+        Instance._noSpeedup = noSpeedup;
+        Instance._defaultSeed = defaultSeed;
+        Instance._aiSlayer = new AiSlayer();
+        Instance?.CallDeferred(nameof(SafeSetup));
     }
 
     private static void SafeSetup()
@@ -263,14 +218,28 @@ public partial class MainFile : Node
                 _instance.SetProcess(true);
             }
 
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             GDExtensionManager.LoadExtension("res://ai_bridge.gdextension");
+            Logger.Info($"[PERF] LoadExtension took {sw.ElapsedMilliseconds}ms");
 
+            sw.Restart();
             AiBridge = (Node)Godot.ClassDB.Instantiate("AiBridge");
+            Logger.Info($"[PERF] Instantiate AiBridge took {sw.ElapsedMilliseconds}ms");
+
             if (AiBridge != null)
             {
                 AiBridge.Name = "MyAiBridge";
                 tree.Root.AddChild(AiBridge);
-                _instance?.CallDeferred(nameof(TriggerAI));
+                
+                sw.Restart();
+                // Trigger bridge initialization (and thus HTTP server start)
+                if (Instance != null) Instance.PollScreenshotRequest();
+                Logger.Info("[PERF] Dispatched initial PollScreenshotRequest");
+
+                if (Instance != null && Instance._gymMode)
+                {
+                    Instance._aiSlayer.Start(Instance._defaultSeed);
+                }
             }
         }
         catch (Exception ex)
@@ -278,9 +247,26 @@ public partial class MainFile : Node
             Logger.Error($"[AutoAI] SafeSetup error: {ex.Message}");
         }
     }
+    private bool _bridgeInitialized = false;
 
     public override void _Process(double delta)
     {
+        _frameStopwatch.Restart();
+        long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+
+        // Performance monitoring every 5 seconds
+        if (now - _perfLogTimer > 5000)
+        {
+            _perfLogTimer = now;
+            double fps = Performance.GetMonitor(Performance.Monitor.TimeFps);
+            double process = Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0;
+            double physics = Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
+            double static_mem = Performance.GetMonitor(Performance.Monitor.MemoryStatic) / (1024.0 * 1024.0);
+            double obj_count = Performance.GetMonitor(Performance.Monitor.ObjectCount);
+            
+            Logger.Info($"[PERF] FPS: {fps:F1}, Process: {process:F2}ms, Phys: {physics:F2}ms, Mem: {static_mem:F1}MB, Objs: {obj_count}");
+        }
+
         if (_gymMode && !_noSpeedup)
         {
             if (SaveManager.Instance != null && SaveManager.Instance.PrefsSave != null)
@@ -290,7 +276,68 @@ public partial class MainFile : Node
         }
 
         if (AiBridge == null) return;
-        ScheduleAI();
+
+        // Delay bridge interactions until game is loaded to avoid initial startup freeze
+        if (!_bridgeInitialized)
+        {
+            // Only start bridge if we are in MainMenu or beyond, 
+            // and we've waited at least 5 seconds from boot
+            if (now - _perfLogTimer < 0) return; // Wait at least one timer cycle (redundant)
+            
+            var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
+            if (rm == null) return;
+            
+            _bridgeInitialized = true;
+            Logger.Info("[AutoAI] Bridge initialized - beginning polling.");
+        }
+
+        // Even if AiSlayer is running its own loop, we poll StepAI periodically
+        // to handle background commands (like start_game) and keep the server alive/responsive.
+        long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+        if (currentTime - _lastActionTime > 500) // Poll every 500ms when idle
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            // Poll for screenshot requests from the bridge
+            PollScreenshotRequest();
+            long screenshotTime = sw.ElapsedMilliseconds;
+
+            if (!_isSteppingAI)
+            {
+                _ = StepAI(); 
+            }
+            long totalTime = sw.ElapsedMilliseconds;
+            
+            if (totalTime > 100) {
+                 Logger.Info($"[PERF] StepAI/PollScreenshot took {totalTime}ms (Bridge: {totalTime-screenshotTime}ms)");
+            }
+        }
+        
+        long frameFinal = _frameStopwatch.ElapsedMilliseconds;
+        if (frameFinal > 32) {
+             Logger.Warn($"[PERF] _Process took {frameFinal}ms");
+        }
+    }
+
+    private void PollScreenshotRequest()
+    {
+        if (AiBridge == null) return;
+        
+        var pathVariant = AiBridge.Call("check_screenshot_request");
+        if (pathVariant.VariantType == Variant.Type.String)
+        {
+            string path = pathVariant.AsString();
+            if (!string.IsNullOrEmpty(path))
+            {
+                Logger.Info($"[AutoAI] Taking requested screenshot: {path}");
+                TakeScreenshot(path);
+                AiBridge.Call("mark_screenshot_done");
+            }
+        }
+    }
+
+    private void TakeScreenshotDeferred(string path)
+    {
+        TakeScreenshot(path);
     }
 
     private void ProcessCommand(string command)
@@ -298,11 +345,12 @@ public partial class MainFile : Node
         if (command.StartsWith("start_game"))
         {
             string seed = command.Contains(":") ? command.Split(':')[1] : "";
-            StartSts2Run(seed);
+            if (_aiSlayer != null) _aiSlayer.Start(seed);
+            else StartSts2Run(seed);
         }
     }
 
-    private void StartSts2Run(string seed = "")
+    public void StartSts2Run(string seed = "")
     {
         var ngame = NGame.Instance;
         if (ngame != null)

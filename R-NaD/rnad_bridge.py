@@ -148,6 +148,7 @@ def do_deferred_imports():
         print("[Python] Deferred imports completed.")
 
 # Global state
+log(f"--- RNAD_BRIDGE MODULE IMPORTED --- PID: {os.getpid()}")
 learning_active = False
 # Preserve globals across re-imports if already in sys.modules
 if 'rnad_bridge' in sys.modules:
@@ -167,6 +168,7 @@ else:
     np = None
 
 last_activity_time = time.time()
+_predict_step = None
 
 current_seed = os.environ.get("RNAD_SEED")
 if current_seed:
@@ -591,6 +593,10 @@ def load_model(checkpoint_path=None):
     dummy_obs = {
         "global": jnp.zeros((1, 128)),
         "combat": jnp.zeros((1, 384)),
+        "draw_bow": jnp.zeros((1, VOCAB_SIZE)),
+        "discard_bow": jnp.zeros((1, VOCAB_SIZE)),
+        "exhaust_bow": jnp.zeros((1, VOCAB_SIZE)),
+        "master_bow": jnp.zeros((1, VOCAB_SIZE)),
         "map": jnp.zeros((1, 2048)),
         "event": jnp.zeros((1, 128)),
         "state_type": jnp.zeros((1,), dtype=jnp.int32)
@@ -602,6 +608,34 @@ def load_model(checkpoint_path=None):
     
     learner = RNaDLearner(None, num_actions, config) # state_dim is now unused/ignored in init
     rng_key = jax.random.PRNGKey(42)
+
+    # Define JIT-compiled prediction step to avoid re-compilation
+    global _predict_step
+    @jax.jit
+    def _predict_step(params, state, mask):
+        logits, value = learner.network.apply(params, None, state, mask)
+        return logits, value
+
+    # Pre-warm JAX compilation for all state types
+    log("[Python] Pre-warming JAX compilation for all state types...")
+    t_warm_start = time.time()
+    try:
+        if learner.params is None:
+            log("[Python] Initializing JAX model params for pre-warm...")
+            learner.init(rng_key)
+        
+        # Pre-warm for each switch branch (combat:0, map:1, rest:2)
+        for st_idx in [0, 1, 2]:
+            temp_obs = jax.tree_util.tree_map(lambda x: x, dummy_obs)
+            temp_obs["state_type"] = jnp.array([st_idx], dtype=jnp.int32)
+            dummy_mask = jnp.zeros((1, num_actions), dtype=jnp.float32)
+            _ = _predict_step(learner.params, temp_obs, dummy_mask)
+            log(f"[Python] JAX pre-warm for type {st_idx} complete.")
+            
+        log(f"[Python] All JAX pre-warms complete in {time.time() - t_warm_start:.2f}s")
+    except Exception as e:
+        log(f"[Python] Warning: JAX pre-warm failed: {e}")
+        traceback.print_exc()
 
     # Initialize ExperimentManager
     exp_manager = None
@@ -1021,13 +1055,16 @@ def get_action_mask(state, masked_reward_indices=None):
     return mask
 
 def predict_action(state_json):
+    t0 = time.time()
     do_deferred_imports()
-    assert np is not None
-    assert jnp is not None
+    t_imports = time.time() - t0
+    
     global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key, last_activity_time
     
     try:
+        t_json_start = time.time()
         state = json.loads(state_json)
+        t_json = time.time() - t_json_start
         state_type = state.get("type", "unknown")
         
         # Update last activity time
@@ -1087,6 +1124,12 @@ def predict_action(state_json):
         except:
             pass
 
+        if state_type in ["none", "main_menu", "unknown"]:
+            action_dict = get_heuristic_action(state)
+            res = json.dumps(action_dict)
+            log(f"Early exit for {state_type}: {res}")
+            return res
+
         if not command_queue.empty():
             cmd = command_queue.get_nowait()
             res = json.dumps({"action": "command", "command": cmd})
@@ -1117,7 +1160,13 @@ def predict_action(state_json):
         
         # Inference
         # Now passing batched_state dictionary to the network
-        logits, value = learner.network.apply(learner.params, None, batched_state, mask[None, :].astype(jnp.float32))
+        t_inf_start = time.time()
+        if _predict_step is None:
+            # Fallback if jit failed
+            logits, value = learner.network.apply(learner.params, None, batched_state, mask[None, :].astype(jnp.float32))
+        else:
+            logits, value = _predict_step(learner.params, batched_state, mask[None, :].astype(jnp.float32))
+        t_inference = time.time() - t_inf_start
         
         # Probs are calculated from logits which are already masked in the network
         probs = jax.nn.softmax(logits, axis=-1)
@@ -1238,6 +1287,10 @@ def predict_action(state_json):
             predict_action.last_selected_reward_idx = action.get("index")
 
         res = json.dumps(action)
+        t_total = time.time() - t0
+        t_inference_ms = (t_inference * 1000) if 't_inference' in locals() else 0
+        log(f"[PERF] predict_action({state_type}) took {t_total*1000:.2f}ms (inf:{t_inference_ms:.2f}ms)")
+        return res
         log(f"Returning action: {res}")
         return res
             
@@ -1287,7 +1340,10 @@ def get_heuristic_action(state):
         global learning_active, current_seed
         if learning_active:
             cmd = f"start_game:{current_seed}" if current_seed else "start_game"
+            log(f"Heuristic: Generating {cmd} for none state.")
             return {"action": "command", "command": cmd}
+        else:
+            log("Heuristic: state is none, but learning_active is False.")
 
     elif state_type == "event":
         options = [o for o in state.get("options", []) if not o.get("is_locked")]
@@ -1359,6 +1415,20 @@ class CommandHandler(BaseHTTPRequestHandler):
                 "last_activity_time": last_activity_time
             }).encode())
             
+        elif parsed_path.path == "/state":
+            last_state_path = os.path.join(LOG_DIR, "rnad_last_state.json")
+            state = {}
+            if os.path.exists(last_state_path):
+                with open(last_state_path, "r") as f:
+                    try:
+                        state = json.load(f)
+                    except:
+                        pass
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(state).encode())
+            
         elif parsed_path.path == "/flush_trajectory":
             global current_trajectory
             if current_trajectory:
@@ -1372,7 +1442,7 @@ class CommandHandler(BaseHTTPRequestHandler):
 
         elif parsed_path.path == "/start":
             learning_active = True
-            print("[Python] Learning started!")
+            log("[Python] Learning started via /start endpoint!")
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()

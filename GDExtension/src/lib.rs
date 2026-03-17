@@ -21,18 +21,31 @@ impl INode for AiBridge {
 
 #[godot_api]
 impl AiBridge {
+    fn ensure_sys_path(py: Python) -> PyResult<()> {
+        let sys = py.import("sys")?;
+        let path = sys.getattr("path")?;
+        let paths: Vec<String> = path.extract()?;
+        
+        let bridge_path = "/home/ubuntu/src/R-NaD-StS2/R-NaD".to_string();
+        if !paths.contains(&bridge_path) {
+            path.call_method1("append", (bridge_path,))?;
+        }
+        
+        // Also check relative path for flexibility
+        let rel_path = "./R-NaD".to_string();
+        if !paths.contains(&rel_path) {
+            path.call_method1("append", (rel_path,))?;
+        }
+        
+        Ok(())
+    }
+
     #[func]
     pub fn predict_action(&self, state_json: GString) -> Variant {
         let state_str = state_json.to_string();
 
         let result = Python::with_gil(|py| -> PyResult<String> {
-            let sys = py.import("sys")?;
-            let path = sys.getattr("path")?;
-            
-            // Add paths where the python module might be located
-            path.call_method1("append", ("./R-NaD",))?;
-            path.call_method1("append", ("/home/ubuntu/src/R-NaD-StS2/R-NaD",))?;
-            
+            Self::ensure_sys_path(py)?;
             let my_ai_module = py.import("rnad_bridge")?;
 
             let predict_fn = my_ai_module.getattr("predict_action")?;
@@ -51,9 +64,11 @@ impl AiBridge {
             }
         }
     }
+
     #[func]
     pub fn check_screenshot_request(&self) -> Variant {
         let result = Python::with_gil(|py| -> PyResult<String> {
+            Self::ensure_sys_path(py)?;
             let my_ai_module = py.import("rnad_bridge")?;
             let check_fn = my_ai_module.getattr("check_screenshot_request")?;
             let path: String = check_fn.call0()?.extract()?;
@@ -72,6 +87,7 @@ impl AiBridge {
     #[func]
     pub fn mark_screenshot_done(&self) -> Variant {
         let result = Python::with_gil(|py| -> PyResult<bool> {
+            Self::ensure_sys_path(py)?;
             let my_ai_module = py.import("rnad_bridge")?;
             let mark_fn = my_ai_module.getattr("mark_screenshot_done")?;
             let res: bool = mark_fn.call0()?.extract()?;

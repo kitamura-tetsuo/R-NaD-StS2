@@ -3,4 +3,4 @@
 set -e
 
 ./deploy.sh
-python3 R-NaD/train_sts2.py --seed 0
+python3 R-NaD/train_sts2.py --seed 0 --no-speedup

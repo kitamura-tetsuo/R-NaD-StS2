@@ -6,7 +6,7 @@ namespace communication_mod;
 
 public partial class MainFile : Node
 {
-    private async void ExecuteAction(Godot.Collections.Dictionary dict)
+    public async Task ExecuteAction(Godot.Collections.Dictionary dict)
     {
         string action = dict["action"].AsString();
         Logger.Info($"[AutoAI] Executing action: {action}");

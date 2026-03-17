@@ -80,7 +80,7 @@ def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if not experiment:
         logging.info(f"Experiment {experiment_name} not found.")
-        return None
+        return None, None
 
     try:
         # Search for the latest run in this experiment
@@ -92,7 +92,7 @@ def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
         
         if runs.empty:
             logging.info("No runs found in experiment.")
-            return None
+            return None, None
 
         # Iterate through runs to find one with checkpoint artifacts
         for _, run in runs.iterrows():
@@ -116,6 +116,7 @@ def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
                     # Download the artifact
                     local_path = client.download_artifacts(run_id, latest_art_path)
                     # The downloaded path will be a directory containing the .pkl file
+                    pkl_files = glob.glob(os.path.join(local_path, "*.pkl"))
                     if pkl_files:
                         return pkl_files[0], run_id
         
@@ -180,7 +181,7 @@ def main():
                     step_count = status_data.get("step_count", 0)
                     queue_size = status_data.get("queue_size", 0)
                     last_activity_time = status_data.get("last_activity_time", time.time())
-                    if time.time() - last_activity_time > 20:
+                    if time.time() - last_activity_time > 120:
                         logging.warning(f"Stall detected! No progress for {time.time() - last_activity_time:.1f}s. Performing HARD restart...")
                         
                         # 1. Attempt to flush trajectory

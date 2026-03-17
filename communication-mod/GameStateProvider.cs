@@ -9,6 +9,10 @@ namespace communication_mod;
 public partial class MainFile : Node
 {
     private static bool _diagnosed = false;
+    private static string _lastMapJson = "";
+    private static int _lastMapFloor = -1;
+    private static string _lastMapBoss = "";
+    private static (int row, int col)? _lastMapPos = null;
 
     private string GetJsonState()
     {
@@ -16,10 +20,12 @@ public partial class MainFile : Node
         var runState = rm.DebugOnlyGetState();
         if (runState == null) return "{\"type\":\"none\", \"floor\": 0}";
 
+        string currentSeed = runState.Rng.StringSeed;
+
         if (runState.IsGameOver)
         {
             Logger.Info("[AutoAI] RunState.IsGameOver is true. Reporting game_over state.");
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode }, JsonOptions);
         }
 
         var currentRoom = runState.CurrentRoom;
@@ -31,12 +37,14 @@ public partial class MainFile : Node
         bool mapScreenExists = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance != null;
         bool mapScreenOpen = mapScreenExists && MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance.IsOpen;
 
-        if (mapScreenExists && (mapScreenOpen || currentRoom == null))
+        if (mapScreenExists && mapScreenOpen)
         {
-            // Only report map if no major overlays are on top (except Rewards which we handle specially)
-            bool isRewardsOrNothing = topOverlay == null || topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen;
-
-            if (isRewardsOrNothing)
+            // Only report map if no major overlays are on top (except Rewards/Intro which we handle specially)
+            bool isRewardsOrIntroOrNothing = topOverlay == null || 
+                                             topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen ||
+                                             topOverlay.GetType().FullName.Contains("IntroScreen");
+            
+            if (isRewardsOrIntroOrNothing)
             {
                // Still check if rewards has items
                bool hasRewards = false;
@@ -64,8 +72,8 @@ public partial class MainFile : Node
 
         if (currentRoom == null)
         {
-             Logger.Info($"[AutoAI] currentRoom is null. mapScreenExists={mapScreenExists}, mapScreenOpen={mapScreenOpen}");
-             return System.Text.Json.JsonSerializer.Serialize(new { type = "unknown", floor = runState.TotalFloor, error = "currentRoom is null" }, JsonOptions);
+             Logger.Info($"[AutoAI] currentRoom is null. mapScreenExists={mapScreenExists}, mapScreenOpen={mapScreenOpen}, topOverlay={topOverlay?.GetType().FullName ?? "null"}");
+             return System.Text.Json.JsonSerializer.Serialize(new { type = "waiting", floor = runState.TotalFloor, reason = "currentRoom is null and map not open" }, JsonOptions);
         }
 
         if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen rs)
@@ -106,6 +114,8 @@ public partial class MainFile : Node
             {
                 type = "rewards",
                 floor = runState.TotalFloor,
+                seed = currentSeed,
+                is_gym = _gymMode,
                 rewards = rewards,
                 has_open_potion_slots = hasOpenPotionSlots,
                 relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
@@ -115,6 +125,7 @@ public partial class MainFile : Node
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardRewardSelectionScreen cardRewardScreen)
         {
             var cards = new List<object>();
+            // Optimized search: limit to screen children
             var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(cardRewardScreen);
             for (int i = 0; i < holders.Count; i++)
             {
@@ -162,7 +173,7 @@ public partial class MainFile : Node
                 }
             }
 
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, cards = cards, buttons = buttons }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, cards = cards, buttons = buttons }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen gos)
         {
@@ -198,6 +209,8 @@ public partial class MainFile : Node
                 type = "grid_selection",
                 subtype = "choose_a_card",
                 floor = runState.TotalFloor,
+                seed = currentSeed,
+                is_gym = _gymMode,
                 cards = cards,
                 can_skip = canSkip
             }, JsonOptions);
@@ -267,13 +280,22 @@ public partial class MainFile : Node
                 type = "grid_selection",
                 subtype = gridSelection.GetType().Name,
                 floor = runState.TotalFloor,
+                seed = currentSeed,
+                is_gym = _gymMode,
                 cards = cards,
                 is_confirming = isConfirming
             }, JsonOptions);
         }
 
         // 1.5. Check for global screens that aren't on overlay stack
-        var relicCollection = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection>(GetTree().Root).FirstOrDefault(c => ((CanvasItem)c).Visible);
+        // Optimized: Instead of searching all nodes from GetTree().Root, find specific room node if it exists
+        MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection? relicCollection = null;
+        var treasureRoomNodeForRelics = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom>(GetTree().Root).FirstOrDefault();
+        if (treasureRoomNodeForRelics != null)
+        {
+            relicCollection = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection>(treasureRoomNodeForRelics).FirstOrDefault(c => ((CanvasItem)c).Visible);
+        }
+
         if (relicCollection != null)
         {
             var relics = new List<object>();
@@ -390,6 +412,8 @@ public partial class MainFile : Node
             {
                 type = "combat",
                 floor = runState.TotalFloor,
+                seed = currentSeed,
+                is_gym = _gymMode,
                 can_proceed = canProceed,
                 actions_disabled = cm.PlayerActionsDisabled,
                 player = new
@@ -494,10 +518,10 @@ public partial class MainFile : Node
                 }
             } else {
                 // Fallback to UI buttons (useful for PROCEED buttons or when model is out of sync)
-                var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom>(GetTree().Root)
-                    .SelectMany(r => FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(r))
+                var eventRoomNode = MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance;
+                var buttons = eventRoomNode != null ? FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(eventRoomNode)
                     .OrderBy(b => b.GlobalPosition.Y) // Usually top to bottom
-                    .ToList();
+                    .ToList() : new List<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>();
 
                 if (buttons.Count > 0) {
                     for (int i = 0; i < buttons.Count; i++) {
@@ -541,10 +565,11 @@ public partial class MainFile : Node
             else
             {
                 // UI Fallback for Rest Site Buttons
-                var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.RestSite.NRestSiteButton>(GetTree().Root)
+                var restSiteNodeForButtons = MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom.Instance;
+                var buttons = restSiteNodeForButtons != null ? FindNodesByType<MegaCrit.Sts2.Core.Nodes.RestSite.NRestSiteButton>(restSiteNodeForButtons)
                     .Where(b => b.Visible)
                     .OrderBy(b => b.GlobalPosition.X)
-                    .ToList();
+                    .ToList() : new List<MegaCrit.Sts2.Core.Nodes.RestSite.NRestSiteButton>();
                 
                 if (buttons.Count > 0)
                 {
@@ -583,8 +608,9 @@ public partial class MainFile : Node
             var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
             int gold = player?.Gold ?? 0;
 
-            var inventoryNode = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.Shops.NMerchantInventory>(GetTree().Root).FirstOrDefault(n => n.Visible);
-            if (inventoryNode != null)
+            var merchantRoomNode = MegaCrit.Sts2.Core.Nodes.Rooms.NMerchantRoom.Instance;
+            var inventoryNode = merchantRoomNode != null ? FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.Shops.NMerchantInventory>(merchantRoomNode).FirstOrDefault(n => n.Visible) : null;
+            if (inventoryNode != null && inventoryNode.Visible)
             {
                 var slots = inventoryNode.GetAllSlots();
                 foreach (var slot in slots)
@@ -612,16 +638,16 @@ public partial class MainFile : Node
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.TreasureRoom tr)
         {
-            var treasureRoomNode = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom>(GetTree().Root).FirstOrDefault();
+            var treasureRoomNodeForStatus = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom>(GetTree().Root).FirstOrDefault();
             bool hasChest = false;
             bool canProceed = false;
 
-            if (treasureRoomNode != null)
+            if (treasureRoomNodeForStatus != null)
             {
                 var chestBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom).GetField("_chestButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var chestBtn = chestBtnField?.GetValue(treasureRoomNode) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                var chestBtn = chestBtnField?.GetValue(treasureRoomNodeForStatus) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
                 hasChest = chestBtn != null && chestBtn.Visible && chestBtn.IsEnabled;
-                canProceed = treasureRoomNode.ProceedButton?.IsEnabled ?? false;
+                canProceed = treasureRoomNodeForStatus.ProceedButton?.IsEnabled ?? false;
             }
 
             return System.Text.Json.JsonSerializer.Serialize(new
@@ -640,6 +666,28 @@ public partial class MainFile : Node
     private string GetMapJson(MegaCrit.Sts2.Core.Runs.RunState runState)
     {
         var currentPos = runState.CurrentMapCoord;
+        
+        // Cache management: Check if floor or position changed or if we have no cache
+        string currentBoss = "Unknown";
+        try {
+            var currentAct = GetPropValue<object>(runState, "CurrentAct", null);
+            if (currentAct != null) {
+                var bossEncounter = GetPropValue<object>(currentAct, "BossEncounter", null);
+                if (bossEncounter != null) {
+                    var idObj = GetPropValue<object>(bossEncounter, "Id", null);
+                    if (idObj != null) {
+                        currentBoss = GetPropValue<string>(idObj, "Entry", currentBoss);
+                    }
+                }
+            }
+        } catch {}
+
+        if (_lastMapJson != "" && _lastMapFloor == runState.TotalFloor && _lastMapBoss == currentBoss && 
+            _lastMapPos?.row == currentPos?.row && _lastMapPos?.col == currentPos?.col)
+        {
+            return _lastMapJson;
+        }
+
         var nodes = new List<object>();
         var edges = new List<object>();
 
@@ -725,16 +773,24 @@ public partial class MainFile : Node
             }
         }
 
-        return System.Text.Json.JsonSerializer.Serialize(new
+        _lastMapJson = System.Text.Json.JsonSerializer.Serialize(new
         {
             type = "map",
             floor = runState.TotalFloor,
+            seed = runState.Rng.StringSeed,
+            is_gym = _gymMode,
             current_pos = currentPos.HasValue ? new { row = currentPos.Value.row, col = currentPos.Value.col } : null,
             next_nodes = nextNodes,
             nodes = nodes,
             edges = edges,
-            boss = bossId
+            boss = currentBoss
         }, JsonOptions);
+        
+        _lastMapFloor = runState.TotalFloor;
+        _lastMapBoss = currentBoss;
+        _lastMapPos = currentPos.HasValue ? (currentPos.Value.row, currentPos.Value.col) : null;
+
+        return _lastMapJson;
     }
 
     private T GetPropValue<T>(object obj, string propName, T defaultValue)
