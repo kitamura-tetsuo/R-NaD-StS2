@@ -53,6 +53,19 @@ public partial class MainFile : Node
         var runState = rm.DebugOnlyGetState();
         if (runState == null) return false;
 
+        // If an overlay is open, we need the AI to process it, so it's not "busy" in a blocking sense
+        if (MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance != null && MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance.ScreenCount > 0)
+        {
+            return false;
+        }
+
+        // If hand is in selection mode, we need the AI to act
+        var handNode = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
+        if (handNode != null && (handNode.IsInCardSelection || handNode.CurrentMode != MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.Play))
+        {
+            return false;
+        }
+
         // Action queue is processing
         if (rm.ActionQueueSet != null && !rm.ActionQueueSet.IsEmpty)
         {
@@ -71,6 +84,7 @@ public partial class MainFile : Node
 
         return false;
     }
+
 
 
     public async Task StepAI()

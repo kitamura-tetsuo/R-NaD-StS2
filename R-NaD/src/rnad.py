@@ -33,7 +33,7 @@ class LeagueConfig(NamedTuple):
     fixed_decks: List[str] = []
 
 class RNaDConfig(NamedTuple):
-    batch_size: int = 128
+    batch_size: int = 8
     learning_rate: float = 1e-2
     discount_factor: float = 0.99
     max_steps: int = 1000
@@ -41,14 +41,14 @@ class RNaDConfig(NamedTuple):
     entropy_schedule_end: float = 0.01
     clip_rho_threshold: float = 1.0
     clip_pg_rho_threshold: float = 1.0
-    hidden_size: int = 256
-    num_blocks: int = 4
+    hidden_size: int = 512
+    num_blocks: int = 8
     log_interval: int = 1
-    save_interval: int = 10
-    unroll_length: int = 200
+    save_interval: int = 1
+    unroll_length: int = 256
     model_type: str = "transformer" # "mlp" or "transformer"
-    num_heads: int = 4
-    seq_len: int = 8
+    num_heads: int = 8
+    seq_len: int = 16
     seed: int = 42
     accumulation_steps: int = 1
 

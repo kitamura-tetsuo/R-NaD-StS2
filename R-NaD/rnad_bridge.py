@@ -68,6 +68,13 @@ if not hasattr(sys.stdout, "is_rnad_logger"):
     sys.stderr = Logger(sys.stderr, LOG_FILE)
     sys.stdout.is_rnad_logger = True
 
+# Dedicated decision logger
+DECISION_LOG_FILE = os.path.join(LOG_DIR, "rnad_decisions.log")
+decision_logger = Logger(None, DECISION_LOG_FILE)
+
+def log_decision(msg):
+    decision_logger.write(f"{time.ctime()}: {msg}\n")
+
 def log(msg):
     # Use direct file write if stdout is weird, but print should be fine now
     print(f"[Python][SM:{id(sys.modules)}][P:{os.getpid()}] {msg}")
@@ -103,6 +110,7 @@ except Exception as e:
 # Now we can safely import ctypes and other C-extensions
 import ctypes
 import json
+import pickle
 import random
 import threading
 import time
@@ -376,6 +384,12 @@ def encode_bow(card_ids):
 # learner = None # Removed as it's handled by the preservation logic above
 rng_key = None
 
+# VALID_TRAJECTORY_STATES defines states that should be recorded as experiences.
+VALID_TRAJECTORY_STATES = {
+    "combat", "map", "rewards", "event", "rest_site", "shop", 
+    "treasure", "treasure_relics", "card_reward"
+}
+
 # Trajectory and Training Worker
 experience_queue = queue.Queue()
 current_trajectory = []
@@ -420,6 +434,7 @@ class TrainingWorker(threading.Thread):
         self.last_known_mean_floor: float | None = None
         self.last_known_mean_reward: float | None = None
         self.lock = threading.Lock()
+        self.buffer_lock = threading.Lock()
 
     def run(self):
         print("[Python] TrainingWorker started.")
@@ -427,11 +442,14 @@ class TrainingWorker(threading.Thread):
             try:
                 # Wait for a trajectory segment
                 trajectory = experience_queue.get(timeout=1.0)
-                self.batch_buffer.append(trajectory)
                 
-                if len(self.batch_buffer) >= self.config.batch_size:
-                    self.perform_update()
-                    self.batch_buffer = []
+                with self.buffer_lock:
+                    self.batch_buffer.append(trajectory)
+                    if len(self.batch_buffer) >= self.config.batch_size:
+                        batch = list(self.batch_buffer)
+                        self.batch_buffer = []
+                        # Perform update outside the lock
+                        self.perform_update(batch)
             except queue.Empty:
                 continue
             except Exception as e:
@@ -443,7 +461,7 @@ class TrainingWorker(threading.Thread):
             self.episode_last_rewards.append(reward)
             print(f"[Python] Recorded episode end at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_last_floors)}")
 
-    def perform_update(self):
+    def perform_update(self, batch):
         do_deferred_imports()
         assert np is not None
         assert jnp is not None
@@ -469,7 +487,7 @@ class TrainingWorker(threading.Thread):
         padded_log_prob = []
         valid_mask = []
 
-        for traj in self.batch_buffer:
+        for traj in batch:
             l = len(traj)
             
             # obs_traj is a list of dicts
@@ -579,16 +597,7 @@ def load_model(checkpoint_path=None):
     do_deferred_imports()
     
     num_actions = 100
-    config = RNaDConfig(
-        batch_size=8, 
-        unroll_length=256, 
-        model_type="transformer",
-        hidden_size=512,
-        num_blocks=8,
-        num_heads=8,
-        seq_len=16,
-        accumulation_steps=2 # Can be changed to test
-    )
+    config = RNaDConfig()
     # Updated dummy state for structured dictionary input
     dummy_obs = {
         "global": jnp.zeros((1, 128)),
@@ -999,30 +1008,43 @@ def get_action_mask(state, masked_reward_indices=None):
             
     elif state_type == "map":
         next_nodes = state.get("next_nodes", [])
-        if next_nodes:
-            mask[87] = True # Map Node heuristic
+        for i in range(min(len(next_nodes), 10)):
+            mask[i] = True
             
     elif state_type == "event":
         options = state.get("options", [])
         for i in range(min(len(options), 10)):
             if not options[i].get("is_locked"):
-                mask[88] = True # Event Option
-                break
+                mask[i] = True
                 
     elif state_type == "rest_site":
         options = state.get("options", [])
         for i in range(min(len(options), 5)):
             if options[i].get("is_enabled"):
-                mask[89] = True # Rest Site Option
-                break
+                mask[i] = True
         if state.get("can_proceed"):
             mask[86] = True # Proceed
 
     elif state_type in ["grid_selection", "hand_selection"]:
-        mask[90] = True # Confirm/Interact
+        cards = state.get("cards", [])
+        is_confirming = state.get("is_confirming", False)
+        if is_confirming:
+            # In confirmation phase, only allow confirming the selection
+            mask[90] = True  # confirm_selection
+        else:
+            for i in range(min(len(cards), 20)):
+                mask[i] = True
+            # can_skip allows skipping (index -1 maps to action 90 for grid)
+            if state.get("can_skip"):
+                mask[90] = True  # skip / confirm
         
     elif state_type == "shop":
-        mask[86] = True # Shop Proceed (heuristic for now)
+        items = state.get("items", [])
+        for i in range(min(len(items), 30)):
+            if items[i].get("canAfford"):
+                mask[i] = True
+        # Always allow proceed (leave shop without buying) to avoid stalling
+        mask[86] = True
         
     elif state_type == "treasure":
         if state.get("has_chest"):
@@ -1031,10 +1053,21 @@ def get_action_mask(state, masked_reward_indices=None):
             mask[86] = True # Proceed
             
     elif state_type == "treasure_relics":
-        mask[92] = True # Select Treasure Relic (heuristic)
+        relics = state.get("relics", [])
+        for i in range(min(len(relics), 5)):
+            mask[i] = True
         
     elif state_type == "card_reward":
-        mask[93] = True # Card Reward interaction (heuristic)
+        cards = state.get("cards", [])
+        for i in range(min(len(cards), 5)):
+            mask[i] = True
+        buttons = state.get("buttons", [])
+        for i in range(min(len(buttons), 5)):
+            mask[10 + i] = True
+
+    elif state_type == "game_over":
+        mask[86] = True # Proceed
+        mask[87] = True # Return to Main Menu
 
     # 94-98: Discard Potion (indices 0-4)
     # This should be available in combat or potentially other states where potions are visible
@@ -1113,6 +1146,11 @@ def predict_action(state_json):
             predict_action.episode_end_recorded = False
             predict_action.skipped_reward_indices = set()
             predict_action.last_processed_floor = -1
+            # Flush trajectory if it exists when going back to menu
+            if current_trajectory:
+                log(f"Flushing non-terminal trajectory of length {len(current_trajectory)} on menu transition")
+                experience_queue.put(list(current_trajectory))
+                current_trajectory = []
 
         log(f"predict_action called. state_type: {state_type}, command_queue size: {command_queue.qsize()}")
         
@@ -1125,8 +1163,12 @@ def predict_action(state_json):
             pass
 
         if state_type in ["none", "main_menu", "unknown"]:
-            action_dict = get_heuristic_action(state)
-            res = json.dumps(action_dict)
+            if state_type in ["none", "main_menu"] and learning_active:
+                cmd = f"start_game:{current_seed}" if current_seed else "start_game"
+                log(f"System: Generating {cmd} for {state_type} state.")
+                return json.dumps({"action": "command", "command": cmd})
+            
+            res = json.dumps({"action": "wait"})
             log(f"Early exit for {state_type}: {res}")
             return res
 
@@ -1176,6 +1218,38 @@ def predict_action(state_json):
         action_idx = jax.random.categorical(subkey, logits).item()
         log_prob = jax.nn.log_softmax(logits)[0, action_idx].item()
         
+        # ▼ [DEBUG LOGGING]
+        try:
+            # Prepare a concise summary of the state
+            player_info = state.get("player", {})
+            state_summary = {
+                "floor": state.get("floor"),
+                "hp": player_info.get("hp") if player_info else state.get("hp"),
+                "energy": player_info.get("energy") if player_info else state.get("energy"),
+                "gold": state.get("gold")
+            }
+            
+            # Format probabilities for logging (all 100)
+            probs_list = probs[0].tolist()
+            mask_list = mask.tolist()
+            
+            log_decision(f"--- AI Decision Log ---")
+            log_decision(f"State Type: {state_type}")
+            log_decision(f"State Summary: {json.dumps(state_summary)}")
+            log_decision(f"Action Mask (first 20): {mask_list[:20]} ...")
+            log_decision(f"Selected Action Index: {action_idx}")
+            
+            # Detailed probabilities log
+            for i in range(0, 100, 10):
+                chunk_probs = [f"{p:.4f}" for p in probs_list[i:i+10]]
+                log_decision(f"Probs[{i:02d}-{i+9:02d}]: {' '.join(chunk_probs)}")
+            
+            log_decision(f"Value Estimate: {value[0].item():.4f}")
+            log_decision(f"-----------------------")
+        except Exception as log_e:
+            log(f"Error during debug logging: {log_e}")
+        # ▲ [DEBUG LOGGING]
+
         # Log if the model's preferred (original top) action was masked.
         # Note: Since the network now applies masking, we'd need to check raw logits before masking
         # to see what it "originally" wanted, but the network internally hides that.
@@ -1204,6 +1278,8 @@ def predict_action(state_json):
                     action = {"action": "use_potion", "index": potion_idx, "target_index": target_idx}
             elif action_idx == 75:
                 action = {"action": "end_turn"}
+            elif action_idx == 86:
+                action = {"action": "proceed"}
         
         elif state_type == "rewards":
             rewards = state.get("rewards", [])
@@ -1214,22 +1290,78 @@ def predict_action(state_json):
             elif action_idx == 86:
                 action = {"action": "proceed"}
         
-        elif action_idx == 86: # Dual mapping for proceed
-             action = {"action": "proceed"}
+        elif state_type == "map":
+            next_nodes = state.get("next_nodes", [])
+            if action_idx < len(next_nodes):
+                node = next_nodes[action_idx]
+                action = {"action": "select_map_node", "row": node["row"], "col": node["col"]}
+        
+        elif state_type == "event":
+            options = state.get("options", [])
+            if action_idx < len(options):
+                action = {"action": "select_event_option", "index": options[action_idx].get("index")}
+        
+        elif state_type == "rest_site":
+            options = state.get("options", [])
+            if action_idx < len(options):
+                action = {"action": "select_rest_site_option", "index": options[action_idx].get("index")}
+            elif action_idx == 86:
+                action = {"action": "proceed"}
+        
+        elif state_type == "shop":
+            items = state.get("items", [])
+            if action_idx < len(items):
+                action = {"action": "buy_item", "index": items[action_idx].get("index")}
+            elif action_idx == 86:
+                action = {"action": "shop_proceed"}
+        
+        elif state_type == "treasure":
+            if action_idx == 91:
+                action = {"action": "open_chest"}
+            elif action_idx == 86:
+                action = {"action": "proceed"}
+        
+        elif state_type == "treasure_relics":
+            relics = state.get("relics", [])
+            if action_idx < len(relics):
+                action = {"action": "select_treasure_relic", "index": relics[action_idx].get("index")}
+        
+        elif state_type == "card_reward":
+            cards = state.get("cards", [])
+            buttons = state.get("buttons", [])
+            if action_idx < 5:
+                if action_idx < len(cards):
+                    action = {"action": "select_reward_card", "index": cards[action_idx].get("index")}
+            elif 10 <= action_idx < 15:
+                btn_idx = action_idx - 10
+                if btn_idx < len(buttons):
+                    action = {"action": "click_reward_button", "index": buttons[btn_idx].get("index")}
+        
+        elif state_type in ["grid_selection", "hand_selection"]:
+            cards = state.get("cards", [])
+            if action_idx < 20:
+                if action_idx < len(cards):
+                    if state_type == "grid_selection":
+                        action = {"action": "select_grid_card", "index": cards[action_idx].get("index")}
+                    else:
+                        action = {"action": "select_hand_card", "index": cards[action_idx].get("index")}
+            elif action_idx == 90:
+                action = {"action": "confirm_selection"}
         
         elif 94 <= action_idx < 99:
             potion_idx = action_idx - 94
             action = {"action": "discard_potion", "index": potion_idx}
-
-        # Fallback to heuristic for complex types not fully mapped to action_idx yet
-        if action["action"] == "wait" and state_type not in ["unknown"]:
-             log(f"Mapping action_idx {action_idx} to heuristic for state: {state_type}")
-             action = get_heuristic_action(state)
+        
+        elif state_type == "game_over":
+            if action_idx == 86:
+                action = {"action": "proceed"}
+            elif action_idx == 87:
+                action = {"action": "return_to_main_menu"}
 
         # Trajectory collection
         if learning_active:
-            # ▼追加: waitアクション(99)の場合は経験として蓄積しない
-            if action_idx != 99:
+            # ▼修正: 有効な状態のみ記録し、waitアクション(99)は除外する
+            if action_idx != 99 and state_type in VALID_TRAJECTORY_STATES:
                 base_reward = compute_reward(state, state_type)
                 
                 # Intermediate reward for floor progression
@@ -1251,14 +1383,14 @@ def predict_action(state_json):
                 elif last_processed_floor == -1 and current_floor > 0:
                     # Initialize last_processed_floor at the start of the game
                     predict_action.last_processed_floor = current_floor
-
+ 
                 reward = base_reward + intermediate_reward
                 
                 # Accumulate session reward
                 if not hasattr(predict_action, 'session_cumulative_reward'):
                     predict_action.session_cumulative_reward = 0.0
                 predict_action.session_cumulative_reward += reward
-
+ 
                 current_trajectory.append({
                     "obs": state_dict,
                     "act": int(action_idx),
@@ -1270,7 +1402,7 @@ def predict_action(state_json):
                 if len(current_trajectory) >= config.unroll_length:
                     experience_queue.put(list(current_trajectory))
                     current_trajectory = []
-
+ 
         # If we chose to skip a card reward, remember this to mask it in next rewards screen call
         if action.get("action") == "click_reward_button":
              if action.get("index") is not None:
@@ -1282,16 +1414,14 @@ def predict_action(state_json):
                          if last_reward_idx is not None:
                              log(f"Detected SKIP in card reward. Masking reward index {last_reward_idx} for floor {state.get('floor')}")
                              predict_action.skipped_reward_indices.add(last_reward_idx)
-
+ 
         if action.get("action") == "select_reward":
             predict_action.last_selected_reward_idx = action.get("index")
-
+ 
         res = json.dumps(action)
         t_total = time.time() - t0
         t_inference_ms = (t_inference * 1000) if 't_inference' in locals() else 0
-        log(f"[PERF] predict_action({state_type}) took {t_total*1000:.2f}ms (inf:{t_inference_ms:.2f}ms)")
-        return res
-        log(f"Returning action: {res}")
+        log(f"[PERF] predict_action({state_type}) took {t_total*1000:.2f}ms (inf:{t_inference_ms:.2f}ms). Action: {res}")
         return res
             
     except Exception as e:
@@ -1299,118 +1429,28 @@ def predict_action(state_json):
         traceback.print_exc()
         return json.dumps({"action": "error", "message": str(e)})
 
-def get_heuristic_action(state):
-    state_type = state.get("type", "unknown")
-    if state_type == "combat":
-        if state.get("can_proceed"):
-            return {"action": "proceed"}
-            
-        hand = state.get("hand") or []
-        if not hand:
-            return {"action": "wait"}
-            
-        playable_cards = [c for c in hand if c.get("isPlayable")]
-        if playable_cards:
-            chosen_card = random.choice(playable_cards)
-            return {"action": "play_card", "card_id": chosen_card.get("id")}
-        
-        enemies = [e for e in state.get("enemies", []) if e.get("hp", 0) > 0]
-        if enemies:
-            return {"action": "end_turn"}
-        
-        return {"action": "wait"}
-    
-    elif state_type == "map":
-        next_nodes = state.get("next_nodes", [])
-        if next_nodes:
-            chosen_node = random.choice(next_nodes)
-            return {"action": "select_map_node", "row": chosen_node.get("row"), "col": chosen_node.get("col")}
-    
-    elif state_type == "rewards":
-        rewards = state.get("rewards", [])
-        if rewards:
-            return {"action": "select_reward", "index": random.choice(rewards).get("index")}
-        if state.get("can_proceed"):
-            return {"action": "proceed"}
-            
-    elif state_type == "game_over":
-        return {"action": "return_to_main_menu"}
-
-    elif state_type == "none":
-        global learning_active, current_seed
-        if learning_active:
-            cmd = f"start_game:{current_seed}" if current_seed else "start_game"
-            log(f"Heuristic: Generating {cmd} for none state.")
-            return {"action": "command", "command": cmd}
-        else:
-            log("Heuristic: state is none, but learning_active is False.")
-
-    elif state_type == "event":
-        options = [o for o in state.get("options", []) if not o.get("is_locked")]
-        if options:
-            return {"action": "select_event_option", "index": random.choice(options).get("index")}
-            
-    elif state_type == "rest_site":
-        if state.get("can_proceed"):
-            return {"action": "proceed"}
-        options = [o for o in state.get("options", []) if o.get("is_enabled")]
-        if options:
-            return {"action": "select_rest_site_option", "index": random.choice(options).get("index")}
-            
-    elif state_type == "shop":
-        # Just proceed for simplicity, or buy a random affordable item
-        return {"action": "shop_proceed"}
-        
-    elif state_type == "treasure":
-        if state.get("has_chest"):
-            return {"action": "open_chest"}
-        if state.get("can_proceed"):
-            return {"action": "proceed"}
-            
-    elif state_type == "treasure_relics":
-        relics = state.get("relics", [])
-        if relics:
-            return {"action": "select_treasure_relic", "index": relics[0].get("index")}
-            
-    elif state_type == "card_reward":
-        buttons = state.get("buttons", [])
-        if buttons:
-            skip_btns = [b for b in buttons if b.get("name", "").lower() == "skip"]
-            if skip_btns:
-                return {"action": "click_reward_button", "index": skip_btns[0].get("index")}
-            return {"action": "click_reward_button", "index": buttons[0].get("index")}
-
-    elif state_type == "grid_selection":
-        if state.get("is_confirming"):
-            return {"action": "confirm_selection"}
-        if state.get("can_skip"):
-            return {"action": "select_grid_card", "index": -1}
-        cards = state.get("cards", [])
-        if cards:
-            return {"action": "select_grid_card", "index": random.choice(cards).get("index")}
-            
-    elif state_type == "hand_selection":
-        if state.get("is_confirming"):
-            return {"action": "confirm_selection"}
-        cards = state.get("cards", [])
-        if cards:
-            return {"action": "select_hand_card", "index": random.choice(cards).get("index")}
-        
-    return {"action": "wait"}
-
-
 class CommandHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        global learning_active, command_queue, current_seed
+        global learning_active, command_queue, current_seed, current_trajectory, experience_queue
         parsed_path = urlparse(self.path)
         
         if parsed_path.path == "/status":
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
+            
+            # Combine experience_queue and training_worker.batch_buffer for more accurate queue reporting
+            # This helps avoid "Queue: 0/8" flicker when the worker has already pulled the trajectory
+            total_queue_size = experience_queue.qsize()
+            if training_worker:
+                total_queue_size += len(training_worker.batch_buffer)
+                
             self.wfile.write(json.dumps({
                 "learning_active": learning_active,
-                "queue_size": experience_queue.qsize(),
+                "queue_size": total_queue_size,
+                "traj_size": len(current_trajectory),
+                "unroll_length": config.unroll_length if config else 0,
+                "batch_size": config.batch_size if config else 0,
                 "step_count": training_worker.step_count if training_worker else 0,
                 "last_activity_time": last_activity_time
             }).encode())
@@ -1430,7 +1470,6 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(state).encode())
             
         elif parsed_path.path == "/flush_trajectory":
-            global current_trajectory
             if current_trajectory:
                 log(f"Manual flush: Moving trajectory of length {len(current_trajectory)} to experience_queue.")
                 experience_queue.put(list(current_trajectory))
@@ -1439,6 +1478,97 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "flushed"}).encode())
+
+        elif parsed_path.path == "/save_trajectory":
+            # Save current_trajectory, experience_queue, and batch_buffer to disk
+            traj_checkpoint_path = os.path.join(LOG_DIR, "trajectory_checkpoint.pkl")
+            
+            # Safely capture current state
+            with experience_queue.mutex:
+                queue_snapshot = list(experience_queue.queue)
+            
+            buffer_snapshot = []
+            if training_worker:
+                with training_worker.buffer_lock:
+                    buffer_snapshot = list(training_worker.batch_buffer)
+            
+            data_to_save = {
+                "current_trajectory": list(current_trajectory),
+                "experience_queue": queue_snapshot,
+                "batch_buffer": buffer_snapshot
+            }
+            
+            saved_steps = len(data_to_save["current_trajectory"])
+            saved_trajs = len(data_to_save["experience_queue"]) + len(data_to_save["batch_buffer"])
+            
+            try:
+                with open(traj_checkpoint_path, "wb") as f:
+                    pickle.dump(data_to_save, f)
+                log(f"/save_trajectory: Saved {saved_steps} steps and {saved_trajs} queued trajectories to {traj_checkpoint_path}")
+            except Exception as e:
+                log(f"/save_trajectory: Error saving trajectory: {e}")
+                
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "saved", 
+                "saved_steps": saved_steps,
+                "saved_queues": saved_trajs
+            }).encode())
+
+        elif parsed_path.path == "/load_trajectory":
+            # Restore previously saved state from disk
+            traj_checkpoint_path = os.path.join(LOG_DIR, "trajectory_checkpoint.pkl")
+            loaded_steps = 0
+            loaded_trajs = 0
+            try:
+                if os.path.exists(traj_checkpoint_path):
+                    with open(traj_checkpoint_path, "rb") as f:
+                        data = pickle.load(f)
+                    
+                    if isinstance(data, dict):
+                        # Restore current trajectory
+                        current_trajectory = data.get("current_trajectory", [])
+                        
+                        # Restore experience queue
+                        q_items = data.get("experience_queue", [])
+                        for item in q_items:
+                            experience_queue.put(item)
+                        
+                        # Restore batch buffer
+                        b_items = data.get("batch_buffer", [])
+                        if training_worker:
+                            with training_worker.buffer_lock:
+                                training_worker.batch_buffer.extend(b_items)
+                        else:
+                            # If worker doesn't exist yet, put them in the queue
+                            for item in b_items:
+                                experience_queue.put(item)
+                        
+                        loaded_steps = len(current_trajectory)
+                        loaded_trajs = len(q_items) + len(b_items)
+                    else:
+                        # Fallback for old list-only format
+                        current_trajectory = data
+                        loaded_steps = len(current_trajectory)
+                        
+                    os.remove(traj_checkpoint_path)
+                    log(f"/load_trajectory: Restored {loaded_steps} steps and {loaded_trajs} queued trajectories.")
+                else:
+                    log("/load_trajectory: No trajectory checkpoint file found.")
+            except Exception as e:
+                log(f"/load_trajectory: Error loading trajectory: {e}")
+                traceback.print_exc()
+
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "loaded", 
+                "loaded_steps": loaded_steps,
+                "loaded_queues": loaded_trajs
+            }).encode())
 
         elif parsed_path.path == "/start":
             learning_active = True

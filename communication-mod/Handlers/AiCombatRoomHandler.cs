@@ -7,6 +7,8 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Rooms;
 
+using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+
 namespace communication_mod.Handlers;
 
 public class AiCombatRoomHandler : IRoomHandler
@@ -25,15 +27,29 @@ public class AiCombatRoomHandler : IRoomHandler
             ct.ThrowIfCancellationRequested();
             turnCount++;
 
-            // Wait for play phase
-            await WaitHelper.Until(() => CombatManager.Instance.IsPlayPhase || !CombatManager.Instance.IsInProgress, ct, TimeSpan.FromSeconds(30), "Play phase not started");
+            // Wait for play phase OR if a selection screen/overlay is open
+            await WaitHelper.Until(() => 
+                CombatManager.Instance.IsPlayPhase || 
+                !CombatManager.Instance.IsInProgress ||
+                (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) ||
+                (MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance != null && MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance.IsInCardSelection), 
+                ct, TimeSpan.FromSeconds(30), "Play phase not started and no selection screen found");
             
             if (!CombatManager.Instance.IsInProgress) break;
 
-            MainFile.Logger.Info($"[AiSlayer] Turn {turnCount}: Handling play phase via AI");
-            while (CombatManager.Instance.IsPlayPhase && CombatManager.Instance.IsInProgress)
+            MainFile.Logger.Info($"[AiSlayer] Turn {turnCount}: Handling play phase/selection via AI");
+            while (CombatManager.Instance.IsInProgress)
             {
                 ct.ThrowIfCancellationRequested();
+
+                bool isPlayPhase = CombatManager.Instance.IsPlayPhase;
+                bool hasOverlay = NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0;
+                bool isHandSelecting = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance != null && MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance.IsInCardSelection;
+
+                if (!isPlayPhase && !hasOverlay && !isHandSelecting)
+                {
+                    break; // Back to outer loop waiting for play phase
+                }
 
                 if (MainFile.IsGameBusy())
                 {
@@ -50,3 +66,4 @@ public class AiCombatRoomHandler : IRoomHandler
         MainFile.Logger.Info("[AiSlayer] Combat finished");
     }
 }
+
