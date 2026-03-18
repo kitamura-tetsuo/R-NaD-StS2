@@ -308,7 +308,7 @@ def _define_transformer_classes():
             # Process Global Backbone on the whole batch for efficiency and stable scoping
             h_g_batch = jax.nn.relu(self.global_proj(state_dict["global"]))
 
-            # Expert branches as closures
+            # Expert branches as closures - receive pre-computed h_g to avoid parameter issues in vmap
             def route_expert(st_idx, h_g, s_dict):
                 bow_obs = {
                     "draw_bow": s_dict["draw_bow"],
@@ -342,6 +342,7 @@ def _define_transformer_classes():
                 self.hand_expert(dummy_h_g, state_dict["event"][0])
 
             # Apply experts via hk.vmap for better compatibility with Haiku modules
+            # Pass h_g_batch instead of state_dict["global"] to avoid re-projecting inside vmap
             features = hk.vmap(route_expert, split_rng=False)(state_dict["state_type"], h_g_batch, state_dict)
 
             # Unified Heads
