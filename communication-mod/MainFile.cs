@@ -75,10 +75,18 @@ public partial class MainFile : Node
         return await tcs.Task;
     }
 
-    public async Task StepAI(Func<Godot.Collections.Dictionary, Task> actionCallback)
+    public async Task<bool> StepAI(Func<Godot.Collections.Dictionary, Task> actionCallback)
     {
-        if (AiBridge == null) return;
-        if (_isSteppingAI) return;
+        if (AiBridge == null)
+        {
+            Logger.Warn("[AutoAI] StepAI: AiBridge is null");
+            return false;
+        }
+        if (_isSteppingAI)
+        {
+            Logger.Warn("[AutoAI] StepAI: Already stepping, skipping");
+            return false;
+        }
 
         _isSteppingAI = true;
         try
@@ -96,48 +104,73 @@ public partial class MainFile : Node
                 Logger.Warn($"[PERF] AiBridge.predict_action took {bridgeTime}ms");
             }
 
-            if (responseVariant.VariantType == Variant.Type.Nil) return;
+            if (responseVariant.VariantType == Variant.Type.Nil)
+            {
+                Logger.Warn("[AutoAI] StepAI: Response is nil");
+                return false;
+            }
 
             string response = responseVariant.AsString();
-            if (string.IsNullOrEmpty(response)) return;
+            if (string.IsNullOrEmpty(response))
+            {
+                Logger.Warn("[AutoAI] StepAI: Response is empty");
+                return false;
+            }
 
             var json = new Json();
-            if (json.Parse(response) != Error.Ok) return;
+            if (json.Parse(response) != Error.Ok)
+            {
+                Logger.Warn($"[AutoAI] StepAI: JSON parse failed: {response}");
+                return false;
+            }
 
             var dict = json.Data.AsGodotDictionary();
-            if (!dict.ContainsKey("action")) return;
+            if (!dict.ContainsKey("action"))
+            {
+                Logger.Warn($"[AutoAI] StepAI: No action key in response: {response}");
+                return false;
+            }
 
             string action = dict["action"].AsString();
             
             // Minimum delay between actions (except wait/screenshot)
             if (currentTime - _lastActionTime < 50 && action != "wait" && action != "take_screenshot")
             {
-                return;
+                Logger.Info("[AutoAI] StepAI: Minimum delay not met, skipping");
+                return false;
             }
             _lastActionTime = currentTime;
 
-            if (action == "wait") return;
+            if (action == "wait")
+            {
+                Logger.Info("[AutoAI] StepAI: Action is wait");
+                return false;
+            }
 
             Logger.Info($"[AutoAI] StepAI: action={action}");
 
             if (action == "command")
             {
                 // Background commands are now handled by PollCommands()
-                return;
+                Logger.Info("[AutoAI] StepAI: Action is command, handled by PollCommands");
+                return false;
             }
             else if (action == "take_screenshot")
             {
                 // Screenshot requests are now handled by PollScreenshotRequest()
-                return;
+                Logger.Info("[AutoAI] StepAI: Action is take_screenshot, handled by PollScreenshotRequest");
+                return false;
             }
             else
             {
                 await actionCallback(dict);
+                return true;
             }
         }
         catch (Exception ex)
         {
             Logger.Error($"[AutoAI] Error in StepAI: {ex.Message}");
+            return false;
         }
         finally
         {
