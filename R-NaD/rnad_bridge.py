@@ -1230,6 +1230,10 @@ def predict_action(state_json):
         if learner is None:
             load_model()
 
+        if learner is None or learner.params is None:
+            log("Model is still loading. Waiting...")
+            return json.dumps({"action": "wait"})
+
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
         state_dict = encode_state(state)

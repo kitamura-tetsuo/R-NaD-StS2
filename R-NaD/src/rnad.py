@@ -8,6 +8,7 @@ import time
 import numpy as np
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
 from functools import partial
+import collections.abc
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -308,7 +309,7 @@ def partial_load_params(target_params, source_params):
             new_params[key] = target_val
             continue
         source_val = source_params[source_key]
-        if isinstance(target_val, dict) and isinstance(source_val, dict):
+        if isinstance(target_val, collections.abc.Mapping) and isinstance(source_val, collections.abc.Mapping):
             new_params[key] = partial_load_params(target_val, source_val)
         elif isinstance(target_val, jnp.ndarray) and isinstance(source_val, jnp.ndarray):
             if target_val.shape == source_val.shape:
