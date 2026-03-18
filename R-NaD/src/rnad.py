@@ -355,16 +355,48 @@ def _define_transformer_classes():
     TransformerBlock = _TransformerBlock
     TransformerNet = _TransformerNet
 
+def _normalize_key(key):
+    """Remove leading underscores from key components."""
+    parts = key.split('/')
+    normalized_parts = [p.lstrip('_') for p in parts]
+    return '/'.join(normalized_parts)
+
+def _find_matching_key(target_key, source_keys):
+    """Find a matching key in source_keys, handling __ prefix variations."""
+    # Direct match
+    if target_key in source_keys:
+        return target_key
+    
+    # Try with __ prefix
+    prefixed_key = '__' + target_key
+    if prefixed_key in source_keys:
+        return prefixed_key
+    
+    # Try normalizing source keys
+    for source_key in source_keys:
+        if _normalize_key(source_key) == target_key:
+            return source_key
+    
+    return None
+
 def partial_load_params(target_params, source_params):
-    """Recursively copies parameters from source to target, handling shape mismatches by slicing."""
+    """Recursively copies parameters from source to target, handling shape mismatches by slicing.
+    Also handles key prefix mismatches (e.g., '__transformer_net' vs 'transformer_net')."""
     new_params = {}
+    
+    # Build a normalized key mapping for source_params
+    source_keys = list(source_params.keys())
+    
     for key, target_val in target_params.items():
-        if key not in source_params:
+        # Find matching key in source_params
+        source_key = _find_matching_key(key, source_keys)
+        
+        if source_key is None:
             print(f"[R-NaD] Parameter {key} not found in checkpoint. Using initialized values.")
             new_params[key] = target_val
             continue
             
-        source_val = source_params[key]
+        source_val = source_params[source_key]
         if isinstance(target_val, dict):
             new_params[key] = partial_load_params(target_val, source_val)
         else:
