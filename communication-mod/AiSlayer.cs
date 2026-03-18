@@ -9,6 +9,7 @@ using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Random;
@@ -47,7 +48,10 @@ public class AiSlayer
         };
 
         _mapHandler = new AiMapScreenHandler();
-        _screenHandlers = new Dictionary<Type, IScreenHandler>();
+        _screenHandlers = new Dictionary<Type, IScreenHandler>
+        {
+            [typeof(NGameOverScreen)] = new AiGameOverScreenHandler()
+        };
     }
 
     public void Start(string seed)
@@ -249,8 +253,12 @@ public class AiSlayer
             Type type = currentOverlay.GetType();
             _watchdog.Reset($"Handling screen: {type.Name}");
             
-            // For now, we use a generic screen handler that polls the AI
-            var handler = new AiScreenHandler(type);
+            // Check for specialized handler
+            if (!_screenHandlers.TryGetValue(type, out var handler))
+            {
+                // Fallback to generic AI screen handler
+                handler = new AiScreenHandler(type);
+            }
             await handler.HandleAsync(_random, ct);
             
             await Task.Delay(200, ct);
@@ -268,6 +276,10 @@ public class AiSlayer
 
     private async Task WaitForRewardsScreenAsync(CancellationToken ct)
     {
-        await WaitHelper.Until(() => NOverlayStack.Instance?.Peek() is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen || (MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false), ct, TimeSpan.FromSeconds(20), "Rewards screen did not appear");
+        await WaitHelper.Until(() => 
+            NOverlayStack.Instance?.Peek() is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen || 
+            NOverlayStack.Instance?.Peek() is NGameOverScreen ||
+            (MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false), 
+            ct, TimeSpan.FromSeconds(20), "Rewards screen or Game Over did not appear");
     }
 }

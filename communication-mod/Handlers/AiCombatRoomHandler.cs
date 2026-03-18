@@ -10,6 +10,7 @@ using MegaCrit.Sts2.Core.Random;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 
 namespace communication_mod.Handlers;
 
@@ -50,6 +51,12 @@ public class AiCombatRoomHandler : IRoomHandler
                 bool isPlayPhase = CombatManager.Instance.IsPlayPhase;
                 bool hasOverlay = NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0;
                 bool isHandSelecting = NPlayerHand.Instance != null && NPlayerHand.Instance.IsInCardSelection;
+
+                if (NOverlayStack.Instance?.Peek() is NGameOverScreen)
+                {
+                    MainFile.Logger.Info("[AiCombatRoomHandler] Game Over screen detected. Exiting combat handler.");
+                    return;
+                }
 
                 if (!isPlayPhase && !hasOverlay && !isHandSelecting)
                 {
