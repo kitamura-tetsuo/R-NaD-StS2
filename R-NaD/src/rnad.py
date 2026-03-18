@@ -286,8 +286,8 @@ def _define_transformer_classes():
             return hk.nets.MLP([self.hidden_size * 2, self.hidden_size], name="mlp")(h)
 
     class _TransformerNet(hk.Module):
-        def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len):
-            super().__init__()
+        def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len, name=None):
+            super().__init__(name=name)
             self.num_actions = num_actions
             self.hidden_size = hidden_size 
             self.num_blocks = num_blocks
@@ -305,11 +305,11 @@ def _define_transformer_classes():
             self.value_head = hk.Linear(1, name="value_head")
 
         def __call__(self, state_dict, mask, is_training=False):
+            # Process Global Backbone on the whole batch for efficiency and stable scoping
+            h_g_batch = jax.nn.relu(self.global_proj(state_dict["global"]))
+
             # Expert branches as closures
-            def route_expert(st_idx, global_obs, s_dict):
-                # Process Global Backbone inside vmap for consistent scoping
-                h_g = jax.nn.relu(self.global_proj(global_obs))
-                
+            def route_expert(st_idx, h_g, s_dict):
                 bow_obs = {
                     "draw_bow": s_dict["draw_bow"],
                     "discard_bow": s_dict["discard_bow"],
@@ -327,7 +327,7 @@ def _define_transformer_classes():
             # During init, we must ensure ALL expert branches are visited
             if hk.running_init():
                 # Process arbitrary elements to initialize all experts
-                dummy_h_global = jax.nn.relu(self.global_proj(state_dict["global"][0]))
+                dummy_h_g = h_g_batch[0]
                 dummy_bow_obs = {k: v[0] for k, v in {
                     "draw_bow": state_dict["draw_bow"],
                     "discard_bow": state_dict["discard_bow"],
@@ -335,14 +335,14 @@ def _define_transformer_classes():
                     "master_bow": state_dict["master_bow"]
                 }.items()}
                 
-                self.combat_expert(dummy_h_global, state_dict["combat"][0], dummy_bow_obs, is_training)
-                self.map_expert(dummy_h_global, state_dict["map"][0], is_training)
-                self.event_expert(dummy_h_global, state_dict["event"][0])
-                self.grid_expert(dummy_h_global, state_dict["event"][0])
-                self.hand_expert(dummy_h_global, state_dict["event"][0])
+                self.combat_expert(dummy_h_g, state_dict["combat"][0], dummy_bow_obs, is_training)
+                self.map_expert(dummy_h_g, state_dict["map"][0], is_training)
+                self.event_expert(dummy_h_g, state_dict["event"][0])
+                self.grid_expert(dummy_h_g, state_dict["event"][0])
+                self.hand_expert(dummy_h_g, state_dict["event"][0])
 
-            # Apply experts via vmap
-            features = jax.vmap(route_expert)(state_dict["state_type"], state_dict["global"], state_dict)
+            # Apply experts via hk.vmap for better compatibility with Haiku modules
+            features = hk.vmap(route_expert, split_rng=False)(state_dict["state_type"], h_g_batch, state_dict)
 
             # Unified Heads
             logits = self.policy_head(features)
@@ -401,7 +401,8 @@ class RNaDLearner:
                     hidden_size=config.hidden_size,
                     num_blocks=config.num_blocks,
                     num_heads=config.num_heads,
-                    seq_len=config.seq_len
+                    seq_len=config.seq_len,
+                    name="transformer_net"
                 )
                 return model(state_dict, mask, is_training=is_training)
             else:
