@@ -31,7 +31,7 @@ public class AiRestSiteRoomHandler : IRoomHandler
         {
 
             // AI decides which rest site option to click
-            await MainFile.Instance.StepAI();
+            await MainFile.Instance.StepAI(MainFile.Instance.ExecuteRestSiteAction);
             await Task.Delay(500, ct);
 
             // Wait until proceed button is enabled or an overlay screen opened

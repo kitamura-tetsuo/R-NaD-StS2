@@ -28,7 +28,7 @@ public class AiMapScreenHandler : IHandler
         {
 
             // AI model will select a map node
-            await MainFile.Instance.StepAI();
+            await MainFile.Instance.StepAI(MainFile.Instance.ExecuteMapAction);
             await Task.Delay(500, ct);
 
             // Check if we entered a room

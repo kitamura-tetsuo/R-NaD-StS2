@@ -56,7 +56,7 @@ public class AiShopRoomHandler : IRoomHandler
             }
 
             // AI decides what to buy
-            await MainFile.Instance.StepAI();
+            await MainFile.Instance.StepAI(MainFile.Instance.ExecuteShopAction);
             await Task.Delay(500, ct);
 
             // Exit loop if map is open

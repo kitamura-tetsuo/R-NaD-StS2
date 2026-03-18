@@ -53,7 +53,7 @@ public class AiEventRoomHandler : IRoomHandler
                     // We just keep stepping AI until combat is done
                     while (CombatManager.Instance.IsInProgress)
                     {
-                        await MainFile.Instance.StepAI();
+                        await MainFile.Instance.StepAI(MainFile.Instance.ExecuteCombatAction);
                         await Task.Delay(200, ct);
                     }
                     
@@ -74,7 +74,16 @@ public class AiEventRoomHandler : IRoomHandler
 
 
             // AI decides which event option to click
-            await MainFile.Instance.StepAI();
+            var unlockedOptions = UiHelper.FindAll<NEventOptionButton>(eventRoom).Where(o => !o.Option.IsLocked).ToList();
+            if (unlockedOptions.Count == 1)
+            {
+                MainFile.Logger.Info("[AiSlayer] Auto-selecting single event option");
+                await UiHelper.Click(unlockedOptions[0]);
+            }
+            else
+            {
+                await MainFile.Instance.StepAI(MainFile.Instance.ExecuteEventAction);
+            }
             await Task.Delay(500, ct);
 
             // Exit if map is open

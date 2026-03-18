@@ -22,7 +22,7 @@ public class AiScreenHandler : IScreenHandler
             var stack = NOverlayStack.Instance;
             if (stack == null || stack.ScreenCount == 0 || stack.Peek().GetType() != ScreenType) break;
 
-            await MainFile.Instance.StepAI();
+            await MainFile.Instance.StepAI(MainFile.Instance.ExecuteUniversalAction);
             await Task.Delay(500, ct);
         }
     }

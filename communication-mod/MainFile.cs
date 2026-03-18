@@ -75,7 +75,7 @@ public partial class MainFile : Node
         return await tcs.Task;
     }
 
-    public async Task StepAI()
+    public async Task StepAI(Func<Godot.Collections.Dictionary, Task> actionCallback)
     {
         if (AiBridge == null) return;
         if (_isSteppingAI) return;
@@ -132,7 +132,7 @@ public partial class MainFile : Node
             }
             else
             {
-                await ExecuteAction(dict);
+                await actionCallback(dict);
             }
         }
         catch (Exception ex)

@@ -58,7 +58,7 @@ public class AiCombatRoomHandler : IRoomHandler
                 }
 
 
-                await MainFile.Instance.StepAI();
+                await MainFile.Instance.StepAI(MainFile.Instance.ExecuteCombatAction);
                 await Task.Delay(500, ct);
                 actionsInTurn++;
             }

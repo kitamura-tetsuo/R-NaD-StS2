@@ -43,7 +43,7 @@ public class AiTreasureRoomHandler : IRoomHandler
 
 
             // AI decides which relic to pick up
-            await MainFile.Instance.StepAI();
+            await MainFile.Instance.StepAI(MainFile.Instance.ExecuteTreasureAction);
             await Task.Delay(500, ct);
 
             if (room.ProceedButton.IsEnabled) break;
