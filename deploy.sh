@@ -34,10 +34,19 @@ echo "Deploying communication_mod..."
 DLL_PATH="$SRC_ROOT/communication-mod/.godot/mono/temp/bin/ExportRelease/publish/communication_mod.dll"
 cp "$DLL_PATH" "$MODS_DIR/"
 
+# JSON Manifest
+cp "$SRC_ROOT/communication-mod/communication_mod.json" "$MODS_DIR/"
+
 # PCK (Expected to be exported by Megadot target or manually)
 PCK_PATH="$SRC_ROOT/communication-mod/communication_mod.pck"
 if [ -f "$PCK_PATH" ]; then
     cp "$PCK_PATH" "$MODS_DIR/"
+fi
+
+# Copy BaseLib.json too
+BASELIB_JSON=$(find "$SRC_ROOT/communication-mod/packages/alchyr.sts2.baselib" -name "BaseLib.json" | head -n 1)
+if [ -n "$BASELIB_JSON" ]; then
+    cp "$BASELIB_JSON" "$MODS_DIR/"
 fi
 
 # --- 3. Build and Copy GDExtension files ---

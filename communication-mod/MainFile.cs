@@ -38,6 +38,9 @@ public partial class MainFile : Node
     private string _defaultSeed = "";
     private long _lastPollTime = 0;
     private bool _isSteppingAI = false;
+    private bool _gymMode = false;
+    private bool _noSpeedup = false;
+
 
     private void ScheduleAI()
     {
@@ -46,6 +49,31 @@ public partial class MainFile : Node
 
 
 
+
+    public async Task<Variant> CallBridgeSafe(string method, string? arg = null)
+    {
+        // If we're already on the main thread, call directly
+        if (System.Threading.Thread.CurrentThread.ManagedThreadId == 1) // Heuristic for main thread in Godot
+        {
+            if (arg == null) return AiBridge?.Call(method) ?? default;
+            return AiBridge?.Call(method, arg) ?? default;
+        }
+
+        var tcs = new TaskCompletionSource<Variant>();
+        // Use a closure with Callable to move to the main thread safely
+        Callable.From(() => {
+            try {
+                Variant result;
+                if (arg == null) result = AiBridge?.Call(method) ?? default;
+                else result = AiBridge?.Call(method, arg) ?? default;
+                tcs.SetResult(result);
+            } catch (Exception ex) {
+                tcs.SetException(ex);
+            }
+        }).CallDeferred();
+        
+        return await tcs.Task;
+    }
 
     public async Task StepAI()
     {
@@ -59,7 +87,8 @@ public partial class MainFile : Node
             long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
             var swBridge = System.Diagnostics.Stopwatch.StartNew();
-            var responseVariant = AiBridge.Call("predict_action", stateJson);
+            // Use thread-safe wrapper
+            var responseVariant = await CallBridgeSafe("predict_action", stateJson);
             long bridgeTime = swBridge.ElapsedMilliseconds;
             
             if (bridgeTime > 500)
@@ -208,11 +237,6 @@ public partial class MainFile : Node
                 // Trigger bridge initialization (and thus HTTP server start)
                 if (Instance != null) Instance.PollScreenshotRequest();
                 Logger.Info("[PERF] Dispatched initial PollScreenshotRequest");
-
-                if (Instance != null && Instance._gymMode)
-                {
-                    Instance._aiSlayer.Start(Instance._defaultSeed);
-                }
             }
         }
         catch (Exception ex)
@@ -272,9 +296,9 @@ public partial class MainFile : Node
             _lastPollTime = currentTime;
             var sw = System.Diagnostics.Stopwatch.StartNew();
             // Poll for screenshot requests from the bridge
-            PollScreenshotRequest();
+            _ = PollScreenshotRequest();
             // Poll for background commands (like start_game)
-            PollCommands();
+            _ = PollCommands();
             long pollTime = sw.ElapsedMilliseconds;
             
             if (pollTime > 100) {
@@ -288,11 +312,11 @@ public partial class MainFile : Node
         }
     }
 
-    private void PollScreenshotRequest()
+    private async Task PollScreenshotRequest()
     {
         if (AiBridge == null) return;
         
-        var pathVariant = AiBridge.Call("check_screenshot_request");
+        var pathVariant = await CallBridgeSafe("check_screenshot_request");
         if (pathVariant.VariantType == Variant.Type.String)
         {
             string path = pathVariant.AsString();
@@ -300,16 +324,16 @@ public partial class MainFile : Node
             {
                 Logger.Info($"[AutoAI] Taking requested screenshot: {path}");
                 TakeScreenshot(path);
-                AiBridge.Call("mark_screenshot_done");
+                await CallBridgeSafe("mark_screenshot_done");
             }
         }
     }
 
-    private void PollCommands()
+    private async Task PollCommands()
     {
         if (AiBridge == null) return;
 
-        var responseVariant = AiBridge.Call("check_commands");
+        var responseVariant = await CallBridgeSafe("check_commands");
         if (responseVariant.VariantType == Variant.Type.Nil) return;
 
         string response = responseVariant.AsString();
@@ -325,7 +349,13 @@ public partial class MainFile : Node
         if (action == "command")
         {
             string command = dict["command"].AsString();
-            ProcessCommand(command);
+            Logger.Info($"[AutoAI] Executing command: {command}");
+            if (command == "start_game")
+            {
+                string seed = dict.ContainsKey("seed") ? dict["seed"].AsString() : "";
+                StartSts2Run(seed);
+                _aiSlayer?.Start(seed);
+            }
         }
     }
 
@@ -339,8 +369,8 @@ public partial class MainFile : Node
         if (command.StartsWith("start_game"))
         {
             string seed = command.Contains(":") ? command.Split(':')[1] : "";
-            if (_aiSlayer != null) _aiSlayer.Start(seed);
-            else StartSts2Run(seed);
+            StartSts2Run(seed);
+            _aiSlayer?.Start(seed);
         }
     }
 

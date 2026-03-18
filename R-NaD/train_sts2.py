@@ -238,7 +238,7 @@ def perform_restart(process, current_checkpoint, args):
     new_process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup)
     
     # 4. Wait for server and re-initialize
-    if not wait_for_server("http://127.0.0.1:8081/status", timeout=120):
+    if not wait_for_server("http://127.0.0.1:8081/status", timeout=300):
         # We don't want to break here as the main loop will catch the error and try again
         logging.error("Failed to recover: game server didn't start.")
         return new_process, checkpoint
@@ -308,7 +308,7 @@ def main():
 
     try:
         # Wait for game to initialize by checking status endpoint
-        if not wait_for_server("http://127.0.0.1:8081/status", timeout=120):
+        if not wait_for_server("http://127.0.0.1:8081/status", timeout=300):
             raise RuntimeError("Game server failed to start.")
         
         # Wait for Godot to fully load the scene tree before sending new_game

@@ -102,5 +102,24 @@ impl AiBridge {
             }
         }
     }
+
+    #[func]
+    pub fn check_commands(&self) -> Variant {
+        let result = Python::with_gil(|py| -> PyResult<String> {
+            Self::ensure_sys_path(py)?;
+            let my_ai_module = py.import("rnad_bridge")?;
+            let check_fn = my_ai_module.getattr("check_commands")?;
+            let res: String = check_fn.call0()?.extract()?;
+            Ok(res)
+        });
+
+        match result {
+            Ok(res) => res.to_variant(),
+            Err(e) => {
+                eprintln!("[AiBridge-Rust] Python Error in check_commands: {:?}", e);
+                "".to_variant()
+            }
+        }
+    }
 }
 

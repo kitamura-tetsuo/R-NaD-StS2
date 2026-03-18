@@ -1,0 +1,11 @@
+{
+  "id": "communication_mod",
+  "name": "communication_mod",
+  "author": "kitamura.tetsuo@gmail.com",
+  "description": "Slay the Spire 2 mod for R-NaD communication",
+  "version": "v0.0",
+  "has_pck": true,
+  "has_dll": true,
+  "dependencies": ["BaseLib"],
+  "affects_gameplay": true
+}

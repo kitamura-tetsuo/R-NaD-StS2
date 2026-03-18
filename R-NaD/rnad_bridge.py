@@ -1132,8 +1132,17 @@ def get_action_mask(state, masked_reward_indices=None):
 def check_commands():
     """Poll for background commands (like start_game) without triggering AI inference."""
     global command_queue
+    # log(f"check_commands polled (queue size: {command_queue.qsize()})")
     if not command_queue.empty():
         cmd = command_queue.get_nowait()
+        log(f"check_commands: processing command {cmd}")
+        if ":" in cmd:
+            base_cmd, extra = cmd.split(":", 1)
+            return json.dumps({
+                "action": "command",
+                "command": base_cmd,
+                "seed": extra
+            })
         return json.dumps({"action": "command", "command": cmd})
     return json.dumps({"action": "wait"})
 
@@ -1700,11 +1709,25 @@ def init():
         return
     print("[Python] rnad_bridge initializing...")
     try:
+        # Start server thread immediately
         server_thread = threading.Thread(target=run_server, daemon=True)
         server_thread.start()
-        load_model()
-        initialized = True
-        print("[Python] rnad_bridge initialization complete.")
+        
+        # Start model loading in a background thread to prevent GIL starvation
+        # during Godot main thread initialization.
+        def deferred_load():
+            global initialized
+            try:
+                load_model()
+                initialized = True
+                print("[Python] rnad_bridge initialization complete (background).")
+            except Exception as e:
+                print(f"[Python] Critical error during background model loading: {e}")
+                traceback.print_exc()
+
+        loader_thread = threading.Thread(target=deferred_load, daemon=True)
+        loader_thread.start()
+        
     except Exception as e:
         print(f"[Python] Critical error during initialization: {e}")
 

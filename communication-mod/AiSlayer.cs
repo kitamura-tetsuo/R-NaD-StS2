@@ -52,10 +52,15 @@ public class AiSlayer
 
     public void Start(string seed)
     {
-        if (IsActive) return;
+        if (IsActive)
+        {
+            MainFile.Logger.Info($"[AiSlayer] Already active. Stopping previous run to start new one with seed: {seed}");
+            Stop();
+        }
+        
         IsActive = true;
         _cts = new CancellationTokenSource();
-        Task.Run(() => RunAsync(seed, _cts.Token));
+        _ = RunAsync(seed, _cts.Token);
     }
 
     public void Stop()
@@ -97,17 +102,46 @@ public class AiSlayer
         _random = new Rng((uint)seed.GetHashCode());
         _watchdog = new Watchdog();
         
-        // Follow AutoSlayer pattern: Play Main Menu first
-        MainFile.Logger.Info("[AiSlayer] Stage: PlayMainMenu");
-        await PlayMainMenuAsync(ct);
+        // Wait for EITHER Main Menu OR Run state to appear (handling race condition with programmatic start)
+        MainFile.Logger.Info("[AiSlayer] Stage: Waiting for MainMenu or active Run...");
+        await WaitHelper.Until(() => {
+            var root = ((Node)(object)((SceneTree)Engine.GetMainLoop()).Root);
+            bool hasMenu = root.GetNodeOrNull("Game/RootSceneContainer/MainMenu") != null;
+            bool inRun = RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom != null;
+            return hasMenu || inRun;
+        }, ct, TimeSpan.FromSeconds(15), "Neither MainMenu nor Run state appeared");
+
+        bool runActive = RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom != null;
+        if (!runActive)
+        {
+            MainFile.Logger.Info("[AiSlayer] Stage: PlayMainMenu");
+            await PlayMainMenuAsync(ct);
+        }
+        else
+        {
+            MainFile.Logger.Info("[AiSlayer] Stage: Skipping PlayMainMenu (Run already active)");
+        }
 
         MainFile.Logger.Info("[AiSlayer] Stage: Wait for Run state");
         await WaitHelper.Until(() => RunManager.Instance?.DebugOnlyGetState() != null, ct, TimeSpan.FromSeconds(30), "Run state not initialized");
         
-        RunState runState = RunManager.Instance.DebugOnlyGetState();
         MainFile.Logger.Info("[AiSlayer] Stage: Wait for room/intro");
-        await WaitHelper.Until(() => (runState.CurrentRoom != null && runState.CurrentRoom.RoomType != RoomType.Unassigned) || (NOverlayStack.Instance?.Peek() != null), ct, TimeSpan.FromSeconds(30), "Room type not assigned or overlay not present");
-
+        await WaitHelper.Until(() => {
+            try {
+                var rm = RunManager.Instance;
+                var state = rm?.DebugOnlyGetState();
+                var overlayStack = NOverlayStack.Instance;
+                
+                bool roomReady = state?.CurrentRoom != null && state.CurrentRoom.RoomType != RoomType.Unassigned;
+                bool overlayReady = overlayStack != null && overlayStack.Peek() != null;
+                
+                return roomReady || overlayReady;
+            } catch (Exception) {
+                return false;
+            }
+        }, ct, TimeSpan.FromSeconds(30), "Room type not assigned or overlay not present");
+ 
+        RunState runState = RunManager.Instance.DebugOnlyGetState();
         while (runState.TotalFloor < 60)
         {
             ct.ThrowIfCancellationRequested();
