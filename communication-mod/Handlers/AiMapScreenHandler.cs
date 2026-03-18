@@ -1,3 +1,5 @@
+// Reference: StS2_Decompiled/MegaCrit.Sts2.Core.AutoSlay.Handlers.Screens/MapScreenHandler.cs
+
 using System;
 using System.Threading;
 using System.Threading.Tasks;
