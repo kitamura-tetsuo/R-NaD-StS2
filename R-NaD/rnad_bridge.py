@@ -1534,6 +1534,11 @@ class CommandHandler(BaseHTTPRequestHandler):
             # Save current_trajectory, experience_queue, and batch_buffer to disk
             traj_checkpoint_path = os.path.join(LOG_DIR, "trajectory_checkpoint.pkl")
             
+            if current_trajectory:
+                log(f"/save_trajectory: Flushing trajectory of length {len(current_trajectory)} to experience_queue before saving.")
+                experience_queue.put(list(current_trajectory))
+                current_trajectory = []
+
             # Safely capture current state
             with experience_queue.mutex:
                 queue_snapshot = list(experience_queue.queue)
