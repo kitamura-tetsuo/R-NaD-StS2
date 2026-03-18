@@ -2,6 +2,7 @@ write comments in english.
 
 Read docs/architecture.md
 
+When reading logs, please limit the amount read to 100 lines or less.
 
 ## Screenshot API
 You can take a screenshot of the game by calling the following API:

@@ -15,5 +15,7 @@ R-NaD/libpython_fixer.cpython-312-x86_64-linux-gnu.so
 mlflow.db
 mlruns/
 
+.aider*
+
 StS2_Decompiled/
 R-NaD/logs/

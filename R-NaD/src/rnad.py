@@ -3,6 +3,9 @@ import os
 import re
 import pickle
 import logging
+import traceback
+import time
+import numpy as np
 from typing import NamedTuple, Tuple, List, Dict, Any, Optional
 from functools import partial
 
@@ -128,338 +131,209 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     
     return policy_loss + value_loss, (policy_loss, value_loss)
 
-def _get_hk_module():
-    _init_libs()
-    return hk.Module
-
-class TransformerBlock: # Defined later to avoid import issues
-    pass
-
-class TransformerNet: # Defined later to avoid import issues
-    pass
+# --- Transformer Model Definition (Functional Pattern for Haiku) ---
 
 def combat_vec_to_id(val):
-    """Helper to convert float card ID index back to int32 for embedding."""
     return jnp.round(val).astype(jnp.int32)
 
-def _define_transformer_classes():
-    global TransformerBlock, TransformerNet
-    _init_libs()
+class TransformerBlock(hk.Module):
+    def __init__(self, num_heads, key_size, hidden_size, name=None):
+        super().__init__(name=name)
+        self.num_heads = num_heads
+        self.key_size = key_size
+        self.hidden_size = hidden_size
+
+    def __call__(self, x, is_training=False):
+        d = x.shape[-1]
+        attn_out = hk.MultiHeadAttention(
+            num_heads=self.num_heads,
+            key_size=self.key_size,
+            w_init=hk.initializers.VarianceScaling(2.0),
+            model_size=d,
+        )(x, x, x)
+        x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + attn_out)
+        mlp_out = hk.nets.MLP([d * 4, d], activation=jax.nn.gelu)(x)
+        x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + mlp_out)
+        return x
+
+class CombatExpert(hk.Module):
+    def __init__(self, hidden_size, num_blocks, num_heads, name=None):
+        super().__init__(name=name)
+        self.hidden_size = hidden_size
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        self.card_embedding = hk.Embed(vocab_size=100, embed_dim=64)
     
-    class _TransformerBlock(hk.Module):
-        def __init__(self, num_heads, key_size, hidden_size, name=None):
-            super().__init__(name=name)
-            self.num_heads = num_heads
-            self.key_size = key_size
-            self.hidden_size = hidden_size
-
-        def __call__(self, x, is_training=False):
-            # x: (B, SeqLen, D)
-            d = x.shape[-1]
-
-            # Self-Attention
-            attn_out = hk.MultiHeadAttention(
-                num_heads=self.num_heads,
-                key_size=self.key_size,
-                w_init=hk.initializers.VarianceScaling(2.0),
-                model_size=d,
-            )(x, x, x)
-
-            # Add & Norm
-            x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + attn_out)
-
-            # MLP
-            mlp_out = hk.nets.MLP(
-                [d * 4, d],
-                activation=jax.nn.gelu
-            )(x)
-
-            # Add & Norm
-            x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + mlp_out)
-            return x
-
-    class _CombatExpert(hk.Module):
-        def __init__(self, hidden_size, num_blocks, num_heads, seq_len, name=None):
-            super().__init__(name=name)
-            self.hidden_size = hidden_size
-            self.num_blocks = num_blocks
-            self.num_heads = num_heads
-            self.seq_len = seq_len
-            self.card_embedding = hk.Embed(vocab_size=100, embed_dim=64)
+    def __call__(self, h_global, combat_obs, bow_obs, is_training=False):
+        bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
+        bow_combined = jnp.concatenate(bow_vecs, axis=-1)
+        bow_proj = jax.nn.relu(hk.Linear(128, name="bow_proj")(bow_combined))
+        context = jnp.concatenate([h_global, bow_proj], axis=-1)
+        context_proj = hk.Linear(self.hidden_size, name="context_proj")(context)
         
-        def __call__(self, h_global, combat_obs, bow_obs, is_training=False):
-            # combat_obs: [batch, 256]
-            # h_global: [batch, 32]
-            # bow_obs: dict of vectors
+        hand_cards = []
+        for i in range(10):
+            base_idx = 10 + i * 10
+            card_id_idx = combat_vec_to_id(combat_obs[base_idx])
+            card_embed = self.card_embedding(card_id_idx)
+            other_feats = combat_obs[base_idx+1 : base_idx+10]
+            card_feat = jnp.concatenate([card_embed, other_feats], axis=-1)
+            hand_cards.append(hk.Linear(self.hidden_size, name=f"hand_linear_{i}")(card_feat))
             
-            batch_size = combat_obs.shape[0]
+        enemy_nodes = []
+        for i in range(5):
+            base_idx = 110 + i * 12
+            enemy_feat = combat_obs[base_idx : base_idx+12]
+            enemy_nodes.append(hk.Linear(self.hidden_size, name=f"enemy_linear_{i}")(enemy_feat))
             
-            # 1. Process Global & BoW context
-            bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
-            bow_combined = jnp.concatenate(bow_vecs, axis=-1) # [batch, 400]
-            bow_proj = hk.Linear(128)(bow_combined)
-            bow_proj = jax.nn.relu(bow_proj)
-
-            context = jnp.concatenate([h_global, bow_proj], axis=-1) # [batch, 160]
-            context_proj = hk.Linear(self.hidden_size)(context)
-            
-            # 2. Extract and Embed hand cards
-            # Multi-feature embedding for hand (10 cards, 10 features each starting at index 10)
-            hand_cards = []
-            for i in range(10):
-                base_idx = 10 + i * 10
-                card_id_idx = combat_vec_to_id(combat_obs[base_idx])
-                card_embed = self.card_embedding(card_id_idx) # [64]
-                
-                # Other features (indices 1 to 9 relative to base_idx)
-                other_feats = combat_obs[base_idx+1 : base_idx+10] # [9]
-                card_feat = jnp.concatenate([card_embed, other_feats], axis=-1)
-                hand_cards.append(hk.Linear(self.hidden_size)(card_feat))
-                
-            # 3. Extract and Embed enemies
-            enemy_nodes = []
-            for i in range(5):
-                base_idx = 110 + i * 12
-                enemy_feat = combat_obs[base_idx : base_idx+12]
-                enemy_nodes.append(hk.Linear(self.hidden_size)(enemy_feat))
-                
-            # 4. Sequence for Transformer
-            # [Context, Hand x 10, Enemy x 5] -> 16 tokens
-            tokens = jnp.stack([context_proj] + hand_cards + enemy_nodes, axis=0) # [16, hidden]
-            
-            pos_emb = hk.get_parameter("pos_emb_combat", [16, self.hidden_size], init=hk.initializers.TruncatedNormal())
-            tokens = tokens + pos_emb
-            
-            for i in range(self.num_blocks):
-                tokens = _TransformerBlock(
-                    num_heads=self.num_heads,
-                    key_size=self.hidden_size // self.num_heads,
-                    hidden_size=self.hidden_size,
-                    name=f"combat_block_{i}"
-                )(tokens, is_training)
-            
-            return jnp.mean(tokens, axis=0) # Average pool tokens
-
-    class _MapExpert(hk.Module):
-        def __init__(self, hidden_size, num_blocks, num_heads, seq_len, name=None):
-            super().__init__(name=name)
-            self.hidden_size = hidden_size
-            self.num_blocks = num_blocks
-            self.num_heads = num_heads
-            self.seq_len = seq_len
+        tokens = jnp.stack([context_proj] + hand_cards + enemy_nodes, axis=0)
+        pos_emb = hk.get_parameter("pos_emb_combat", [16, self.hidden_size], init=hk.initializers.TruncatedNormal())
+        tokens = tokens + pos_emb
         
-        def __call__(self, h_global, map_obs, is_training=False):
-            # map_obs: [2048]
-            # h_global: [64]
-            # 1. Process Global context
-            context_proj = hk.Linear(self.hidden_size)(h_global)
-            
-            # 2. Extract node features
-            # 256 nodes, 8 features each
-            node_feats = map_obs.reshape(256, 8)
-            nodes_proj = hk.Linear(self.hidden_size)(node_feats) # [256, hidden]
-            
-            # 3. Sequence for Transformer
-            # [Context, Nodes x 256] -> 257 tokens
-            tokens = jnp.concatenate([context_proj[None, :], nodes_proj], axis=0) # [257, hidden]
-            
-            pos_emb = hk.get_parameter("pos_emb_map", [257, self.hidden_size], init=hk.initializers.TruncatedNormal())
-            tokens = tokens + pos_emb
-            
-            for i in range(self.num_blocks):
-                tokens = _TransformerBlock(
-                    num_heads=self.num_heads,
-                    key_size=self.hidden_size // self.num_heads,
-                    hidden_size=self.hidden_size,
-                    name=f"map_block_{i}"
-                )(tokens, is_training)
-            
-            return jnp.mean(tokens, axis=0)
+        for i in range(self.num_blocks):
+            tokens = TransformerBlock(self.num_heads, self.hidden_size // self.num_heads, self.hidden_size, name=f"block_{i}")(tokens, is_training)
+        
+        return jnp.mean(tokens, axis=0)
 
-    class _SimpleExpert(hk.Module):
-        def __init__(self, hidden_size, name=None):
-            super().__init__(name=name)
-            self.hidden_size = hidden_size
-            
-        def __call__(self, h_global, expert_obs):
-            h = jnp.concatenate([h_global, expert_obs], axis=-1)
-            return hk.nets.MLP([self.hidden_size * 2, self.hidden_size], name="mlp")(h)
+class MapExpert(hk.Module):
+    def __init__(self, hidden_size, num_blocks, num_heads, name=None):
+        super().__init__(name=name)
+        self.hidden_size = hidden_size
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+    
+    def __call__(self, h_global, map_obs, is_training=False):
+        context_proj = hk.Linear(self.hidden_size, name="context_proj")(h_global)
+        node_feats = map_obs.reshape(256, 8)
+        nodes_proj = hk.Linear(self.hidden_size, name="nodes_proj")(node_feats)
+        tokens = jnp.concatenate([context_proj[None, :], nodes_proj], axis=0)
+        pos_emb = hk.get_parameter("pos_emb_map", [257, self.hidden_size], init=hk.initializers.TruncatedNormal())
+        tokens = tokens + pos_emb
+        
+        for i in range(self.num_blocks):
+            tokens = TransformerBlock(self.num_heads, self.hidden_size // self.num_heads, self.hidden_size, name=f"block_{i}")(tokens, is_training)
+        
+        return jnp.mean(tokens, axis=0)
 
-    class _TransformerNet(hk.Module):
-        def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len, name=None):
-            super().__init__(name=name)
-            self.num_actions = num_actions
-            self.hidden_size = hidden_size 
-            self.num_blocks = num_blocks
-            self.num_heads = num_heads
-            self.seq_len = seq_len
-            
-            # Define sub-modules here for stable parameter registration
-            self.global_proj = hk.Linear(self.hidden_size, name="global_proj")
-            self.combat_expert = _CombatExpert(hidden_size, num_blocks, num_heads, seq_len, name="combat_expert")
-            self.map_expert = _MapExpert(hidden_size, num_blocks, num_heads, seq_len, name="map_expert")
-            self.event_expert = _SimpleExpert(hidden_size, name="event_expert")
-            self.grid_expert = _SimpleExpert(hidden_size, name="grid_expert")
-            self.hand_expert = _SimpleExpert(hidden_size, name="hand_expert")
-            self.policy_head = hk.Linear(num_actions, name="policy_head")
-            self.value_head = hk.Linear(1, name="value_head")
+class SimpleExpert(hk.Module):
+    def __init__(self, hidden_size, name=None):
+        super().__init__(name=name)
+        self.hidden_size = hidden_size
+        
+    def __call__(self, h_global, expert_obs):
+        h = jnp.concatenate([h_global, expert_obs], axis=-1)
+        return hk.nets.MLP([self.hidden_size * 2, self.hidden_size], name="mlp")(h)
 
-        def __call__(self, state_dict, mask, is_training=False):
-            # Process Global Backbone on the whole batch for efficiency and stable scoping
-            h_g_batch = jax.nn.relu(self.global_proj(state_dict["global"]))
+class TransformerNet(hk.Module):
+    def __init__(self, num_actions, hidden_size, num_blocks, num_heads, name=None):
+        super().__init__(name=name)
+        self.num_actions = num_actions
+        self.hidden_size = hidden_size 
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+        
+        # Explicit initialization of sub-modules to avoid implicit scopes
+        self.global_proj = hk.Linear(self.hidden_size, name="global_proj")
+        self.combat_expert = CombatExpert(hidden_size, num_blocks, num_heads, name="combat_expert")
+        self.map_expert = MapExpert(hidden_size, num_blocks, num_heads, name="map_expert")
+        self.event_expert = SimpleExpert(hidden_size, name="event_expert")
+        self.grid_expert = SimpleExpert(hidden_size, name="grid_expert")
+        self.hand_expert = SimpleExpert(hidden_size, name="hand_expert")
+        self.policy_head = hk.Linear(num_actions, name="policy_head")
+        self.value_head = hk.Linear(1, name="value_head")
 
-            # Expert branches as closures - receive pre-computed h_g to avoid parameter issues in vmap
-            def route_expert(st_idx, h_g, s_dict):
-                bow_obs = {
-                    "draw_bow": s_dict["draw_bow"],
-                    "discard_bow": s_dict["discard_bow"],
-                    "exhaust_bow": s_dict["exhaust_bow"],
-                    "master_bow": s_dict["master_bow"]
-                }
-                return jax.lax.switch(st_idx, [
-                    lambda: self.combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
-                    lambda: self.map_expert(h_g, s_dict["map"], is_training),
-                    lambda: self.event_expert(h_g, s_dict["event"]),
-                    lambda: self.grid_expert(h_g, s_dict["event"]),
-                    lambda: self.hand_expert(h_g, s_dict["event"])
-                ])
+    def __call__(self, state_dict, mask, is_training=False):
+        h_g_batch = jax.nn.relu(self.global_proj(state_dict["global"]))
 
-            # During init, we must ensure ALL expert branches are visited
-            if hk.running_init():
-                # Process arbitrary elements to initialize all experts
-                dummy_h_g = h_g_batch[0]
-                dummy_bow_obs = {k: v[0] for k, v in {
-                    "draw_bow": state_dict["draw_bow"],
-                    "discard_bow": state_dict["discard_bow"],
-                    "exhaust_bow": state_dict["exhaust_bow"],
-                    "master_bow": state_dict["master_bow"]
-                }.items()}
-                
-                self.combat_expert(dummy_h_g, state_dict["combat"][0], dummy_bow_obs, is_training)
-                self.map_expert(dummy_h_g, state_dict["map"][0], is_training)
-                self.event_expert(dummy_h_g, state_dict["event"][0])
-                self.grid_expert(dummy_h_g, state_dict["event"][0])
-                self.hand_expert(dummy_h_g, state_dict["event"][0])
+        def route_expert(st_idx, h_g, s_dict):
+            bow_obs = {
+                "draw_bow": s_dict["draw_bow"],
+                "discard_bow": s_dict["discard_bow"],
+                "exhaust_bow": s_dict["exhaust_bow"],
+                "master_bow": s_dict["master_bow"]
+            }
+            return jax.lax.switch(st_idx, [
+                lambda: self.combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
+                lambda: self.map_expert(h_g, s_dict["map"], is_training),
+                lambda: self.event_expert(h_g, s_dict["event"]),
+                lambda: self.grid_expert(h_g, s_dict["event"]),
+                lambda: self.hand_expert(h_g, s_dict["event"])
+            ])
 
-            # Apply experts via hk.vmap for better compatibility with Haiku modules
-            # Pass h_g_batch instead of state_dict["global"] to avoid re-projecting inside vmap
-            features = hk.vmap(route_expert, split_rng=False)(state_dict["state_type"], h_g_batch, state_dict)
+        if hk.running_init():
+            # Mandatory visit to all branches during initialization
+            dummy_h_g = h_g_batch[0]
+            dummy_bow_obs = {k: v[0] for k, v in {
+                "draw_bow": state_dict["draw_bow"],
+                "discard_bow": state_dict["discard_bow"],
+                "exhaust_bow": state_dict["exhaust_bow"],
+                "master_bow": state_dict["master_bow"]
+            }.items()}
+            self.combat_expert(dummy_h_g, state_dict["combat"][0], dummy_bow_obs, is_training)
+            self.map_expert(dummy_h_g, state_dict["map"][0], is_training)
+            self.event_expert(dummy_h_g, state_dict["event"][0])
+            self.grid_expert(dummy_h_g, state_dict["event"][0])
+            self.hand_expert(dummy_h_g, state_dict["event"][0])
 
-            # Unified Heads
-            logits = self.policy_head(features)
-            logits = jnp.where(mask.astype(bool), logits, -1e9)
-            value = self.value_head(features)
-            
-            return logits, jnp.squeeze(value, axis=-1)
-            
-    TransformerBlock = _TransformerBlock
-    TransformerNet = _TransformerNet
+        features = hk.vmap(route_expert, split_rng=False)(state_dict["state_type"], h_g_batch, state_dict)
+        logits = self.policy_head(features)
+        logits = jnp.where(mask.astype(bool), logits, -1e9)
+        value = self.value_head(features)
+        return logits, jnp.squeeze(value, axis=-1)
+
+# --- End Model Definition ---
 
 def _normalize_key(key):
-    """Remove leading underscores from key components."""
     parts = key.split('/')
     normalized_parts = [p.lstrip('_') for p in parts]
     return '/'.join(normalized_parts)
 
 def _find_matching_key(target_key, source_keys):
-    """Find a matching key in source_keys, handling __ prefix variations."""
-    # Direct match
-    if target_key in source_keys:
-        return target_key
-    
-    # Try with __ prefix
+    if target_key in source_keys: return target_key
     prefixed_key = '__' + target_key
-    if prefixed_key in source_keys:
-        return prefixed_key
-    
-    # Try normalizing source keys
+    if prefixed_key in source_keys: return prefixed_key
     for source_key in source_keys:
-        if _normalize_key(source_key) == target_key:
-            return source_key
-    
+        if _normalize_key(source_key) == target_key: return source_key
+        # Handle the weird ~ scope that Haiku sometimes adds
+        if target_key.replace('/~/', '/') == source_key.replace('/~/', '/'): return source_key
     return None
 
 def partial_load_params(target_params, source_params):
-    """Recursively copies parameters from source to target, handling shape mismatches by slicing.
-    Also handles key prefix mismatches (e.g., '__transformer_net' vs 'transformer_net')."""
     new_params = {}
-    
-    # Build a normalized key mapping for source_params
     source_keys = list(source_params.keys())
-    
     for key, target_val in target_params.items():
-        # Find matching key in source_params
         source_key = _find_matching_key(key, source_keys)
-        
         if source_key is None:
             print(f"[R-NaD] Parameter {key} not found in checkpoint. Using initialized values.")
             new_params[key] = target_val
             continue
-            
         source_val = source_params[source_key]
-        if isinstance(target_val, dict):
+        if isinstance(target_val, dict) and isinstance(source_val, dict):
             new_params[key] = partial_load_params(target_val, source_val)
-        else:
-            # target_val and source_val are jnp.ndarrays
+        elif isinstance(target_val, jnp.ndarray) and isinstance(source_val, jnp.ndarray):
             if target_val.shape == source_val.shape:
                 new_params[key] = source_val
             else:
-                print(f"[R-NaD] Shape mismatch for {key}: target {target_val.shape}, source {source_val.shape}. Loading partial weights.")
-                # Create a new array with target shape, initialized with target values
+                print(f"[R-NaD] Shape mismatch for {key}: target {target_val.shape}, source {source_val.shape}. Slicing.")
                 merged = jnp.copy(target_val)
-                
-                # Compute overlap slices
-                slices = []
-                for t_dim, s_dim in zip(target_val.shape, source_val.shape):
-                    slices.append(slice(0, min(t_dim, s_dim)))
-                
-                # Copy overlapping part
-                merged = merged.at[tuple(slices)].set(source_val[tuple(slices)])
-                new_params[key] = merged
-                
+                slices = tuple(slice(0, min(t, s)) for t, s in zip(target_val.shape, source_val.shape))
+                new_params[key] = merged.at[slices].set(source_val[slices])
+        else:
+            print(f"[R-NaD] Type mismatch for {key}. Using initialized values.")
+            new_params[key] = target_val
     return new_params
 
 class RNaDLearner:
     def __init__(self, state_dim: int, num_actions: int, config: RNaDConfig):
         _init_libs()
-        _define_transformer_classes()
         self.config = config
-        self.state_dim = state_dim
         self.num_actions = num_actions
         
         def forward(state_dict, mask, is_training=False):
-            if config.model_type == "transformer":
-                model = TransformerNet(
-                    num_actions=num_actions,
-                    hidden_size=config.hidden_size,
-                    num_blocks=config.num_blocks,
-                    num_heads=config.num_heads,
-                    seq_len=config.seq_len,
-                    name="transformer_net"
-                )
-                return model(state_dict, mask, is_training=is_training)
-            else:
-                # Basic Categorized MLP for non-transformer case
-                h_global = hk.Linear(config.hidden_size)(state_dict["global"])
-                h_global = jax.nn.relu(h_global)
-                
-                def process_combat(state):
-                     return hk.nets.MLP([config.hidden_size, config.hidden_size])(jnp.concatenate([h_global, state["combat"]], axis=-1))
-                def process_map(state):
-                     return hk.nets.MLP([config.hidden_size, config.hidden_size])(jnp.concatenate([h_global, state["map"]], axis=-1))
-                def process_event(state):
-                     return hk.nets.MLP([config.hidden_size, config.hidden_size])(jnp.concatenate([h_global, state["event"]], axis=-1))
-                
-                branches = [process_combat, process_map, process_event]
-                features = jax.vmap(lambda idx, s: jax.lax.switch(idx, branches, s))(state_dict["state_type"], state_dict)
-                
-                logits = hk.Linear(num_actions)(features)
-                logits = jnp.where(mask.astype(bool), logits, -1e9)
-                value = hk.Linear(1)(features)
-                return logits, jnp.squeeze(value, axis=-1)
+            model = TransformerNet(num_actions, config.hidden_size, config.num_blocks, config.num_heads, name="transformer_net")
+            return model(state_dict, mask, is_training=is_training)
             
         self.network = hk.transform(forward)
-        
         base_optimizer = optax.adam(config.learning_rate)
         if config.accumulation_steps > 1:
             self.optimizer = optax.MultiSteps(base_optimizer, every_k_schedule=config.accumulation_steps)
@@ -469,11 +343,9 @@ class RNaDLearner:
         self.params = None
         self.fixed_params = None
         self.opt_state = None
-        
         self._update_fn = jax.jit(self._update_pure)
 
     def init(self, key):
-        # Create a dummy dictionary state matching the new structure
         dummy_state = {
             "global": jnp.zeros((1, 128)),
             "combat": jnp.zeros((1, 384)),
@@ -499,15 +371,8 @@ class RNaDLearner:
         return new_params, new_opt_state, loss, aux
 
     def update(self, batch, step: int):
-        _init_libs()
-        import jax # Local import for static analysis
         progress = min(1.0, step / self.config.max_steps)
         alpha = self.config.entropy_schedule_start + progress * (self.config.entropy_schedule_end - self.config.entropy_schedule_start)
-        
-        # obs is a dictionary of (T, B, ...) arrays. Use the first leaf to get T and B.
-        any_obs = jax.tree_util.tree_leaves(batch['obs'])[0]
-        valid = batch.get('valid', jnp.ones(any_obs.shape[:2]))
-        
         self.params, self.opt_state, loss, aux = self._update_fn(self.params, self.fixed_params, self.opt_state, batch, alpha)
         return {"loss": loss, "policy_loss": aux[0], "value_loss": aux[1], "alpha": alpha}
 
@@ -519,38 +384,10 @@ class RNaDLearner:
     def load_checkpoint(self, path):
         with open(path, 'rb') as f:
             data = pickle.load(f)
-            
-            # Partial load params
-            print(f"[R-NaD] Attempting to load partial weights from {path}")
-            new_params = partial_load_params(self.params, data['params'])
-            
-            # Check if shapes matched exactly for opt_state compatibility
-            def check_shapes_match(t1, t2):
-                try:
-                    leaves1 = jax.tree_util.tree_leaves(t1)
-                    leaves2 = jax.tree_util.tree_leaves(t2)
-                    if len(leaves1) != len(leaves2):
-                        return False
-                    for l1, l2 in zip(leaves1, leaves2):
-                        if l1.shape != l2.shape:
-                            return False
-                    return True
-                except:
-                    return False
-            
-            params_changed = not check_shapes_match(self.params, data['params'])
-
-            self.params = new_params
+            self.params = partial_load_params(self.params, data['params'])
             if 'fixed_params' in data:
                 self.fixed_params = partial_load_params(self.fixed_params, data['fixed_params'])
             else:
                 self.fixed_params = self.params
-            
-            # Reset opt_state if parameters changed shape, as Adam/MultiSteps state depends on param shapes
-            if params_changed:
-                print("[R-NaD] Parameter shapes changed. Resetting optimizer state.")
-                self.opt_state = self.optimizer.init(self.params)
-            else:
-                self.opt_state = data['opt_state']
-                
+            self.opt_state = self.optimizer.init(self.params) # Re-init opt_state for safety
             return data['step']

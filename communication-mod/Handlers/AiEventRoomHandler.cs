@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.Events.Custom;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Random;
@@ -64,7 +65,7 @@ public class AiEventRoomHandler : IRoomHandler
                     
                     eventRoom = nodeOrNull;
                     await Task.Delay(500, ct);
-                    if (!UiHelper.FindAll<NEventOptionButton>(eventRoom).Any(o => !o.Option.IsLocked)) break;
+                    if (!UiHelper.FindAll<NEventOptionButton>(eventRoom).Any(o => o.Option != null && !o.Option.IsLocked && o.IsEnabled)) break;
                     
                     iterations++;
                     continue;
@@ -72,17 +73,46 @@ public class AiEventRoomHandler : IRoomHandler
                 break;
             }
 
+            // Check if event is finished and we should proceed
+            var runState = RunManager.Instance.DebugOnlyGetState();
+            var er = runState?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.EventRoom;
+            var ev = er?.LocalMutableEvent;
+
+            if (ev != null && ev.IsFinished)
+            {
+                MainFile.Logger.Info("[AiSlayer] Event is finished, auto-proceeding.");
+                await NEventRoom.Proceed();
+                await Task.Delay(500, ct);
+                iterations++;
+                continue;
+            }
 
             // AI decides which event option to click
-            var unlockedOptions = UiHelper.FindAll<NEventOptionButton>(eventRoom).Where(o => !o.Option.IsLocked).ToList();
-            if (unlockedOptions.Count == 1)
+            var allButtons = UiHelper.FindAll<NEventOptionButton>(eventRoom);
+            var enabledOptions = allButtons.Where(o => o.Option != null && !o.Option.IsLocked && o.IsEnabled && o.Visible).ToList();
+            
+            if (enabledOptions.Count == 1)
             {
-                MainFile.Logger.Info("[AiSlayer] Auto-selecting single event option");
-                await UiHelper.Click(unlockedOptions[0]);
+                MainFile.Logger.Info($"[AiSlayer] Auto-selecting single event option: {enabledOptions[0].Option.Title.GetRawText()}");
+                await UiHelper.Click(enabledOptions[0]);
+            }
+            else if (enabledOptions.Count > 0)
+            {
+                await MainFile.Instance.StepAI(MainFile.Instance.ExecuteEventAction);
             }
             else
             {
-                await MainFile.Instance.StepAI(MainFile.Instance.ExecuteEventAction);
+                // If there are no enabled options, check for a proceed button before falling back to AI
+                NProceedButton proceedBtn = UiHelper.FindFirst<NProceedButton>(eventRoom);
+                if (proceedBtn != null && proceedBtn.IsEnabled && proceedBtn.Visible)
+                {
+                    MainFile.Logger.Info("[AiSlayer] No event options but proceed button found, auto-clicking.");
+                    await UiHelper.Click(proceedBtn);
+                }
+                else
+                {
+                    await MainFile.Instance.StepAI(MainFile.Instance.ExecuteEventAction);
+                }
             }
             await Task.Delay(500, ct);
 
@@ -90,20 +120,47 @@ public class AiEventRoomHandler : IRoomHandler
             if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen) break;
 
             // Wait for next interaction or room exit
-            bool roomExit = false;
+            bool stateChanged = false;
+            int waitClicks = 0;
             await WaitHelper.Until(delegate
             {
+                waitClicks++;
+                // Handle dialogue hitboxes if they appear
+                NAncientEventLayout ancientLayout = UiHelper.FindFirst<NAncientEventLayout>(eventRoom);
+                if (ancientLayout != null)
+                {
+                    NButton hitBox = ancientLayout.GetNodeOrNull<NButton>(new NodePath("%DialogueHitbox"));
+                    if (hitBox != null && hitBox.Visible && hitBox.IsEnabled)
+                    {
+                        if (waitClicks % 5 == 0) { // Throttle click-through
+                           MainFile.Logger.Info("[AiSlayer] Clicking ancient dialogue hitbox to advance.");
+                           hitBox.EmitSignal(NClickableControl.SignalName.Released, new Variant[] { hitBox });
+                        }
+                    }
+                }
+
                 if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) return true;
                 if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen) return true;
                 if (!GodotObject.IsInstanceValid(eventRoom) || !eventRoom.IsInsideTree())
                 {
-                    roomExit = true;
+                    stateChanged = true;
                     return true;
                 }
-                return UiHelper.FindAll<NEventOptionButton>(eventRoom).Any(o => !o.Option.IsLocked);
+                
+                // If we're waiting after a click, we wait for either the button we clicked to go away/disable, 
+                // OR for its option to change, OR a new button to appear.
+                var currentOptions = UiHelper.FindAll<NEventOptionButton>(eventRoom).Where(o => o.Option != null && !o.Option.IsLocked && o.IsEnabled && o.Visible).ToList();
+                if (currentOptions.Count != enabledOptions.Count) return true;
+                if (currentOptions.Count > 0 && enabledOptions.Count > 0 && currentOptions[0] != enabledOptions[0]) return true;
+
+                // Also check if event finished state changed
+                if (ev != null && ev.IsFinished) return true;
+
+                return false;
             }, ct, TimeSpan.FromSeconds(5), "Waiting for next event state");
 
-            if (roomExit) break;
+            // Exit if room gone
+            if (!GodotObject.IsInstanceValid(eventRoom) || !eventRoom.IsInsideTree()) break;
             
             // If overlay opened (like rewards or deck screen), exit this handler to let AiSlayer handle overlays
             if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) break;
