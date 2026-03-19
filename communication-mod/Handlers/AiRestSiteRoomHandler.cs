@@ -1,3 +1,5 @@
+// Reference: StS2_Decompiled/MegaCrit.Sts2.Core.AutoSlay.Handlers.Rooms/RestSiteRoomHandler.cs
+
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,23 +31,29 @@ public class AiRestSiteRoomHandler : IRoomHandler
         MainFile.Logger.Info("[AiSlayer] Handling rest site options via AI");
         while (!ct.IsCancellationRequested)
         {
+            if (room.ProceedButton.IsEnabled) break;
+            if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen) break;
+
+            if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0)
+            {
+                MainFile.Logger.Info("[AiSlayer] Handling overlay inside RestSiteRoomHandler");
+                await MainFile.Instance.StepAI(MainFile.Instance.ExecuteUniversalAction);
+                await Task.Delay(500, ct);
+                continue;
+            }
 
             // AI decides which rest site option to click
             await MainFile.Instance.StepAI(MainFile.Instance.ExecuteRestSiteAction);
             await Task.Delay(500, ct);
 
-            // Wait until proceed button is enabled or an overlay screen opened
+            // Wait for either the proceed button, an overlay, or the map to avoid tight loop
             await WaitHelper.Until(delegate
             {
                 if (room.ProceedButton.IsEnabled) return true;
                 if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) return true;
                 if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen) return true;
                 return false;
-            }, ct, TimeSpan.FromSeconds(10), "Rest site option did not respond");
-
-            if (room.ProceedButton.IsEnabled) break;
-            if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) break;
-            if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen) break;
+            }, ct, TimeSpan.FromSeconds(5), "Waiting for rest site response");
         }
 
         if (room.ProceedButton.IsEnabled)

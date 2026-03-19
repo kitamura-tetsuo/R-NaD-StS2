@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 
 namespace communication_mod;
 
@@ -130,6 +131,17 @@ public partial class MainFile : Node
             var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
             bool hasOpenPotionSlots = player?.HasOpenPotionSlots ?? false;
 
+            // Check if proceed button is enabled via reflection
+            bool proceedBtnEnabled = false;
+            try {
+                var rsType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen);
+                var proceedBtnField = rsType.GetField("_proceedButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var proceedBtn = proceedBtnField?.GetValue(rs) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                proceedBtnEnabled = proceedBtn != null && proceedBtn.IsEnabled && proceedBtn.IsVisibleInTree();
+            } catch (Exception ex) {
+                Logger.Error($"[AutoAI] Error getting rewards proceed button status: {ex.Message}");
+            }
+
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "rewards",
@@ -139,7 +151,7 @@ public partial class MainFile : Node
                 rewards = rewards,
                 has_open_potion_slots = hasOpenPotionSlots,
                 relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
-                can_proceed = MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState)
+                can_proceed = proceedBtnEnabled || MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState)
             }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardRewardSelectionScreen cardRewardScreen)
@@ -522,6 +534,7 @@ public partial class MainFile : Node
 
             var options = new List<object>();
             var modelOptions = ev.CurrentOptions;
+            var eventRoomNode = MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance;
 
             if (modelOptions.Count > 0) {
                 for (int i = 0; i < modelOptions.Count; i++) {
@@ -533,7 +546,6 @@ public partial class MainFile : Node
                 }
             } else {
                 // Fallback to UI buttons (useful for PROCEED buttons or when model is out of sync)
-                var eventRoomNode = MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance;
                 var buttons = eventRoomNode != null ? FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(eventRoomNode)
                     .OrderBy(b => b.GlobalPosition.Y) // Usually top to bottom
                     .ToList() : new List<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>();
@@ -551,13 +563,18 @@ public partial class MainFile : Node
                 }
             }
 
+            // Check for proceed button
+            var proceedBtn = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.CommonUi.NProceedButton>(eventRoomNode);
+            bool canProceed = (proceedBtn != null && proceedBtn.IsEnabled && proceedBtn.IsVisibleInTree()) || ev.IsFinished;
+
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "event",
                 floor = runState.TotalFloor,
                 id = ev.Id.Entry,
                 title = ev.Title.GetRawText(),
-                options = options
+                options = options,
+                can_proceed = canProceed
             }, JsonOptions);
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.RestSiteRoom rsr)

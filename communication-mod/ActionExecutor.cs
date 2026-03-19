@@ -888,6 +888,11 @@ public partial class MainFile : Node
                 combatRoomNode.ProceedButton.Call("ForceClick");
             }
         }
+        else if (currentRoom is MegaCrit.Sts2.Core.Rooms.EventRoom)
+        {
+            Logger.Info("[AutoAI] Found EventRoom in HandleProceed. Triggering NEventRoom.Proceed().");
+            await MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Proceed();
+        }
         else
         {
             await rm.ProceedFromTerminalRewardsScreen();

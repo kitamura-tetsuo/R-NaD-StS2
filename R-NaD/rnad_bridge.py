@@ -142,6 +142,8 @@ np = None
 RNaDLearner = None
 RNaDConfig = None
 ExperimentManager = None
+initialization_event = threading.Event()
+initialization_lock = threading.Lock()
 
 def do_deferred_imports():
     global jax, jnp, np, RNaDLearner, RNaDConfig, ExperimentManager
@@ -632,8 +634,13 @@ class TrainingWorker(threading.Thread):
 training_worker = None
 
 def load_model(checkpoint_path=None):
-    global learner, rng_key, training_worker, config
-    do_deferred_imports()
+    global learner, rng_key, training_worker, config, initialization_lock
+    
+    with initialization_lock:
+        if initialization_event.is_set():
+            return
+        
+        do_deferred_imports()
     
     num_actions = 100
     config = RNaDConfig()
@@ -747,6 +754,8 @@ def load_model(checkpoint_path=None):
     if training_worker is None:
         training_worker = TrainingWorker(learner, config, experiment_manager=exp_manager, step_count=step)
         training_worker.start()
+    
+    initialization_event.set()
 
 def encode_state(state):
     do_deferred_imports()
@@ -1066,6 +1075,9 @@ def get_action_mask(state, masked_reward_indices=None):
         for i in range(min(len(options), 10)):
             if not options[i].get("is_locked"):
                 mask[i] = True
+        
+        if state.get("can_proceed"):
+            mask[86] = True # Proceed
                 
     elif state_type == "rest_site":
         options = state.get("options", [])
@@ -1235,8 +1247,12 @@ def predict_action(state_json):
         if state_type in ["none", "main_menu", "unknown"]:
             return json.dumps({"action": "wait"})
 
-        if learner is None:
-            load_model()
+        if not initialization_event.is_set():
+            log("[Python] Waiting for model initialization...")
+            if not initialization_event.wait(timeout=300):
+                log("[Python] Timeout waiting for model initialization!")
+                return json.dumps({"action": "error", "message": "initialization timeout"})
+            log("[Python] Model initialization complete. Proceeding with predict_action.")
 
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
@@ -1265,14 +1281,17 @@ def predict_action(state_json):
             
         if learner.params is None:
             log("[Python] CRITICAL: learner.params is None in predict_action!")
-            # Try once more to initialize if somehow lost
-            learner.init(rng_key)
-            if learner.params is None:
-                return json.dumps({"action": "error", "message": "learner.params is None after emergency init"})
+            # Emergency fix: if we reached here after wait, something is wrong with the loaded model
+            return json.dumps({"action": "error", "message": "learner.params is None after initialization"})
         
-        # Aggressive debug: check if hg_proj is in params
-        if 'hg_proj' not in learner.params:
+        # Aggressive debug: check if hg_proj is in params (can be prefixed like transformer_net/hg_proj)
+        hg_proj_exists = any('hg_proj' in k for k in learner.params.keys())
+        if not hg_proj_exists:
             log(f"[Python] CRITICAL: hg_proj MISSING from learner.params! Keys: {list(learner.params.keys())}")
+        elif 'hg_proj' not in learner.params:
+            # It exists but is prefixed, which is expected. 
+            # We skip the critical log but could log a quiet confirmation if we wanted.
+            pass
         
         if _predict_step is None:
             # Fallback if jit failed
@@ -1573,7 +1592,10 @@ class CommandHandler(BaseHTTPRequestHandler):
             data_to_save = {
                 "current_trajectory": list(current_trajectory),
                 "experience_queue": queue_snapshot,
-                "batch_buffer": buffer_snapshot
+                "batch_buffer": buffer_snapshot,
+                "learner_params": learner.params if learner else None,
+                "learner_fixed_params": learner.fixed_params if learner else None,
+                "learner_opt_state": learner.opt_state if learner else None
             }
             
             saved_steps = len(data_to_save["current_trajectory"])
@@ -1626,6 +1648,20 @@ class CommandHandler(BaseHTTPRequestHandler):
                         
                         loaded_steps = len(current_trajectory)
                         loaded_trajs = len(q_items) + len(b_items)
+                        
+                        # Restore learner state if available
+                        if learner:
+                            if "learner_params" in data and data["learner_params"] is not None:
+                                log("/load_trajectory: Restoring learner parameters.")
+                                learner.params = data["learner_params"]
+                            if "learner_fixed_params" in data and data["learner_fixed_params"] is not None:
+                                log("/load_trajectory: Restoring learner fixed parameters.")
+                                learner.fixed_params = data["learner_fixed_params"]
+                            if "learner_opt_state" in data and data["learner_opt_state"] is not None:
+                                log("/load_trajectory: Restoring learner optimizer state.")
+                                learner.opt_state = data["learner_opt_state"]
+                        else:
+                            log("/load_trajectory: Warning: learner NOT initialized, skipping optimizer state restoration.")
                     else:
                         # Fallback for old list-only format
                         current_trajectory = data

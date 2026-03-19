@@ -104,7 +104,7 @@ public class AiEventRoomHandler : IRoomHandler
             else if (enabledOptions.Count > 0)
             {
                 MainFile.Logger.Info($"[AiSlayer] Requesting AI decision for event with {enabledOptions.Count} options.");
-                var aiTask = MainFile.Instance.StepAI(MainFile.Instance.ExecuteEventAction);
+                var aiTask = MainFile.Instance.StepAI(MainFile.Instance.ExecuteUniversalAction);
                 var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10), ct);
                 
                 var completedTask = await Task.WhenAny(aiTask, timeoutTask);
@@ -125,6 +125,13 @@ public class AiEventRoomHandler : IRoomHandler
             {
                 // If there are no enabled options, check for a proceed button before falling back to AI
                 NProceedButton proceedBtn = UiHelper.FindFirst<NProceedButton>(eventRoom);
+                if (proceedBtn == null || !proceedBtn.IsEnabled || !proceedBtn.Visible)
+                {
+                    // Fallback: search more broadly (some events have proceed buttons as siblings or global)
+                    var root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
+                    proceedBtn = UiHelper.FindFirst<NProceedButton>(root);
+                }
+
                 if (proceedBtn != null && proceedBtn.IsEnabled && proceedBtn.Visible)
                 {
                     MainFile.Logger.Info("[AiSlayer] No event options but proceed button found, auto-clicking.");
@@ -132,7 +139,9 @@ public class AiEventRoomHandler : IRoomHandler
                 }
                 else
                 {
-                    await MainFile.Instance.StepAI(MainFile.Instance.ExecuteEventAction);
+                    MainFile.Logger.Info("[AiSlayer] No event options or proceed button found, requesting AI decision.");
+                    // Use Universal action executor to handle overlays like card selection which might be part of the event
+                    await MainFile.Instance.StepAI(MainFile.Instance.ExecuteUniversalAction);
                 }
             }
             await Task.Delay(500, ct);
@@ -187,9 +196,7 @@ public class AiEventRoomHandler : IRoomHandler
             // Exit if room gone
             if (!GodotObject.IsInstanceValid(eventRoom) || !eventRoom.IsInsideTree()) break;
             
-            // If overlay opened (like rewards or deck screen), exit this handler to let AiSlayer handle overlays
-            if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) break;
-
+            // Iteration check to prevent infinite loops in weird edge cases
             iterations++;
         }
         
