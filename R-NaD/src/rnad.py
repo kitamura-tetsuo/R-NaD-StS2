@@ -17,18 +17,21 @@ jax = None
 jnp = None
 hk = None
 optax = None
+jmp = None
 
 def _init_libs():
-    global jax, jnp, hk, optax
+    global jax, jnp, hk, optax, jmp
     if jax is None:
         import jax as jax_mod
         import jax.numpy as jnp_mod
         import haiku as hk_mod
         import optax as optax_mod
+        import jmp as jmp_mod
         jax = jax_mod
         jnp = jnp_mod
         hk = hk_mod
         optax = optax_mod
+        jmp = jmp_mod
 
 _init_libs()
 
@@ -54,7 +57,7 @@ class RNaDConfig(NamedTuple):
     num_blocks: int = 2
     seq_len: int = 8
     hidden_size: int = 64
-    unroll_length: int = 64
+    unroll_length: int = 128
     seed: int = None
 
 def v_trace(
@@ -146,17 +149,20 @@ class TransformerBlock(hk.Module):
         self.hidden_size = hidden_size
 
     def __call__(self, x, is_training=False):
-        d = x.shape[-1]
-        attn_out = hk.MultiHeadAttention(
-            num_heads=self.num_heads,
-            key_size=self.key_size,
-            w_init=hk.initializers.VarianceScaling(2.0),
-            model_size=d,
-        )(x, x, x)
-        x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + attn_out)
-        mlp_out = hk.nets.MLP([d * 4, d], activation=jax.nn.gelu)(x)
-        x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + mlp_out)
-        return x
+        def _forward(x):
+            d = x.shape[-1]
+            attn_out = hk.MultiHeadAttention(
+                num_heads=self.num_heads,
+                key_size=self.key_size,
+                w_init=hk.initializers.VarianceScaling(2.0),
+                model_size=d,
+            )(x, x, x)
+            x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + attn_out)
+            mlp_out = hk.nets.MLP([d * 4, d], activation=jax.nn.gelu)(x)
+            x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True)(x + mlp_out)
+            return x
+
+        return hk.remat(_forward)(x)
 
 class CombatExpert(hk.Module):
     def __init__(self, hidden_size, num_blocks, num_heads, name=None):
@@ -347,6 +353,16 @@ class RNaDLearner:
         _init_libs()
         self.config = config
         self.num_actions = num_actions
+        
+        # Mixed Precision setup for compute-heavy modules
+        policy = jmp.Policy(
+            compute_dtype=jnp.bfloat16,
+            param_dtype=jnp.float32,
+            output_dtype=jnp.float32,
+        )
+        hk.mixed_precision.set_policy(hk.Linear, policy)
+        hk.mixed_precision.set_policy(hk.MultiHeadAttention, policy)
+        hk.mixed_precision.set_policy(hk.nets.MLP, policy)
         
         def forward(state_dict, mask, is_training=False):
             model = TransformerNet(num_actions, config.hidden_size, config.num_blocks, config.num_heads)
