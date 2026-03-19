@@ -30,6 +30,8 @@ def _init_libs():
         hk = hk_mod
         optax = optax_mod
 
+_init_libs()
+
 class LeagueConfig(NamedTuple):
     decks: List[str] = ["standard_deck.txt"]
     rates: List[float] = [1.0]
@@ -37,7 +39,7 @@ class LeagueConfig(NamedTuple):
 
 class RNaDConfig(NamedTuple):
     batch_size: int = 2
-    accumulation_steps: int = 1
+    accumulation_steps: int = 8
     learning_rate: float = 1e-4
     discount_factor: float = 0.99
     max_steps: int = 1000
@@ -162,9 +164,9 @@ class CombatExpert(hk.Module):
         self.hidden_size = hidden_size
         self.num_blocks = num_blocks
         self.num_heads = num_heads
-        self.card_embedding = hk.Embed(vocab_size=100, embed_dim=64)
     
     def __call__(self, h_global, combat_obs, bow_obs, is_training=False):
+        card_embedding = hk.Embed(vocab_size=100, embed_dim=64, name="card_embedding")
         bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
         bow_combined = jnp.concatenate(bow_vecs, axis=-1)
         bow_proj = jax.nn.relu(hk.Linear(128, name="bow_proj")(bow_combined))
@@ -175,7 +177,7 @@ class CombatExpert(hk.Module):
         for i in range(10):
             base_idx = 10 + i * 10
             card_id_idx = combat_vec_to_id(combat_obs[base_idx])
-            card_embed = self.card_embedding(card_id_idx)
+            card_embed = card_embedding(card_id_idx)
             other_feats = combat_obs[base_idx+1 : base_idx+10]
             card_feat = jnp.concatenate([card_embed, other_feats], axis=-1)
             hand_cards.append(hk.Linear(self.hidden_size, name=f"hand_linear_{i}")(card_feat))
@@ -231,19 +233,18 @@ class TransformerNet(hk.Module):
         self.hidden_size = hidden_size 
         self.num_blocks = num_blocks
         self.num_heads = num_heads
-        
-        # Explicit initialization of sub-modules to avoid implicit scopes
-        self.global_proj = hk.Linear(self.hidden_size, name="global_proj")
-        self.combat_expert = CombatExpert(hidden_size, num_blocks, num_heads, name="combat_expert")
-        self.map_expert = MapExpert(hidden_size, num_blocks, num_heads, name="map_expert")
-        self.event_expert = SimpleExpert(hidden_size, name="event_expert")
-        self.grid_expert = SimpleExpert(hidden_size, name="grid_expert")
-        self.hand_expert = SimpleExpert(hidden_size, name="hand_expert")
-        self.policy_head = hk.Linear(num_actions, name="policy_head")
-        self.value_head = hk.Linear(1, name="value_head")
 
     def __call__(self, state_dict, mask, is_training=False):
-        h_g_batch = jax.nn.relu(self.global_proj(state_dict["global"]))
+        # Use a more direct name and ensure it's not nested in '~'
+        h_g_batch = jax.nn.relu(hk.Linear(self.hidden_size, name="hg_proj")(state_dict["global"]))
+
+        combat_expert = CombatExpert(self.hidden_size, self.num_blocks, self.num_heads, name="combat_expert")
+        map_expert = MapExpert(self.hidden_size, self.num_blocks, self.num_heads, name="map_expert")
+        event_expert = SimpleExpert(self.hidden_size, name="event_expert")
+        grid_expert = SimpleExpert(self.hidden_size, name="grid_expert")
+        hand_expert = SimpleExpert(self.hidden_size, name="hand_expert")
+        policy_head = hk.Linear(self.num_actions, name="policy_head")
+        value_head = hk.Linear(1, name="value_head")
 
         def route_expert(st_idx, h_g, s_dict):
             bow_obs = {
@@ -253,15 +254,16 @@ class TransformerNet(hk.Module):
                 "master_bow": s_dict["master_bow"]
             }
             return jax.lax.switch(st_idx, [
-                lambda: self.combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
-                lambda: self.map_expert(h_g, s_dict["map"], is_training),
-                lambda: self.event_expert(h_g, s_dict["event"]),
-                lambda: self.grid_expert(h_g, s_dict["event"]),
-                lambda: self.hand_expert(h_g, s_dict["event"])
+                lambda: combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
+                lambda: map_expert(h_g, s_dict["map"], is_training),
+                lambda: event_expert(h_g, s_dict["event"]),
+                lambda: grid_expert(h_g, s_dict["event"]),
+                lambda: hand_expert(h_g, s_dict["event"])
             ])
 
         if hk.running_init():
             # Mandatory visit to all branches during initialization
+            # Use index-based visit to ensure all jax.lax.switch branches are registered
             dummy_h_g = h_g_batch[0]
             dummy_bow_obs = {k: v[0] for k, v in {
                 "draw_bow": state_dict["draw_bow"],
@@ -269,16 +271,23 @@ class TransformerNet(hk.Module):
                 "exhaust_bow": state_dict["exhaust_bow"],
                 "master_bow": state_dict["master_bow"]
             }.items()}
-            self.combat_expert(dummy_h_g, state_dict["combat"][0], dummy_bow_obs, is_training)
-            self.map_expert(dummy_h_g, state_dict["map"][0], is_training)
-            self.event_expert(dummy_h_g, state_dict["event"][0])
-            self.grid_expert(dummy_h_g, state_dict["event"][0])
-            self.hand_expert(dummy_h_g, state_dict["event"][0])
+            
+            # Ensure every expert is called at least once during init
+            _ = combat_expert(dummy_h_g, state_dict["combat"][0], dummy_bow_obs, is_training)
+            _ = map_expert(dummy_h_g, state_dict["map"][0], is_training)
+            _ = event_expert(dummy_h_g, state_dict["event"][0])
+            _ = grid_expert(dummy_h_g, state_dict["event"][0])
+            _ = hand_expert(dummy_h_g, state_dict["event"][0])
+            
+            # Policy and value heads also need to be called during init
+            dummy_features = jnp.zeros((1, self.hidden_size))
+            _ = policy_head(dummy_features)
+            _ = value_head(dummy_features)
 
         features = hk.vmap(route_expert, split_rng=False)(state_dict["state_type"], h_g_batch, state_dict)
-        logits = self.policy_head(features)
+        logits = policy_head(features)
         logits = jnp.where(mask.astype(bool), logits, -1e9)
-        value = self.value_head(features)
+        value = value_head(features)
         return logits, jnp.squeeze(value, axis=-1)
 
 # --- End Model Definition ---
@@ -296,30 +305,40 @@ def _find_matching_key(target_key, source_keys):
         if _normalize_key(source_key) == target_key: return source_key
         # Handle the weird ~ scope that Haiku sometimes adds
         if target_key.replace('/~/', '/') == source_key.replace('/~/', '/'): return source_key
+        if target_key.replace('/~/', '/') == _normalize_key(source_key).replace('/~/', '/'): return source_key
     return None
 
 def partial_load_params(target_params, source_params):
+    if target_params is None:
+        logging.warning("[R-NaD] target_params is None in partial_load_params")
+        return source_params
+        
     new_params = {}
     source_keys = list(source_params.keys())
+    
     for key, target_val in target_params.items():
         source_key = _find_matching_key(key, source_keys)
         if source_key is None:
-            print(f"[R-NaD] Parameter {key} not found in checkpoint. Using initialized values.")
+            # logging.info(f"[R-NaD] Parameter {key} not found in checkpoint. Using initialized values.")
             new_params[key] = target_val
             continue
+        
+        if key != source_key:
+            logging.info(f"[R-NaD] Mapping {source_key} -> {key}")
+            
         source_val = source_params[source_key]
         if isinstance(target_val, dict) and isinstance(source_val, dict):
             new_params[key] = partial_load_params(target_val, source_val)
-        elif isinstance(target_val, jnp.ndarray) and isinstance(source_val, jnp.ndarray):
+        elif isinstance(target_val, (jnp.ndarray, np.ndarray)) and isinstance(source_val, (jnp.ndarray, np.ndarray)):
             if target_val.shape == source_val.shape:
                 new_params[key] = source_val
             else:
-                print(f"[R-NaD] Shape mismatch for {key}: target {target_val.shape}, source {source_val.shape}. Slicing.")
-                merged = jnp.copy(target_val)
+                logging.warning(f"[R-NaD] Shape mismatch for {key}: target {target_val.shape}, source {source_val.shape}. Slicing.")
+                merged = jnp.array(target_val) # Ensure it is a JAX array
                 slices = tuple(slice(0, min(t, s)) for t, s in zip(target_val.shape, source_val.shape))
                 new_params[key] = merged.at[slices].set(source_val[slices])
         else:
-            print(f"[R-NaD] Type mismatch for {key}. Using initialized values.")
+            logging.warning(f"[R-NaD] Type mismatch for {key}: target {type(target_val)}, source {type(source_val)}. Using initialized values.")
             new_params[key] = target_val
     return new_params
 
@@ -330,7 +349,7 @@ class RNaDLearner:
         self.num_actions = num_actions
         
         def forward(state_dict, mask, is_training=False):
-            model = TransformerNet(num_actions, config.hidden_size, config.num_blocks, config.num_heads, name="transformer_net")
+            model = TransformerNet(num_actions, config.hidden_size, config.num_blocks, config.num_heads)
             return model(state_dict, mask, is_training=is_training)
             
         self.network = hk.transform(forward)
@@ -382,12 +401,46 @@ class RNaDLearner:
             pickle.dump({'params': self.params, 'fixed_params': self.fixed_params, 'opt_state': self.opt_state, 'step': step}, f)
 
     def load_checkpoint(self, path):
+        logging.info(f"[R-NaD] Loading checkpoint from {path}")
         with open(path, 'rb') as f:
             data = pickle.load(f)
-            self.params = partial_load_params(self.params, data['params'])
-            if 'fixed_params' in data:
-                self.fixed_params = partial_load_params(self.fixed_params, data['fixed_params'])
-            else:
-                self.fixed_params = self.params
-            self.opt_state = self.optimizer.init(self.params) # Re-init opt_state for safety
-            return data['step']
+            
+        if self.params is None:
+            logging.warning("[R-NaD] self.params is None before loading. Initializing first.")
+            self.init(jax.random.PRNGKey(0))
+            
+        new_params = partial_load_params(self.params, data['params'])
+        
+        # Aggressive manual mapping for known structural changes
+        target_keys = list(new_params.keys())
+        source_keys = list(data['params'].keys())
+        
+        # Try to recover hg_proj (formerly global_proj)
+        hg_proj_key = None
+        for tk in target_keys:
+            if 'hg_proj' in tk: hg_proj_key = tk; break
+            
+        if hg_proj_key and hg_proj_key not in new_params: # Should be in new_params but might be initialized values
+             pass 
+             
+        # Verification and fix-up
+        for tk in target_keys:
+            # If target has hg_proj but new_params has identical values to self.params (unmapped)
+            # and source has global_proj, then map it.
+            if 'hg_proj' in tk:
+                found_source = None
+                for sk in source_keys:
+                    if 'global_proj' in sk:
+                        found_source = sk
+                        break
+                if found_source:
+                    logging.info(f"[R-NaD] Recovery mapping: {found_source} -> {tk}")
+                    new_params[tk] = data['params'][found_source]
+        
+        self.params = new_params
+        if 'fixed_params' in data:
+            self.fixed_params = partial_load_params(self.params, data['fixed_params'])
+        else:
+            self.fixed_params = self.params
+        self.opt_state = self.optimizer.init(self.params)
+        return data['step']

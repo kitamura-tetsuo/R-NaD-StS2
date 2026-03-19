@@ -172,19 +172,27 @@ def take_screenshot(reason: str):
         logging.warning(f"Failed to take screenshot before restart: {e}")
 
 def wait_for_update_to_finish(status_url="http://127.0.0.1:8081/status"):
-    """Blocks until is_updating is False in the bridge status."""
+    """Blocks until is_updating is False and queue is not full in the bridge status."""
     while True:
         try:
             resp = requests.get(status_url, timeout=5)
             if resp.status_code == 200:
                 data = resp.json()
-                if not data.get("is_updating", False):
-                    break
-                logging.info("Bridge is performing an update. Waiting...")
+                is_updating = data.get("is_updating", False)
+                queue_size = data.get("queue_size", 0)
+                batch_size = data.get("batch_size", 0)
+                
+                if not is_updating:
+                    if batch_size == 0 or queue_size < batch_size:
+                        break
+                    logging.info(f"Queue is full ({queue_size}/{batch_size}). Waiting for update to start...")
+                else:
+                    logging.info("Bridge is performing an update. Waiting...")
             else:
-                break
-        except Exception:
-            break
+                logging.warning(f"Bridge status endpoint returned {resp.status_code}. Retrying...")
+        except Exception as e:
+            logging.warning(f"Failed to check bridge status ({e}). Retrying...")
+        
         time.sleep(2)
 
 def perform_restart(process, current_checkpoint, args):
@@ -218,6 +226,9 @@ def perform_restart(process, current_checkpoint, args):
             saved = data.get("saved_steps", 0)
             saved_q = data.get("saved_queues", 0)
             logging.info(f"Saved trajectory of {saved} steps and {saved_q} queued trajectories before restart.")
+            
+            # If the flush triggered a potential update, wait for it before killing the process
+            wait_for_update_to_finish()
     except Exception as e:
         logging.warning(f"Failed to save trajectory before restart: {e}")
     
@@ -243,8 +254,8 @@ def perform_restart(process, current_checkpoint, args):
         logging.error("Failed to recover: game server didn't start.")
         return new_process, checkpoint
     
-    logging.info("Waiting 60 seconds for Game Scene Tree to initialize...")
-    time.sleep(60)
+    logging.info("Waiting 10 seconds for Game Scene Tree to initialize...")
+    time.sleep(10)
     
     logging.info("Re-enabling learning mode...")
     try:
@@ -347,6 +358,8 @@ def main():
                 take_screenshot(f"process_exited_code_{exit_code}")
                 process, checkpoint = perform_restart(process, checkpoint, args)
                 consecutive_failures = 0
+                last_traj_progress_time = time.time()
+                last_traj_size = -1
                 continue
 
             # Check training status
@@ -411,6 +424,8 @@ def main():
                 take_screenshot("server_unreachable")
                 process, checkpoint = perform_restart(process, checkpoint, args)
                 consecutive_failures = 0
+                last_traj_progress_time = time.time()
+                last_traj_size = -1
                 continue
 
             # Check if game over to restart
@@ -423,7 +438,7 @@ def main():
                             if state.get("type") == "game_over":
                                 wait_for_update_to_finish()
                                 logging.info(f"Game over detected. Restarting game run{' with seed ' + args.seed if args.seed else ''} in 5s...")
-                                # time.sleep(5)
+                                time.sleep(5)
                                 new_game_url = "http://127.0.0.1:8081/new_game"
                                 if args.seed:
                                     new_game_url += f"?seed={args.seed}"
@@ -433,6 +448,8 @@ def main():
                                     logging.error(f"Failed to start new game: {e}")
                                 # Remove the game_over state so we don't spam restarts
                                 os.remove(last_state_path)
+                                last_traj_progress_time = time.time()
+                                last_traj_size = -1
                 except Exception:
                     pass
 

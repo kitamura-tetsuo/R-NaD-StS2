@@ -83,6 +83,11 @@ public class AiEventRoomHandler : IRoomHandler
                 MainFile.Logger.Info("[AiSlayer] Event is finished, auto-proceeding.");
                 await NEventRoom.Proceed();
                 await Task.Delay(500, ct);
+                
+                // Check if map opened or if room vanished
+                if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen) break;
+                if (!GodotObject.IsInstanceValid(eventRoom) || !eventRoom.IsInsideTree()) break;
+                
                 iterations++;
                 continue;
             }
@@ -98,7 +103,23 @@ public class AiEventRoomHandler : IRoomHandler
             }
             else if (enabledOptions.Count > 0)
             {
-                await MainFile.Instance.StepAI(MainFile.Instance.ExecuteEventAction);
+                MainFile.Logger.Info($"[AiSlayer] Requesting AI decision for event with {enabledOptions.Count} options.");
+                var aiTask = MainFile.Instance.StepAI(MainFile.Instance.ExecuteEventAction);
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10), ct);
+                
+                var completedTask = await Task.WhenAny(aiTask, timeoutTask);
+                if (completedTask == timeoutTask)
+                {
+                    MainFile.Logger.Warn("[AiSlayer] AI decision TIMEOUT for event. Picking random option as fallback.");
+                    var randomOption = enabledOptions[random.NextInt(enabledOptions.Count)];
+                    await UiHelper.Click(randomOption);
+                }
+                else if (!await aiTask) // StepAI returns false if it didn't call the callback (e.g. error)
+                {
+                    MainFile.Logger.Warn("[AiSlayer] AI decision FAILED for event. Picking random option as fallback.");
+                    var randomOption = enabledOptions[random.NextInt(enabledOptions.Count)];
+                    await UiHelper.Click(randomOption);
+                }
             }
             else
             {
@@ -140,7 +161,11 @@ public class AiEventRoomHandler : IRoomHandler
                 }
 
                 if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) return true;
-                if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen) return true;
+                if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen)
+                {
+                    MainFile.Logger.Info("[AiSlayer] Map screen detected, exiting event handler.");
+                    return true;
+                }
                 if (!GodotObject.IsInstanceValid(eventRoom) || !eventRoom.IsInsideTree())
                 {
                     stateChanged = true;

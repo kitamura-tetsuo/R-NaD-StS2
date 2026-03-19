@@ -176,7 +176,8 @@ if 'rnad_bridge' in sys.modules:
     old_mod = sys.modules['rnad_bridge']
     command_queue = getattr(old_mod, 'command_queue', queue.Queue())
     initialized = getattr(old_mod, 'initialized', False)
-    learner = getattr(old_mod, 'learner', None)
+    # learner = getattr(old_mod, 'learner', None)
+    learner = None # Force re-init with new code
     config = getattr(old_mod, 'config', None)
     np = getattr(old_mod, 'np', None)
     log(f"Preserved state from existing rnad_bridge module. Queue size: {command_queue.qsize() if hasattr(command_queue, 'qsize') else 'unknown'}")
@@ -726,14 +727,21 @@ def load_model(checkpoint_path=None):
     if checkpoint_path and os.path.exists(checkpoint_path):
         try:
             step = learner.load_checkpoint(checkpoint_path)
-            print(f"[Python] Loaded JAX model from {checkpoint_path} at step {step}")
+            log(f"[Python] Loaded JAX model from {checkpoint_path} at step {step}")
+            if learner.params is None:
+                log("[Python] ERROR: learner.params is STILL None after load_checkpoint!")
+            else:
+                log(f"[Python] learner.params initialized with {len(learner.params)} modules")
         except Exception as e:
-            print(f"[Python] Error loading checkpoint {checkpoint_path}: {e}")
+            log(f"[Python] Error loading checkpoint {checkpoint_path}: {e}")
             learner.init(rng_key)
-            print("[Python] Falling back to new JAX model initialization")
+            log("[Python] Falling back to new JAX model initialization")
     else:
         learner.init(rng_key)
-        print("[Python] Initialized new JAX model")
+        log("[Python] Initialized new JAX model")
+    
+    if learner.params is None:
+        log("[Python] CRITICAL: learner.params is None at end of load_model!")
     
     # Start training worker if learning behavior is expected
     if training_worker is None:
@@ -1242,16 +1250,30 @@ def predict_action(state_json):
         assert jnp is not None
         mask_jnp = jnp.array(mask)
         
-        # Prepare dictionary with leading batch dimensions for inference
-        # state_dict has elements like (dim,) or (), need (1, dim) or (1,)
+        # Preparing dictionary with leading batch dimensions for inference
         batched_state = {
             k: jnp.array(v)[None, ...] for k, v in state_dict.items()
         }
         
         # Inference
-        # Now passing batched_state dictionary to the network
         t_inf_start = time.time()
         predict_key, rng_key = jax_local.random.split(rng_key)
+        
+        if learner is None:
+            log("[Python] CRITICAL: learner is None in predict_action!")
+            return json.dumps({"action": "error", "message": "learner is None"})
+            
+        if learner.params is None:
+            log("[Python] CRITICAL: learner.params is None in predict_action!")
+            # Try once more to initialize if somehow lost
+            learner.init(rng_key)
+            if learner.params is None:
+                return json.dumps({"action": "error", "message": "learner.params is None after emergency init"})
+        
+        # Aggressive debug: check if hg_proj is in params
+        if 'hg_proj' not in learner.params:
+            log(f"[Python] CRITICAL: hg_proj MISSING from learner.params! Keys: {list(learner.params.keys())}")
+        
         if _predict_step is None:
             # Fallback if jit failed
             logits, value = learner.network.apply(learner.params, predict_key, batched_state, mask[None, :].astype(jnp.float32))

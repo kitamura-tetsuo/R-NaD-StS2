@@ -832,6 +832,26 @@ public partial class MainFile : Node
             }
             overlayStack.Remove(rewardsScreen);
         }
+        else if (overlayStack?.Peek() is MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen gos)
+        {
+            Logger.Info("[AutoAI] Found GameOverScreen in HandleProceed. Clicking Continue button.");
+            var continueBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen).GetField("_continueButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var continueBtn = continueBtnField?.GetValue(gos) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+            if (continueBtn != null && continueBtn.IsEnabled)
+            {
+                continueBtn.Call("ForceClick");
+            }
+            else
+            {
+                var mainMenuBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen).GetField("_mainMenuButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var mainMenuBtn = mainMenuBtnField?.GetValue(gos) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                if (mainMenuBtn != null && mainMenuBtn.IsEnabled)
+                {
+                    Logger.Info("[AutoAI] Continue button not enabled, but Main Menu button is. Clicking it.");
+                    mainMenuBtn.Call("ForceClick");
+                }
+            }
+        }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.RestSiteRoom)
         {
             var restSiteNode = MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom.Instance;

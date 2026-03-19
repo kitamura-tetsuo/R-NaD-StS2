@@ -18,20 +18,46 @@ public partial class MainFile : Node
     {
         var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
         var runState = rm.DebugOnlyGetState();
-        if (runState == null) return "{\"type\":\"none\", \"floor\": 0}";
+        if (runState == null) {
+            // If runState is null, it means we are likely in the main menu or transitioning.
+            // For the AI bridge, reporting this as game_over allows for a clean reset of trajectories.
+            return "{\"type\":\"game_over\", \"floor\": 0, \"victory\": false, \"reason\": \"main_menu\"}";
+        }
 
         string currentSeed = runState.Rng.StringSeed;
 
-        if (runState.IsGameOver)
-        {
-            Logger.Info("[AutoAI] RunState.IsGameOver is true. Reporting game_over state.");
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode }, JsonOptions);
-        }
-
         var currentRoom = runState.CurrentRoom;
-
         var topOverlay = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.Peek();
         if (topOverlay != null) Logger.Info($"[AutoAI] Top Overlay: {topOverlay.GetType().FullName}");
+
+        // 1.0 Manual HP Check for Death Detection (Prioritize this for GYM mode and fast death detection)
+        var localPlayer = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
+        if (localPlayer != null && localPlayer.Creature != null && localPlayer.Creature.CurrentHp <= 0)
+        {
+            Logger.Info("[AutoAI] Manual HP check: Player HP is 0. Reporting game_over state.");
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, victory = false }, JsonOptions);
+        }
+
+        // 1. Game Over Check (Screen or State)
+        if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen gos)
+        {
+            bool isVictory = (currentRoom?.IsVictoryRoom ?? false) || !runState.IsGameOver;
+            Logger.Info($"[AutoAI] GameOverScreen detected. Victory: {isVictory}");
+            return System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "game_over",
+                floor = runState.TotalFloor,
+                seed = currentSeed,
+                is_gym = _gymMode,
+                victory = isVictory
+            }, JsonOptions);
+        }
+
+        if (runState.IsGameOver)
+        {
+            Logger.Info("[AutoAI] RunState.IsGameOver is true (Death). Reporting game_over state.");
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, victory = false }, JsonOptions);
+        }
 
         // Prioritize Map if Screen is actually open OR if we are in a run but have no room yet (initial act start)
         bool mapScreenExists = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance != null;
@@ -68,12 +94,6 @@ public partial class MainFile : Node
                    return GetMapJson(runState);
                }
             }
-        }
-
-        if (currentRoom == null)
-        {
-             Logger.Info($"[AutoAI] currentRoom is null. mapScreenExists={mapScreenExists}, mapScreenOpen={mapScreenOpen}, topOverlay={topOverlay?.GetType().FullName ?? "null"}");
-             return System.Text.Json.JsonSerializer.Serialize(new { type = "waiting", floor = runState.TotalFloor, reason = "currentRoom is null and map not open" }, JsonOptions);
         }
 
         if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen rs)
@@ -174,15 +194,6 @@ public partial class MainFile : Node
             }
 
             return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, cards = cards, buttons = buttons }, JsonOptions);
-        }
-        else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen gos)
-        {
-            return System.Text.Json.JsonSerializer.Serialize(new
-            {
-                type = "game_over",
-                floor = runState.TotalFloor,
-                victory = runState?.CurrentRoom?.IsVictoryRoom ?? false
-            }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen chooseScreen)
         {
@@ -321,7 +332,10 @@ public partial class MainFile : Node
         }
 
         // 2. Room Logic
-        if (currentRoom == null) return "{\"type\":\"none\"}";
+        if (currentRoom == null) {
+             Logger.Info("[AutoAI] currentRoom is null. Reporting game_over (transition or end).");
+             return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, victory = false, reason = "room_null" }, JsonOptions);
+        }
 
         if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom combatRoom)
         {

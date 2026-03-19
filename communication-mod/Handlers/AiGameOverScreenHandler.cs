@@ -20,6 +20,10 @@ public class AiGameOverScreenHandler : IScreenHandler
     {
         MainFile.Logger.Info("[AiGameOverScreenHandler] Game Over screen detected. Handling by code...");
         
+        // Notify AI of game over state so it can record episode and trigger restart if needed
+        // We use an empty callback because this handler provides its own robust button clicking logic.
+        await MainFile.Instance.StepAI(async (d) => { await Task.CompletedTask; });
+        
         NGameOverScreen? screen = NOverlayStack.Instance?.Peek() as NGameOverScreen;
         if (screen == null)
         {

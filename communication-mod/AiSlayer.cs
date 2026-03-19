@@ -145,10 +145,16 @@ public class AiSlayer
             }
         }, ct, TimeSpan.FromSeconds(30), "Room type not assigned or overlay not present");
  
-        RunState runState = RunManager.Instance.DebugOnlyGetState();
-        while (runState.TotalFloor < 60)
+        while (true)
         {
             ct.ThrowIfCancellationRequested();
+            RunState runState = RunManager.Instance?.DebugOnlyGetState();
+            if (runState == null || runState.TotalFloor >= 60)
+            {
+                MainFile.Logger.Info($"[AiSlayer] Loop break: runState is {(runState == null ? "null" : "not null")}, floor={runState?.TotalFloor ?? -1}");
+                break;
+            }
+
             RoomType roomType = runState.CurrentRoom?.RoomType ?? RoomType.Unassigned;
             _watchdog.Reset($"Entering {roomType} room (Floor {runState.TotalFloor})");
             

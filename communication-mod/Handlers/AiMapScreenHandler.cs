@@ -19,13 +19,13 @@ public class AiMapScreenHandler : IHandler
 
     public async Task HandleAsync(Rng random, CancellationToken ct)
     {
-        MainFile.Logger.Info("[AiSlayer] Waiting for map screen");
         Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
         MegaCrit.Sts2.Core.Nodes.NRun runNode = root.GetNode<MegaCrit.Sts2.Core.Nodes.NRun>(new NodePath("/root/Game/RootSceneContainer/Run"));
-        
-        await WaitHelper.Until(() => ((CanvasItem)runNode.GlobalUi.MapScreen).IsVisibleInTree(), ct, TimeSpan.FromSeconds(10), "Map screen not visible");
 
-        MainFile.Logger.Info("[AiSlayer] Handling map navigation via AI");
+        // Wait for map screen to be open (not necessarily visible in tree, as animations might delay visibility)
+        await WaitHelper.Until(() => runNode.GlobalUi.MapScreen.IsOpen, ct, TimeSpan.FromSeconds(10), "Map screen not open");
+
+        MainFile.Logger.Info("[AiSlayer] Map screen open, handling navigation via AI");
         
         var startTime = DateTime.UtcNow;
         var maxWaitTime = TimeSpan.FromSeconds(60);
