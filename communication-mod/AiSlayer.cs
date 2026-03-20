@@ -155,6 +155,8 @@ public class AiSlayer
                 break;
             }
 
+            int floorAtStart = runState.TotalFloor;
+
             RoomType roomType = runState.CurrentRoom?.RoomType ?? RoomType.Unassigned;
             _watchdog.Reset($"Entering {roomType} room (Floor {runState.TotalFloor})");
             
@@ -169,7 +171,18 @@ public class AiSlayer
             await DrainOverlayScreensAsync(ct);
             
             _watchdog.Reset("Navigating map");
-            await _mapHandler.HandleAsync(_random, ct);
+            
+            // Re-check floor to see if it already advanced (e.g. via premature AI step during transition)
+            int currentFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? floorAtStart;
+            
+            if (currentFloor <= floorAtStart)
+            {
+                await _mapHandler.HandleAsync(_random, ct);
+            }
+            else
+            {
+                MainFile.Logger.Info($"[AiSlayer] Skipping map navigation because floor already advanced from {floorAtStart} to {currentFloor}.");
+            }
             
             await Task.Delay(500, ct);
         }

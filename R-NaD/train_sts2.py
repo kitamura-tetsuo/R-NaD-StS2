@@ -9,8 +9,13 @@ import signal
 import mlflow
 import glob
 import re
+import shutil
 
 logging.basicConfig(level=logging.INFO)
+
+class BridgeConnectionError(Exception):
+    """Exception raised when the bridge server is unreachable."""
+    pass
 
 def cleanup_processes():
     logging.info("Cleaning up existing processes...")
@@ -20,7 +25,7 @@ def cleanup_processes():
     except Exception:
         pass
 
-def launch_game(checkpoint=None, seed=None, no_speedup=False):
+def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False):
     logging.info("Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
     cmd = ["./SlayTheSpire2", "--gym"]
@@ -48,6 +53,10 @@ def launch_game(checkpoint=None, seed=None, no_speedup=False):
         env["RNAD_SEED"] = seed
         logging.info(f"Setting RNAD_SEED environment variable to: {seed}")
 
+    if route:
+        env["RNAD_ROUTE"] = "true"
+        logging.info("Setting RNAD_ROUTE environment variable to: true")
+
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
@@ -72,7 +81,7 @@ def wait_for_server(url, timeout=60):
         except requests.exceptions.ConnectionError:
             time.sleep(1)
     logging.error("Server did not start in time.")
-    return False
+    raise BridgeConnectionError(f"Server at {url} did not start in time.")
 
 def get_latest_mlflow_run_id(experiment_name="R-NaD-StS2"):
     """Finds the latest run ID in the specified MLflow experiment, regardless of checkpoints."""
@@ -145,34 +154,86 @@ def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
         logging.warning(f"Failed to fetch checkpoint from MLflow: {e}")
         return None, None
 
+def save_last_n_lines(src_path, dst_path, n=100):
+    """Save the last n lines of a file to a new destination."""
+    try:
+        if not os.path.exists(src_path):
+            return False
+        with open(src_path, "r", errors="replace") as f:
+            lines = f.readlines()
+            last_lines = lines[-n:] if len(lines) > n else lines
+        with open(dst_path, "w") as f:
+            f.writelines(last_lines)
+        return True
+    except Exception as e:
+        logging.warning(f"Failed to save last {n} lines of {src_path}: {e}")
+        return False
+
 def take_screenshot(reason: str):
     """Take a screenshot via the bridge API and save it with a descriptive filename.
+    Also saves the last 100 lines of relevant logs.
 
     The screenshot is saved to ./tmp/ with a name that includes the timestamp
     and the supplied reason string so the cause of each restart is identifiable.
     """
     try:
-        resp = requests.get("http://127.0.0.1:8081/screenshot", timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            original_path = data.get("path", "")
-            if original_path and os.path.exists(original_path):
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                # Sanitize reason so it can safely be part of a filename
-                safe_reason = re.sub(r"[^\w]+", "_", reason).strip("_")
-                new_name = f"screenshot_{timestamp}_{safe_reason}.png"
-                new_path = os.path.join(os.path.dirname(original_path), new_name)
-                os.rename(original_path, new_path)
-                logging.info(f"Screenshot saved: {new_path}")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_reason = re.sub(r"[^\w]+", "_", reason).strip("_")
+        tmp_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tmp"))
+        if not os.path.exists(tmp_dir):
+            os.makedirs(tmp_dir, exist_ok=True)
+            
+        # Take screenshot
+        try:
+            resp = requests.get("http://127.0.0.1:8081/screenshot", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                original_path = data.get("path", "")
+                if original_path and os.path.exists(original_path):
+                    tmp_dir = os.path.dirname(original_path)
+                    new_name = f"{timestamp}_{safe_reason}_screenshot.png"
+                    new_path = os.path.join(tmp_dir, new_name)
+                    os.rename(original_path, new_path)
+                    logging.info(f"Screenshot saved: {new_path}")
+                else:
+                    logging.warning(f"Screenshot API returned unexpected path: {original_path}")
             else:
-                logging.warning(f"Screenshot API returned unexpected path: {original_path}")
-        else:
-            logging.warning(f"Screenshot API returned status {resp.status_code}")
-    except Exception as e:
-        logging.warning(f"Failed to take screenshot before restart: {e}")
+                logging.warning(f"Screenshot API returned status {resp.status_code}")
+        except Exception as e:
+            logging.warning(f"Failed to take screenshot: {e}")
 
-def wait_for_update_to_finish(status_url="http://127.0.0.1:8081/status"):
+        # Save logs
+        log_dir = os.path.join(os.path.dirname(__file__), "logs")
+        logs_to_save = [
+            "rnad_bridge.log",
+            "rnad_decisions.log",
+            "rnad_last_state.json",
+            "sts2_train_stdout.log",
+            "sts2_train_stderr.log"
+        ]
+        
+        for log_name in logs_to_save:
+            src = os.path.join(log_dir, log_name)
+            if not os.path.exists(src):
+                continue
+                
+            dst = os.path.join(tmp_dir, f"{timestamp}_{safe_reason}_{log_name}")
+            
+            if log_name.endswith(".json"):
+                # For JSON, just save the whole file as it's typically small
+                shutil.copy(src, dst)
+            else:
+                save_last_n_lines(src, dst, n=100)
+                
+            if os.path.exists(dst):
+                logging.info(f"Log saved: {dst}")
+
+    except Exception as e:
+        logging.warning(f"Failed to process debug info before restart: {e}")
+
+def wait_for_update_to_finish(status_url="http://127.0.0.1:8081/status", max_failures=None):
     """Blocks until is_updating is False and queue is not full in the bridge status."""
+    consecutive_failures = 0
     while True:
         try:
             resp = requests.get(status_url, timeout=5)
@@ -182,6 +243,7 @@ def wait_for_update_to_finish(status_url="http://127.0.0.1:8081/status"):
                 queue_size = data.get("queue_size", 0)
                 batch_size = data.get("batch_size", 0)
                 
+                consecutive_failures = 0 # success, reset counter
                 if not is_updating:
                     if batch_size == 0 or queue_size < batch_size:
                         break
@@ -190,14 +252,24 @@ def wait_for_update_to_finish(status_url="http://127.0.0.1:8081/status"):
                     logging.info("Bridge is performing an update. Waiting...")
             else:
                 logging.warning(f"Bridge status endpoint returned {resp.status_code}. Retrying...")
-        except Exception as e:
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            consecutive_failures += 1
             logging.warning(f"Failed to check bridge status ({e}). Retrying...")
+            if max_failures and consecutive_failures >= max_failures:
+                raise BridgeConnectionError(f"Bridge unreachable after {consecutive_failures} attempts.")
+        except Exception as e:
+            logging.error(f"Unexpected error while checking bridge status: {e}")
         
         time.sleep(2)
 
 def perform_restart(process, current_checkpoint, args):
     """Performs a full restart of the game and re-initializes training state."""
-    wait_for_update_to_finish()
+    # Try to wait for update to finish before restart, but don't hang if bridge is dead
+    try:
+        wait_for_update_to_finish(max_failures=3)
+    except BridgeConnectionError:
+        logging.warning("Bridge unreachable, skipping pre-restart update wait.")
+    
     logging.info("Performing HARD restart...")
     
     checkpoint = current_checkpoint
@@ -228,7 +300,10 @@ def perform_restart(process, current_checkpoint, args):
             logging.info(f"Saved trajectory of {saved} steps and {saved_q} queued trajectories before restart.")
             
             # If the flush triggered a potential update, wait for it before killing the process
-            wait_for_update_to_finish()
+            try:
+                wait_for_update_to_finish(max_failures=5)
+            except BridgeConnectionError:
+                logging.warning("Bridge went down while waiting for update after save_trajectory.")
     except Exception as e:
         logging.warning(f"Failed to save trajectory before restart: {e}")
     
@@ -246,7 +321,7 @@ def perform_restart(process, current_checkpoint, args):
     cleanup_processes()
     
     # 3. Relaunch the game
-    new_process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup)
+    new_process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route)
     
     # 4. Wait for server and re-initialize
     if not wait_for_server("http://127.0.0.1:8081/status", timeout=300):
@@ -293,6 +368,7 @@ def main():
     parser.add_argument("--seed", type=str, default=None, help="Fixed seed for new games")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint file (.pkl) to resume from")
     parser.add_argument("--no-speedup", action="store_true", help="Disable game acceleration (Instant mode, preload disabling)")
+    parser.add_argument("--route", action="store_true", help="Always choose the map room with the smallest index")
     args = parser.parse_args()
     
     
@@ -315,7 +391,7 @@ def main():
             else:
                 logging.info("No MLflow run found, starting fresh.")
 
-    process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup)
+    process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route)
 
     try:
         # Wait for game to initialize by checking status endpoint
@@ -331,7 +407,13 @@ def main():
         requests.get("http://127.0.0.1:8081/start")
 
         # Start first run
-        wait_for_update_to_finish()
+        try:
+            wait_for_update_to_finish(max_failures=10)
+        except BridgeConnectionError:
+            logging.warning("Bridge failed during initial update wait. Triggering restart...")
+            process, checkpoint = perform_restart(process, checkpoint, args)
+            # Re-enter the loop after restart
+            
         logging.info(f"Starting new game{' with seed ' + args.seed if args.seed else ''}...")
         new_game_url = "http://127.0.0.1:8081/new_game"
         if args.seed:
@@ -436,7 +518,16 @@ def main():
                         if content.strip() != "{}":
                             state = json.loads(content)
                             if state.get("type") == "game_over":
-                                wait_for_update_to_finish()
+                                try:
+                                    wait_for_update_to_finish(max_failures=10)
+                                except BridgeConnectionError:
+                                    logging.warning("Bridge failed during game_over update wait. Triggering restart...")
+                                    process, checkpoint = perform_restart(process, checkpoint, args)
+                                    os.remove(last_state_path)
+                                    last_traj_progress_time = time.time()
+                                    last_traj_size = -1
+                                    continue
+
                                 logging.info(f"Game over detected. Restarting game run{' with seed ' + args.seed if args.seed else ''} in 5s...")
                                 time.sleep(5)
                                 new_game_url = "http://127.0.0.1:8081/new_game"

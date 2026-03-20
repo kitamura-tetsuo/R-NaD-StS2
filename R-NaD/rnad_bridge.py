@@ -198,6 +198,10 @@ current_seed = os.environ.get("RNAD_SEED")
 if current_seed:
     log(f"Initialized current_seed from environment: {current_seed}")
 
+route_mode = os.environ.get("RNAD_ROUTE") == "true"
+if route_mode:
+    log("Initialized route_mode from environment: true")
+
 # Card Vocabulary Mapping
 CARD_VOCAB = {
     "UNKNOWN": 0,
@@ -993,6 +997,35 @@ def compute_reward(state, state_type=None):
             
     return reward
 
+def compute_intermediate_reward(state, state_type, action_idx):
+    """Compute intermediate reward during a run."""
+    intermediate_reward = 0.0
+    
+    # Floor progression reward
+    current_floor = state.get("floor", 0)
+    last_processed_floor = getattr(predict_action, 'last_processed_floor', -1)
+    
+    if current_floor > last_processed_floor and last_processed_floor != -1:
+        hp = state.get("player", {}).get("hp", state.get("hp", 0))
+        intermediate_reward += hp * 1e-7
+        log(f"Intermediate reward for floor {current_floor}: {intermediate_reward:.10f} (HP: {hp})")
+        setattr(predict_action, 'last_processed_floor', current_floor)
+    elif last_processed_floor == -1 and current_floor > 0:
+        # Initialize last_processed_floor at the start of the game
+        setattr(predict_action, 'last_processed_floor', current_floor)
+
+    # Combat end_turn reward: (player_hp * 1e-9) + (total_enemy_hp * -1e-10)
+    if state_type == "combat" and action_idx == 75: # 75 is end_turn
+        player_hp = state.get("player", {}).get("hp", 0)
+        enemies = state.get("enemies", [])
+        total_enemy_hp = sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0)
+        
+        combat_reward = (player_hp * 1e-9) + (total_enemy_hp * -1e-10)
+        intermediate_reward += combat_reward
+        log(f"Combat end_turn reward: {combat_reward:.12f} (Player HP: {player_hp}, Enemy HP: {total_enemy_hp})")
+        
+    return intermediate_reward
+
 def get_action_mask(state, masked_reward_indices=None):
     do_deferred_imports()
     assert np is not None
@@ -1067,8 +1100,13 @@ def get_action_mask(state, masked_reward_indices=None):
             
     elif state_type == "map":
         next_nodes = state.get("next_nodes", [])
-        for i in range(min(len(next_nodes), 10)):
-            mask[i] = True
+        if route_mode and next_nodes:
+            # Force the first available node
+            mask[0] = True
+            # log(f"Python-Bridge: route_mode enabled. Masking all but the first map node (index 0).")
+        else:
+            for i in range(min(len(next_nodes), 10)):
+                mask[i] = True
             
     elif state_type == "event":
         options = state.get("options", [])
@@ -1454,25 +1492,8 @@ def predict_action(state_json):
             if action_idx != 99 and state_type in VALID_TRAJECTORY_STATES:
                 base_reward = compute_reward(state, state_type)
                 
-                # Intermediate reward for floor progression
-                intermediate_reward = 0.0
-                current_floor = state.get("floor", 0)
-                last_processed_floor = getattr(predict_action, 'last_processed_floor', -1)
-                
-                if current_floor > last_processed_floor and last_processed_floor != -1:
-                    # Calculate HP * 0.0000001
-                    hp = 0
-                    if "player" in state:
-                        hp = state["player"].get("hp", 0)
-                    elif "hp" in state: # Some state types might have HP at top level
-                        hp = state.get("hp", 0)
-                    
-                    intermediate_reward = hp * 0.0000001
-                    log(f"Intermediate reward for floor {current_floor}: {intermediate_reward:.10f} (HP: {hp})")
-                    predict_action.last_processed_floor = current_floor
-                elif last_processed_floor == -1 and current_floor > 0:
-                    # Initialize last_processed_floor at the start of the game
-                    predict_action.last_processed_floor = current_floor
+                # Intermediate rewards (floor progression and combat end_turn)
+                intermediate_reward = compute_intermediate_reward(state, state_type, action_idx)
  
                 reward = base_reward + intermediate_reward
                 

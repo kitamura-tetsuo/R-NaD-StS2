@@ -22,10 +22,25 @@ public class AiMapScreenHandler : IHandler
         Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
         MegaCrit.Sts2.Core.Nodes.NRun runNode = root.GetNode<MegaCrit.Sts2.Core.Nodes.NRun>(new NodePath("/root/Game/RootSceneContainer/Run"));
 
-        // Wait for map screen to be open (not necessarily visible in tree, as animations might delay visibility)
-        await WaitHelper.Until(() => runNode.GlobalUi.MapScreen.IsOpen, ct, TimeSpan.FromSeconds(10), "Map screen not open");
+        int initialFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? -1;
 
-        MainFile.Logger.Info("[AiSlayer] Map screen open, handling navigation via AI");
+        // Wait for map screen to be open (not necessarily visible in tree, as animations might delay visibility)
+        // OR if the floor already advanced (handling race condition where map was handled prematurely)
+        await WaitHelper.Until(() => {
+            int currentFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? -1;
+            bool floorAdvanced = initialFloor != -1 && currentFloor > initialFloor;
+            return runNode.GlobalUi.MapScreen.IsOpen || floorAdvanced;
+        }, ct, TimeSpan.FromSeconds(10), "Map screen not open");
+
+        if (runNode.GlobalUi.MapScreen.IsOpen)
+        {
+            MainFile.Logger.Info("[AiSlayer] Map screen open, handling navigation via AI");
+        }
+        else
+        {
+            MainFile.Logger.Info("[AiSlayer] Map screen not open and/or floor already advanced. Skipping map navigation.");
+            return;
+        }
         
         var startTime = DateTime.UtcNow;
         var maxWaitTime = TimeSpan.FromSeconds(60);
