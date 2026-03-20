@@ -1176,15 +1176,16 @@ def compute_intermediate_reward(state, state_type, action_idx):
         # Initialize last_processed_floor at the start of the game
         setattr(predict_action, 'last_processed_floor', current_floor)
 
-    # Combat end_turn reward: (player_hp * 1e-9) + (total_enemy_hp * -1e-10)
+    # Combat end_turn reward: (player_hp * 1e-9) + (total_enemy_hp * -1e-10) + (energy * 1e-8)
     if state_type == "combat" and action_idx == 75: # 75 is end_turn
         player_hp = state.get("player", {}).get("hp", 0)
         enemies = state.get("enemies", [])
         total_enemy_hp = sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0)
+        energy = state.get("player", {}).get("energy", 0)
         
-        combat_reward = (player_hp * 1e-9) + (total_enemy_hp * -1e-10)
+        combat_reward = (player_hp * 1e-10) + (total_enemy_hp * -1e-9) + (energy * -1e-8)
         intermediate_reward += combat_reward
-        log(f"Combat end_turn reward: {combat_reward:.12f} (Player HP: {player_hp}, Enemy HP: {total_enemy_hp})")
+        log(f"Combat end_turn reward: {combat_reward:.12f} (Player HP: {player_hp}, Enemy HP: {total_enemy_hp}, Energy: {energy})")
         
     return intermediate_reward
 
