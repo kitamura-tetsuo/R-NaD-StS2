@@ -42,7 +42,7 @@ class LeagueConfig(NamedTuple):
 
 class RNaDConfig(NamedTuple):
     batch_size: int = 1
-    accumulation_steps: int = 32
+    accumulation_steps: int = 1
     learning_rate: float = 1e-4
     discount_factor: float = 0.99
     max_steps: int = 1000
@@ -210,8 +210,13 @@ class MapExpert(hk.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
     
-    def __call__(self, h_global, map_obs, is_training=False):
-        context_proj = hk.Linear(self.hidden_size, name="context_proj")(h_global)
+    def __call__(self, h_global, map_obs, bow_obs, is_training=False):
+        bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
+        bow_combined = jnp.concatenate(bow_vecs, axis=-1)
+        bow_proj = jax.nn.relu(hk.Linear(128, name="bow_proj")(bow_combined))
+        context = jnp.concatenate([h_global, bow_proj], axis=-1)
+        context_proj = hk.Linear(self.hidden_size, name="context_proj")(context)
+
         node_feats = map_obs.reshape(256, 8)
         nodes_proj = hk.Linear(self.hidden_size, name="nodes_proj")(node_feats)
         tokens = jnp.concatenate([context_proj[None, :], nodes_proj], axis=0)
@@ -228,8 +233,10 @@ class SimpleExpert(hk.Module):
         super().__init__(name=name)
         self.hidden_size = hidden_size
         
-    def __call__(self, h_global, expert_obs):
-        h = jnp.concatenate([h_global, expert_obs], axis=-1)
+    def __call__(self, h_global, expert_obs, bow_obs):
+        bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
+        bow_combined = jnp.concatenate(bow_vecs, axis=-1)
+        h = jnp.concatenate([h_global, expert_obs, bow_combined], axis=-1)
         return hk.nets.MLP([self.hidden_size * 2, self.hidden_size], name="mlp")(h)
 
 class TransformerNet(hk.Module):
@@ -261,10 +268,10 @@ class TransformerNet(hk.Module):
             }
             return jax.lax.switch(st_idx, [
                 lambda: combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
-                lambda: map_expert(h_g, s_dict["map"], is_training),
-                lambda: event_expert(h_g, s_dict["event"]),
-                lambda: grid_expert(h_g, s_dict["event"]),
-                lambda: hand_expert(h_g, s_dict["event"])
+                lambda: map_expert(h_g, s_dict["map"], bow_obs, is_training),
+                lambda: event_expert(h_g, s_dict["event"], bow_obs),
+                lambda: grid_expert(h_g, s_dict["event"], bow_obs),
+                lambda: hand_expert(h_g, s_dict["event"], bow_obs)
             ])
 
         if hk.running_init():
@@ -280,10 +287,10 @@ class TransformerNet(hk.Module):
             
             # Ensure every expert is called at least once during init
             _ = combat_expert(dummy_h_g, state_dict["combat"][0], dummy_bow_obs, is_training)
-            _ = map_expert(dummy_h_g, state_dict["map"][0], is_training)
-            _ = event_expert(dummy_h_g, state_dict["event"][0])
-            _ = grid_expert(dummy_h_g, state_dict["event"][0])
-            _ = hand_expert(dummy_h_g, state_dict["event"][0])
+            _ = map_expert(dummy_h_g, state_dict["map"][0], dummy_bow_obs, is_training)
+            _ = event_expert(dummy_h_g, state_dict["event"][0], dummy_bow_obs)
+            _ = grid_expert(dummy_h_g, state_dict["event"][0], dummy_bow_obs)
+            _ = hand_expert(dummy_h_g, state_dict["event"][0], dummy_bow_obs)
             
             # Policy and value heads also need to be called during init
             dummy_features = jnp.zeros((1, self.hidden_size))
