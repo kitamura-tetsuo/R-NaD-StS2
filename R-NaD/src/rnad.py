@@ -65,6 +65,7 @@ def v_trace(
     v_tp1: jnp.ndarray, # (T, B)
     r_t: jnp.ndarray,   # (T, B)
     rho_t: jnp.ndarray, # (T, B)
+    done_t: jnp.ndarray, # (T, B) - 1.0 if episode ends here, 0.0 otherwise
     gamma: float = 0.99,
     clip_rho_threshold: float = 1.0,
     clip_pg_rho_threshold: float = 1.0,
@@ -76,19 +77,21 @@ def v_trace(
 
     def scan_body(carry, x):
         acc = carry
-        rho_bar, c_bar, r, v_curr, v_next = x
-        delta = rho_bar * (r + gamma * v_next - v_curr)
-        acc = delta + gamma * c_bar * acc
+        rho_bar, c_bar, r, v_curr, v_next, done = x
+        discount = 1.0 - done
+        delta = rho_bar * (r + gamma * discount * v_next - v_curr)
+        acc = delta + gamma * discount * c_bar * acc
         return acc, acc + v_curr
 
-    xs = (rho_bar_t, c_bar_t, r_t, v_tm1, v_tp1)
+    xs = (rho_bar_t, c_bar_t, r_t, v_tm1, v_tp1, done_t)
     xs_rev = jax.tree_util.tree_map(lambda x: x[::-1], xs)
     init_acc = jnp.zeros_like(v_tm1[0])
     _, vs_rev = jax.lax.scan(scan_body, init_acc, xs_rev)
     vs = vs_rev[::-1]
 
     rho_pg = jnp.minimum(rho_t, clip_pg_rho_threshold)
-    pg_advantages = rho_pg * (r_t + gamma * v_tp1 - v_tm1)
+    discount_t = 1.0 - done_t
+    pg_advantages = rho_pg * (r_t + gamma * discount_t * v_tp1 - v_tm1)
     return vs, pg_advantages
 
 def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rnad: float):
@@ -102,6 +105,7 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     any_val = jax.tree_util.tree_leaves(obs)[0]
     T, B = any_val.shape[:2]
     valid_mask = batch.get('valid', jnp.ones((T, B))) # (T, B)
+    done_mask = batch.get('done', jnp.zeros((T, B))) # (T, B)
     
     # Flatten T and B for forward pass using PyTree map
     obs_flat = jax.tree_util.tree_map(lambda x: x.reshape(T * B, *x.shape[2:]), obs)
@@ -128,7 +132,7 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     rho = jnp.exp(log_rho)
     
     v_next = jnp.concatenate([values[1:], jnp.zeros((1, B))], axis=0)
-    vs, pg_adv = v_trace(values, v_next, r_reg, rho, gamma=config.discount_factor)
+    vs, pg_adv = v_trace(values, v_next, r_reg, rho, done_t=done_mask, gamma=config.discount_factor)
     
     # Mask losses by validity
     value_loss = 0.5 * jnp.sum((jax.lax.stop_gradient(vs) - values) ** 2 * valid_mask) / jnp.maximum(jnp.sum(valid_mask), 1.0)

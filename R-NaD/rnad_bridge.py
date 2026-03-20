@@ -602,7 +602,8 @@ class TrainingWorker(threading.Thread):
                                 "act": action_idx,
                                 "rew": reward,
                                 "mask": np.array(step["mask"], dtype=np.float32),
-                                "log_prob": step["log_prob"]
+                                "log_prob": step["log_prob"],
+                                "done": 1.0 if step.get("terminal") else 0.0
                             })
                             
                             if len(traj_segment) >= self.config.unroll_length:
@@ -681,6 +682,7 @@ class TrainingWorker(threading.Thread):
             padded_rew = []
             padded_mask = []
             padded_log_prob = []
+            padded_done = []
             valid_mask = []
 
             for traj in batch:
@@ -719,6 +721,11 @@ class TrainingWorker(threading.Thread):
                 lp_traj += [0.0] * (max_len - l)
                 padded_log_prob.append(lp_traj)
 
+                # Pad done
+                done_traj = [t.get('done', 0.0) for t in traj]
+                done_traj += [0.0] * (max_len - l)
+                padded_done.append(done_traj)
+
                 # Valid mask
                 v_mask = [1.0] * l + [0.0] * (max_len - l)
                 valid_mask.append(v_mask)
@@ -736,6 +743,7 @@ class TrainingWorker(threading.Thread):
             rew = np.array(padded_rew)
             mask = np.array(padded_mask)
             log_prob = np.array(padded_log_prob)
+            done = np.array(padded_done)
             valid = np.array(valid_mask)
 
             batch = {
@@ -744,6 +752,7 @@ class TrainingWorker(threading.Thread):
                 'rew': jnp.array(rew.transpose(1, 0)),
                 'mask': jnp.array(mask.transpose(1, 0, 2)),
                 'log_prob': jnp.array(log_prob.transpose(1, 0)),
+                'done': jnp.array(done.transpose(1, 0)),
                 'valid': jnp.array(valid.transpose(1, 0))
             }
 
@@ -1403,6 +1412,11 @@ def predict_action(state_json):
                 
                 # Flush trajectory if it exists
                 if current_trajectory:
+                    # Attribution of terminal reward and done flag
+                    log(f"Attributing terminal reward {terminal_reward:.2f} to the last step of the episode.")
+                    current_trajectory[-1]["rew"] += terminal_reward
+                    current_trajectory[-1]["done"] = 1.0
+                    
                     log(f"Flushing terminal trajectory of length {len(current_trajectory)}")
                     experience_queue.put(list(current_trajectory))
                     current_trajectory = []
@@ -1672,7 +1686,8 @@ def predict_action(state_json):
                         "act": int(action_idx),
                         "rew": float(reward),
                         "mask": mask.astype(np.float32),
-                        "log_prob": float(log_prob)
+                        "log_prob": float(log_prob),
+                        "done": 0.0
                     })
                 
                 # NEW: Raw trajectory logging for offline learning
