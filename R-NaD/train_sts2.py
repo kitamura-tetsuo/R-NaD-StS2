@@ -408,6 +408,21 @@ def main():
 
         # Start first run
         try:
+            # Check for offline training at step 0
+            resp = requests.get("http://127.0.0.1:8081/status", timeout=5)
+            if resp.status_code == 200:
+                status_data = resp.json()
+                step_count = status_data.get("step_count", 0)
+                if step_count == 0:
+                    traj_dir = "/home/ubuntu/src/R-NaD-StS2/R-NaD/trajectories"
+                    if os.path.exists(traj_dir) and any(f.endswith(".json") for f in os.listdir(traj_dir) if f.startswith("traj_")):
+                        logging.info("Step 0 detected and trajectories found. Triggering offline training...")
+                        requests.get("http://127.0.0.1:8081/offline_train", timeout=5)
+                        # Wait for offline training to actually start and finish
+                        time.sleep(2)
+                        wait_for_update_to_finish(max_failures=300) # Long timeout for offline training
+                        logging.info("Offline training complete.")
+            
             wait_for_update_to_finish(max_failures=10)
         except BridgeConnectionError:
             logging.warning("Bridge failed during initial update wait. Triggering restart...")

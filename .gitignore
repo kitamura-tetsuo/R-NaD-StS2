@@ -17,5 +17,8 @@ mlruns/
 
 .aider*
 
+R-NaD/trajectories/
+
+
 StS2_Decompiled/
 R-NaD/logs/

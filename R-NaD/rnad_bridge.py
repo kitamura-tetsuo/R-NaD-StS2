@@ -131,6 +131,8 @@ try:
 except ImportError:
     HAS_PIL = False
 
+import datetime
+
 # Configure JAX to not preallocate all memory and force CPU if needed
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 # os.environ["JAX_PLATFORMS"] = "cpu"
@@ -410,6 +412,77 @@ VALID_TRAJECTORY_STATES = {
     "treasure", "treasure_relics", "card_reward"
 }
 
+# Raw Trajectory Logging
+TRAJECTORY_DIR = "/home/ubuntu/src/R-NaD-StS2/R-NaD/trajectories"
+if not os.path.exists(TRAJECTORY_DIR):
+    os.makedirs(TRAJECTORY_DIR, exist_ok=True)
+
+class RawTrajectoryLogger:
+    def __init__(self, trajectory_dir):
+        self.trajectory_dir = trajectory_dir
+        self.current_episode = []
+        self.lock = threading.Lock()
+
+    def log_step(self, state_json, action_idx, probs, mask, reward, terminal=False):
+        with self.lock:
+            self.current_episode.append({
+                "state_json": state_json,
+                "action_idx": int(action_idx),
+                "probs": probs.tolist() if hasattr(probs, "tolist") else list(probs),
+                "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
+                "reward": float(reward),
+                "terminal": terminal
+            })
+            if terminal:
+                self.flush()
+
+    def flush(self):
+        if not self.current_episode:
+            return
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"traj_{timestamp}.json"
+        filepath = os.path.join(self.trajectory_dir, filename)
+        
+        # Build semantic map for this episode
+        semantic_map = get_semantic_map()
+        
+        try:
+            with open(filepath, "w") as f:
+                json.dump({
+                    "semantic_map": semantic_map,
+                    "steps": self.current_episode
+                }, f)
+            log(f"RawTrajectoryLogger: Saved episode with {len(self.current_episode)} steps to {filepath}")
+        except Exception as e:
+            log(f"RawTrajectoryLogger: Error saving trajectory: {e}")
+        
+        self.current_episode = []
+
+raw_logger = RawTrajectoryLogger(TRAJECTORY_DIR)
+
+def get_semantic_map():
+    return {
+        "CARD_VOCAB": CARD_VOCAB,
+        "RELIC_VOCAB": RELIC_VOCAB,
+        "POWER_VOCAB": POWER_VOCAB,
+        "BOSS_VOCAB": BOSS_VOCAB,
+        "ACTION_SPACE": {
+            "0-49": "Cards (up to 10 cards * 5 targets)",
+            "50-74": "Potions (up to 5 potions * 5 targets)",
+            "75": "End Turn",
+            "76-85": "Select Reward",
+            "86": "Proceed",
+            "87": "Return to Main Menu",
+            "88-89": "Room Selection",
+            "90": "Confirm Selection / Skip (Grid)",
+            "91": "Open Chest",
+            "92-93": "Shop Interaction",
+            "94-98": "Discard Potion",
+            "99": "Wait"
+        }
+    }
+
 # Trajectory and Training Worker
 experience_queue = queue.Queue()
 current_trajectory = []
@@ -488,6 +561,95 @@ class TrainingWorker(threading.Thread):
             self.episode_last_floors.append(floor)
             self.episode_last_rewards.append(reward)
             print(f"[Python] Recorded episode end at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_last_floors)}")
+
+    def perform_offline_training(self):
+        with self.lock:
+            if self.is_updating:
+                log("[Python] Already updating, skipping offline training request.")
+                return
+            self.is_updating = True
+        
+        log(f"[Python] Starting offline training from trajectories in {TRAJECTORY_DIR}...")
+        
+        try:
+            import glob
+            files = sorted(glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json")))
+            if not files:
+                log("[Python] No trajectories found for offline training.")
+                return
+
+            trajectories = []
+            for filepath in files:
+                try:
+                    with open(filepath, "r") as f:
+                        data = json.load(f)
+                        steps = data.get("steps", [])
+                        traj_segment = []
+                        for step in steps:
+                            state_json = step["state_json"]
+                            state = json.loads(state_json)
+                            state_dict = encode_state(state)
+                            
+                            # Recalculate reward
+                            state_type = state.get("type", "unknown")
+                            action_idx = step["action_idx"]
+                            base_reward = compute_reward(state, state_type)
+                            intermediate_reward = compute_intermediate_reward(state, state_type, action_idx)
+                            reward = base_reward + intermediate_reward
+                            
+                            traj_segment.append({
+                                "obs": state_dict,
+                                "act": action_idx,
+                                "rew": reward,
+                                "mask": np.array(step["mask"], dtype=np.float32),
+                                "log_prob": step["log_prob"]
+                            })
+                            
+                            if len(traj_segment) >= self.config.unroll_length:
+                                trajectories.append(traj_segment)
+                                traj_segment = []
+                        
+                        if traj_segment:
+                            trajectories.append(traj_segment)
+                except Exception as e:
+                    log(f"[Python] Error processing {filepath}: {e}")
+
+            if not trajectories:
+                log("[Python] No valid trajectory segments found for offline training.")
+                return
+
+            log(f"[Python] Found {len(trajectories)} trajectory segments. Performing updates...")
+            
+            batch_size = self.config.batch_size
+            for i in range(0, len(trajectories), batch_size):
+                batch = trajectories[i : i + batch_size]
+                if len(batch) < batch_size:
+                    continue 
+
+                # perform_update handles its own self.lock for updating
+                # but we are already holding self.lock's logic via is_updating = True
+                # Actually perform_update has 'with self.lock: self.is_updating = True' at the start
+                # So we should call it carefully.
+                
+                # We'll temporarily release our internal 'is_updating' flag so perform_update can set it.
+                # Or we can just call the logic directly if we want to avoid double locking or redundancy.
+                # However, perform_update is designed to be called with a batch.
+                
+                with self.lock:
+                    self.is_updating = False # Temporarily release to allow perform_update to set it
+                
+                self.perform_update(batch)
+                
+                with self.lock:
+                    self.is_updating = True
+                    
+                log(f"[Python] Offline update {i // batch_size + 1}/{(len(trajectories) // batch_size)} done.")
+
+            log("[Python] Offline training complete.")
+
+        finally:
+            with self.lock:
+                self.is_updating = False
 
     def perform_update(self, batch):
         with self.lock:
@@ -1007,7 +1169,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
     
     if current_floor > last_processed_floor and last_processed_floor != -1:
         hp = state.get("player", {}).get("hp", state.get("hp", 0))
-        intermediate_reward += hp * 1e-7
+        intermediate_reward += hp * 1e-5
         log(f"Intermediate reward for floor {current_floor}: {intermediate_reward:.10f} (HP: {hp})")
         setattr(predict_action, 'last_processed_floor', current_floor)
     elif last_processed_floor == -1 and current_floor > 0:
@@ -1489,7 +1651,7 @@ def predict_action(state_json):
         # Trajectory collection
         if learning_active:
             # ▼修正: 有効な状態のみ記録し、waitアクション(99)は除外する
-            if action_idx != 99 and state_type in VALID_TRAJECTORY_STATES:
+            if action_idx != 99 and (state_type in VALID_TRAJECTORY_STATES or state_type == "game_over"):
                 base_reward = compute_reward(state, state_type)
                 
                 # Intermediate rewards (floor progression and combat end_turn)
@@ -1502,14 +1664,20 @@ def predict_action(state_json):
                     predict_action.session_cumulative_reward = 0.0
                 predict_action.session_cumulative_reward += reward
  
-                current_trajectory.append({
-                    "obs": state_dict,
-                    "act": int(action_idx),
-                    "rew": float(reward),
-                    "mask": mask.astype(np.float32),
-                    "log_prob": float(log_prob)
-                })
+                # Existing experience collection for TrainingWorker
+                if state_type in VALID_TRAJECTORY_STATES:
+                    current_trajectory.append({
+                        "obs": state_dict,
+                        "act": int(action_idx),
+                        "rew": float(reward),
+                        "mask": mask.astype(np.float32),
+                        "log_prob": float(log_prob)
+                    })
                 
+                # NEW: Raw trajectory logging for offline learning
+                terminal = (state_type == "game_over")
+                raw_logger.log_step(state_json, action_idx, probs, mask, reward, terminal=terminal)
+
                 if len(current_trajectory) >= config.unroll_length:
                     experience_queue.put(list(current_trajectory))
                     current_trajectory = []
@@ -1544,6 +1712,7 @@ class CommandHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         global learning_active, command_queue, current_seed, current_trajectory, experience_queue
         parsed_path = urlparse(self.path)
+        log(f"[HTTP] GET {parsed_path.path}")
         
         if parsed_path.path == "/status":
             self.send_response(200)
@@ -1590,7 +1759,30 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "flushed"}).encode())
+            self.wfile.write(json.dumps({
+                "status": "flushed"
+            }).encode())
+
+        elif parsed_path.path == "/offline_train":
+            if training_worker:
+                def run_offline():
+                    try:
+                        training_worker.perform_offline_training()
+                    except Exception as e:
+                        log(f"Error in offline training thread: {e}")
+                        traceback.print_exc()
+
+                threading.Thread(target=run_offline, daemon=True).start()
+                
+                self.send_response(200)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "offline_training_started"}).encode())
+            else:
+                self.send_response(500)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "message": "TrainingWorker not initialized"}).encode())
 
         elif parsed_path.path == "/save_trajectory":
             # Save current_trajectory, experience_queue, and batch_buffer to disk
