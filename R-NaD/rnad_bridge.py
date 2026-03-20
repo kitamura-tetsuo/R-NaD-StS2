@@ -1156,15 +1156,13 @@ def compute_reward(state, state_type=None):
     if state_type != "game_over":
         return 0.0
     
-    # Final reward: floor progression (normalized) + victory/defeat bonus
-    floor = state.get("floor", 0)
+    # Final reward: Victory or Defeat
     victory = state.get("victory", False)
     
-    reward = floor / 50.0
     if victory:
-        reward += 1.0
+        reward = 5.0
     else:
-        reward -= 1.0
+        reward = -1.0
             
     return reward
 
@@ -1172,29 +1170,47 @@ def compute_intermediate_reward(state, state_type, action_idx):
     """Compute intermediate reward during a run."""
     intermediate_reward = 0.0
     
-    # Floor progression reward
+    # Current state values
     current_floor = state.get("floor", 0)
+    player_data = state.get("player", {}) or {}
+    current_hp = player_data.get("hp", state.get("hp", 0))
+    enemies = state.get("enemies", []) or []
+    current_enemy_hp = sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0)
+
+    # Floor progression reward
     last_processed_floor = getattr(predict_action, 'last_processed_floor', -1)
     
-    if current_floor > last_processed_floor and last_processed_floor != -1:
-        hp = state.get("player", {}).get("hp", state.get("hp", 0))
-        intermediate_reward += hp * 1e-5
-        log(f"Intermediate reward for floor {current_floor}: {intermediate_reward:.10f} (HP: {hp})")
-        setattr(predict_action, 'last_processed_floor', current_floor)
-    elif last_processed_floor == -1 and current_floor > 0:
-        # Initialize last_processed_floor at the start of the game
-        setattr(predict_action, 'last_processed_floor', current_floor)
-
-    # Combat end_turn reward: (player_hp * 1e-9) + (total_enemy_hp * -1e-10) + (energy * 1e-8)
-    if state_type == "combat" and action_idx == 75: # 75 is end_turn
-        player_hp = state.get("player", {}).get("hp", 0)
-        enemies = state.get("enemies", [])
-        total_enemy_hp = sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0)
-        energy = state.get("player", {}).get("energy", 0)
+    if current_floor > last_processed_floor:
+        # Give reward only when moving forward (not initial 0)
+        if last_processed_floor != -1:
+            intermediate_reward += 0.1
+            log(f"Intermediate reward for floor {current_floor}: +0.1")
         
-        combat_reward = (player_hp * 1e-10) + (total_enemy_hp * -1e-9) + (energy * -1e-8)
-        intermediate_reward += combat_reward
-        log(f"Combat end_turn reward: {combat_reward:.12f} (Player HP: {player_hp}, Enemy HP: {total_enemy_hp}, Energy: {energy})")
+        # Reset relative trackers when floor changes
+        setattr(predict_action, 'last_processed_floor', current_floor)
+        setattr(predict_action, 'last_player_hp', current_hp)
+        setattr(predict_action, 'last_total_enemy_hp', current_enemy_hp)
+        return intermediate_reward # Return early for floor change to avoid double counting deltas
+
+    # Combat delta reward (Dense Reward)
+    if state_type == "combat":
+        last_hp = getattr(predict_action, 'last_player_hp', current_hp)
+        last_enemy_hp = getattr(predict_action, 'last_total_enemy_hp', current_enemy_hp)
+        
+        # Calculate deltas (positive means damage dealt/taken accordingly)
+        damage_dealt = last_enemy_hp - current_enemy_hp
+        damage_taken = last_hp - current_hp
+        
+        # Reward for damage dealt (0.002) and penalty for damage taken (-0.005)
+        combat_reward = (damage_dealt * 0.002) - (damage_taken * 0.005)
+        
+        if abs(combat_reward) > 1e-6:
+            intermediate_reward += combat_reward
+            # log(f"Combat delta reward: {combat_reward:.4f} (Dealt: {damage_dealt}, Taken: {damage_taken})")
+        
+        # Update trackers for next step
+        setattr(predict_action, 'last_player_hp', current_hp)
+        setattr(predict_action, 'last_total_enemy_hp', current_enemy_hp)
         
     return intermediate_reward
 
@@ -1425,6 +1441,8 @@ def predict_action(state_json):
                 predict_action.session_cumulative_reward = 0.0
             predict_action.skipped_reward_indices = set()
             predict_action.last_processed_floor = -1
+            predict_action.last_player_hp = 0
+            predict_action.last_total_enemy_hp = 0
         elif state_type in ["combat", "map", "event", "rest_site", "shop", "treasure"]:
             predict_action.episode_end_recorded = False
             # Ensure cumulative reward is initialized
@@ -1443,6 +1461,8 @@ def predict_action(state_json):
             predict_action.episode_end_recorded = False
             predict_action.skipped_reward_indices = set()
             predict_action.last_processed_floor = -1
+            predict_action.last_player_hp = 0
+            predict_action.last_total_enemy_hp = 0
         if not state_json:
             return json.dumps({"action": "wait"})
             
