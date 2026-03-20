@@ -262,12 +262,13 @@ public class AiSlayer
     {
         while (true)
         {
-            ct.ThrowIfCancellationRequested();
+            if (ct.IsCancellationRequested) break;
+            
             var instance = NOverlayStack.Instance;
-            if (instance == null || instance.ScreenCount <= 0) break;
+            if (instance == null || !GodotObject.IsInstanceValid(instance) || instance.ScreenCount <= 0) break;
 
             var currentOverlay = instance.Peek();
-            if (currentOverlay == null) break;
+            if (currentOverlay == null || !GodotObject.IsInstanceValid(currentOverlay as GodotObject)) break;
 
             Type type = currentOverlay.GetType();
             _watchdog.Reset($"Handling screen: {type.Name}");
@@ -282,11 +283,12 @@ public class AiSlayer
             
             await Task.Delay(200, ct);
             
+            // Re-check validity after await
+            if (instance == null || !GodotObject.IsInstanceValid(instance)) break;
+
             // If screen is still there after handling, we might be stuck or it expects more input
             if (instance.Peek() == currentOverlay)
             {
-                // Simple safety break if it doesn't close
-                // In AutoSlayer they have a retry count.
                 MainFile.Logger.Info($"[AiSlayer] Screen {type.Name} still open after handle.");
                 break; 
             }

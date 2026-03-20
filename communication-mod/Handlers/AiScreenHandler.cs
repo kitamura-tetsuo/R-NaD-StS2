@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Godot;
 using MegaCrit.Sts2.Core.AutoSlay.Handlers;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Random;
@@ -20,7 +21,10 @@ public class AiScreenHandler : IScreenHandler
         {
 
             var stack = NOverlayStack.Instance;
-            if (stack == null || stack.ScreenCount == 0 || stack.Peek().GetType() != ScreenType) break;
+            if (stack == null || !GodotObject.IsInstanceValid(stack) || stack.ScreenCount == 0) break;
+            
+            var peek = stack.Peek();
+            if (peek == null || !GodotObject.IsInstanceValid(peek as GodotObject) || peek.GetType() != ScreenType) break;
 
             await MainFile.Instance.StepAI(MainFile.Instance.ExecuteUniversalAction);
             await Task.Delay(500, ct);

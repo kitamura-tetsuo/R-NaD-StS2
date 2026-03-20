@@ -40,6 +40,7 @@ public partial class MainFile : Node
     private bool _isSteppingAI = false;
     private bool _gymMode = false;
     private bool _noSpeedup = false;
+    private bool _isStartingRun = false;
 
 
     private void ScheduleAI()
@@ -230,6 +231,7 @@ public partial class MainFile : Node
         Instance._gymMode = gym;
         Instance._noSpeedup = noSpeedup;
         Instance._defaultSeed = defaultSeed;
+        Logger.Info($"[AutoAI] Initialized with defaultSeed: '{defaultSeed}'");
         Instance._aiSlayer = new AiSlayer();
         Instance?.CallDeferred(nameof(SafeSetup));
     }
@@ -412,38 +414,53 @@ public partial class MainFile : Node
         var ngame = NGame.Instance;
         if (ngame != null)
         {
-            _pendingSeed = string.IsNullOrEmpty(seed) ? _defaultSeed : seed;
-            CallDeferred(nameof(StartSts2RunDeferred));
+            string seedToUse = string.IsNullOrEmpty(seed) ? _defaultSeed : seed;
+            CallDeferred(nameof(StartSts2RunDeferred), seedToUse);
         }
     }
 
-    private string _pendingSeed = "";
-
-    private async void StartSts2RunDeferred()
+    private async void StartSts2RunDeferred(string seedToUse)
     {
         try
         {
-            string seedToUse = _pendingSeed;
-            _pendingSeed = "";
+            if (_isStartingRun)
+            {
+                Logger.Info("[AutoAI] StartSts2RunDeferred: Already starting a run, skipping duplicate request.");
+                return;
+            }
+
             var ngame = NGame.Instance;
             if (ngame == null) return;
 
+            var rm = RunManager.Instance;
+            if (rm != null && rm.IsInProgress)
+            {
+                Logger.Info("[AutoAI] Cleaning up existing run before starting new one...");
+                rm.CleanUp(false);
+                await Task.Delay(100);
+            }
+
+            _isStartingRun = true;
+            
             var ironclad = ModelDb.Character<Ironclad>();
             var acts     = ActModel.GetDefaultList();
             var modifiers = new List<ModifierModel>();
 
-            Logger.Info("[AutoAI] Starting new game...");
+            Logger.Info($"[AutoAI] Starting new game with seed: '{seedToUse}'...");
             await ngame.StartNewSingleplayerRun(ironclad, true, acts, modifiers, seedToUse, 0, null);
             await Task.Delay(500);
 
-            var rm    = RunManager.Instance;
-            var state = rm.DebugOnlyGetState();
+            var state = rm?.DebugOnlyGetState();
             if (state?.CurrentRoom is MapRoom) await rm.EnterMapCoord(state.Map.StartingMapPoint.coord);
             else ScheduleAI();
         }
         catch (Exception ex)
         {
             Logger.Error($"[AutoAI] StartSts2RunDeferred error: {ex.Message}");
+        }
+        finally
+        {
+            _isStartingRun = false;
         }
     }
 
