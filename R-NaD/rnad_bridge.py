@@ -175,6 +175,24 @@ def do_deferred_imports():
 # Global state
 log(f"--- RNAD_BRIDGE MODULE IMPORTED --- PID: {os.getpid()}")
 learning_active = False
+
+# Trajectory and Training Worker globals (need to be defined before preservation logic)
+experience_queue = queue.Queue()
+current_trajectory = []
+training_worker = None
+deferred_chunk = None
+
+# predict_action state globals (formerly function attributes)
+history = []
+episode_end_recorded = False
+session_cumulative_reward = 0.0
+skipped_reward_indices = set()
+last_reward_floor = -1
+last_processed_floor = -1
+last_player_hp = 0
+last_total_enemy_hp = 0
+last_selected_reward_idx = None
+
 # Preserve globals across re-imports if already in sys.modules
 if 'rnad_bridge' in sys.modules:
     old_mod = sys.modules['rnad_bridge']
@@ -184,7 +202,25 @@ if 'rnad_bridge' in sys.modules:
     learner = None # Force re-init with new code
     config = getattr(old_mod, 'config', None)
     np = getattr(old_mod, 'np', None)
-    log(f"Preserved state from existing rnad_bridge module. Queue size: {command_queue.qsize() if hasattr(command_queue, 'qsize') else 'unknown'}")
+    
+    # NEW: Preserve training-related state
+    experience_queue = getattr(old_mod, 'experience_queue', experience_queue)
+    current_trajectory = getattr(old_mod, 'current_trajectory', current_trajectory)
+    training_worker = getattr(old_mod, 'training_worker', None)
+    deferred_chunk = getattr(old_mod, 'deferred_chunk', None)
+    
+    # NEW: Preserve predict_action state
+    history = getattr(old_mod, 'history', history)
+    episode_end_recorded = getattr(old_mod, 'episode_end_recorded', episode_end_recorded)
+    session_cumulative_reward = getattr(old_mod, 'session_cumulative_reward', session_cumulative_reward)
+    skipped_reward_indices = getattr(old_mod, 'skipped_reward_indices', skipped_reward_indices)
+    last_reward_floor = getattr(old_mod, 'last_reward_floor', last_reward_floor)
+    last_processed_floor = getattr(old_mod, 'last_processed_floor', last_processed_floor)
+    last_player_hp = getattr(old_mod, 'last_player_hp', last_player_hp)
+    last_total_enemy_hp = getattr(old_mod, 'last_total_enemy_hp', last_total_enemy_hp)
+    last_selected_reward_idx = getattr(old_mod, 'last_selected_reward_idx', last_selected_reward_idx)
+
+    log(f"Preserved state from existing rnad_bridge module. Queue size: {experience_queue.qsize() if hasattr(experience_queue, 'qsize') else 'unknown'}")
 else:
     log("rnad_bridge module fresh load.")
     command_queue = queue.Queue()
@@ -585,7 +621,7 @@ class TrainingWorker(threading.Thread):
                         data = json.load(f)
                         steps = data.get("steps", [])
                         traj_segment = []
-                        for step in steps:
+                        for idx, step in enumerate(steps):
                             state_json = step["state_json"]
                             state = json.loads(state_json)
                             state_dict = encode_state(state)
@@ -597,21 +633,32 @@ class TrainingWorker(threading.Thread):
                             intermediate_reward = compute_intermediate_reward(state, state_type, action_idx)
                             reward = base_reward + intermediate_reward
                             
-                            traj_segment.append({
+                            traj_step = {
                                 "obs": state_dict,
                                 "act": action_idx,
                                 "rew": reward,
                                 "mask": np.array(step["mask"], dtype=np.float32),
                                 "log_prob": step["log_prob"],
                                 "done": 1.0 if step.get("terminal") else 0.0
-                            })
+                            }
+                            traj_segment.append(traj_step)
                             
                             if len(traj_segment) >= self.config.unroll_length:
-                                trajectories.append(traj_segment)
+                                # Look ahead for bootstrapping step
+                                next_step = None
+                                if idx + 1 < len(steps):
+                                    next_s_raw = steps[idx + 1]
+                                    next_s_json = next_s_raw["state_json"]
+                                    next_s_dict = encode_state(json.loads(next_s_json))
+                                    next_step = {
+                                        "obs": next_s_dict,
+                                        "mask": np.array(next_s_raw["mask"], dtype=np.float32)
+                                    }
+                                trajectories.append({"steps": list(traj_segment), "next_step": next_step})
                                 traj_segment = []
                         
                         if traj_segment:
-                            trajectories.append(traj_segment)
+                            trajectories.append({"steps": list(traj_segment), "next_step": None})
                 except Exception as e:
                     log(f"[Python] Error processing {filepath}: {e}")
 
@@ -683,13 +730,30 @@ class TrainingWorker(threading.Thread):
             padded_mask = []
             padded_log_prob = []
             padded_done = []
+            padded_next_obs_dict = {
+                "global": [], "combat": [], "draw_bow": [], "discard_bow": [],
+                "exhaust_bow": [], "master_bow": [], "map": [], "event": [], "state_type": []
+            }
+            padded_next_mask = []
             valid_mask = []
 
-            for traj in batch:
-                l = len(traj)
+            for traj_item in batch:
+                # traj_item can be a list of steps (old) or dict with 'steps' and 'next_step' (new)
+                if isinstance(traj_item, dict) and "steps" in traj_item:
+                    traj = traj_item["steps"]
+                    next_step = traj_item.get("next_step")
+                elif isinstance(traj_item, list):
+                    traj = traj_item
+                    next_step = None
+                else:
+                    log(f"[Python] Warning: Unknown trajectory format: {type(traj_item)}")
+                    continue
                 
-                # obs_traj is a list of dicts
-                obs_traj = [t['obs'] for t in (traj if isinstance(traj, list) else [])]
+                l = len(traj)
+                if l == 0: continue
+                
+                # Extract observations
+                obs_traj = [t['obs'] for t in traj]
                 
                 # Pad each element in the dict
                 for key in padded_obs_dict.keys():
@@ -730,6 +794,21 @@ class TrainingWorker(threading.Thread):
                 v_mask = [1.0] * l + [0.0] * (max_len - l)
                 valid_mask.append(v_mask)
 
+                # Next step for bootstrapping
+                if next_step:
+                    no = next_step['obs']
+                    for key in padded_next_obs_dict.keys():
+                        padded_next_obs_dict[key].append(no[key])
+                    padded_next_mask.append(next_step['mask'])
+                else:
+                    # Episode end or no next step available
+                    for key in padded_next_obs_dict.keys():
+                        if key == "state_type":
+                            padded_next_obs_dict[key].append(np.int32(2))
+                        else:
+                            padded_next_obs_dict[key].append(np.zeros_like(padded_obs_dict[key][0][0]))
+                    padded_next_mask.append(np.zeros_like(padded_mask[0][0]))
+
             print("[Python] TrainingWorker: Padding done.")
 
             # Build JAX-ready obs dictionary
@@ -745,6 +824,12 @@ class TrainingWorker(threading.Thread):
             log_prob = np.array(padded_log_prob)
             done = np.array(padded_done)
             valid = np.array(valid_mask)
+            
+            # Next obs/mask for bootstrapping (shape B, ...)
+            jax_next_obs = {
+                k: jnp.array(np.array(v)) for k, v in padded_next_obs_dict.items()
+            }
+            next_mask = jnp.array(np.array(padded_next_mask))
 
             batch = {
                 'obs': jax_obs,
@@ -753,7 +838,9 @@ class TrainingWorker(threading.Thread):
                 'mask': jnp.array(mask.transpose(1, 0, 2)),
                 'log_prob': jnp.array(log_prob.transpose(1, 0)),
                 'done': jnp.array(done.transpose(1, 0)),
-                'valid': jnp.array(valid.transpose(1, 0))
+                'valid': jnp.array(valid.transpose(1, 0)),
+                'next_obs': jax_next_obs,
+                'next_mask': next_mask
             }
 
             print(f"[Python] TrainingWorker: Batch built. Shape: T={batch['rew'].shape[0]}, B={batch['rew'].shape[1]}")
@@ -806,7 +893,7 @@ class TrainingWorker(threading.Thread):
             with self.lock:
                 self.is_updating = False
 
-training_worker = None
+# training_worker = None # Handled at top now
 
 def load_model(checkpoint_path=None):
     global learner, rng_key, training_worker, config, initialization_lock
@@ -857,13 +944,13 @@ def load_model(checkpoint_path=None):
         
         # Pre-warm for each switch branch (combat:0, map:1, event-like:2, grid:3, hand:4)
         for st_idx in [0, 1, 2, 3, 4]:
-            temp_obs = jax.tree_util.tree_map(lambda x: x, dummy_obs)
-            temp_obs["state_type"] = jnp.array([st_idx], dtype=jnp.int32)
-            dummy_mask = jnp.zeros((1, num_actions), dtype=jnp.float32)
+            temp_obs = jax.tree_util.tree_map(lambda x: x[None, ...], dummy_obs) # (1, 1, ...)
+            temp_obs["state_type"] = jnp.array([[st_idx]], dtype=jnp.int32) # (1, 1)
+            dummy_mask_jit = jnp.zeros((1, 1, num_actions), dtype=jnp.float32)
             
             # Split key for each pre-warm call to ensure stability
             predict_key, rng_key = jax.random.split(rng_key)
-            _ = _predict_step(learner.params, predict_key, temp_obs, dummy_mask)
+            _ = _predict_step(learner.params, predict_key, temp_obs, dummy_mask_jit)
             log(f"[Python] JAX pre-warm for type {st_idx} complete.")
             
         log(f"[Python] All JAX pre-warms complete in {time.time() - t_warm_start:.2f}s")
@@ -1401,6 +1488,7 @@ def predict_action(state_json):
     t_imports = time.time() - t0
     
     global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key, last_activity_time
+    global history, episode_end_recorded, session_cumulative_reward, skipped_reward_indices, last_reward_floor, last_processed_floor, last_player_hp, last_total_enemy_hp, last_selected_reward_idx, deferred_chunk
     
     try:
         t_json_start = time.time()
@@ -1416,15 +1504,15 @@ def predict_action(state_json):
         if state_type == "game_over":
             # Use a flag to record only once per game_over screen. 
             # Reset the flag when we see any gameplay state.
-            if not getattr(predict_action, 'episode_end_recorded', False):
+            if not episode_end_recorded:
                 floor = state.get("floor", 1)
                 # Ensure we include the terminal reward in the logged metric
                 terminal_reward = compute_reward(state, state_type)
-                total_reward = getattr(predict_action, 'session_cumulative_reward', 0.0) + terminal_reward
+                total_reward = session_cumulative_reward + terminal_reward
                 log(f"Episode end detected at floor {floor}, final reward {total_reward:.2f}. Recording...")
                 if training_worker:
                     training_worker.record_episode_end(floor, total_reward)
-                predict_action.episode_end_recorded = True
+                episode_end_recorded = True
                 
                 # Flush trajectory if it exists
                 if current_trajectory:
@@ -1438,31 +1526,37 @@ def predict_action(state_json):
                     current_trajectory = []
                 
                 # Reset reward for next episode (will be reset below too, but safe)
-                predict_action.session_cumulative_reward = 0.0
-            predict_action.skipped_reward_indices = set()
-            predict_action.last_processed_floor = -1
-            predict_action.last_player_hp = 0
-            predict_action.last_total_enemy_hp = 0
+                session_cumulative_reward = 0.0
+            skipped_reward_indices = set()
+            last_total_enemy_hp = 0
+            
+            # Clear history on episode end
+            history = []
+            
+            # Flush any deferred chunk (terminal)
+            if deferred_chunk:
+                log(f"Flushing terminal deferred chunk of length {len(deferred_chunk['steps'])}")
+                experience_queue.put(deferred_chunk)
+                deferred_chunk = None
+
         elif state_type in ["combat", "map", "event", "rest_site", "shop", "treasure"]:
-            predict_action.episode_end_recorded = False
-            # Ensure cumulative reward is initialized
-            if not hasattr(predict_action, 'session_cumulative_reward'):
-                predict_action.session_cumulative_reward = 0.0
+            episode_end_recorded = False
+            # Ensure cumulative reward is initialized is handled by global
             # Reset skipped rewards when leaving rewards flow
-            predict_action.skipped_reward_indices = set()
-            predict_action.last_reward_floor = state.get("floor", -1)
+            skipped_reward_indices = set()
+            last_reward_floor = state.get("floor", -1)
         elif state_type == "rewards":
-            predict_action.episode_end_recorded = False
-            if not hasattr(predict_action, 'skipped_reward_indices') or getattr(predict_action, 'last_reward_floor', -1) != state.get("floor"):
-                predict_action.skipped_reward_indices = set()
-                predict_action.last_reward_floor = state.get("floor")
+            episode_end_recorded = False
+            if last_reward_floor != state.get("floor"):
+                skipped_reward_indices = set()
+                last_reward_floor = state.get("floor")
         elif state_type in ["main_menu", "none"]:
-            predict_action.session_cumulative_reward = 0.0
-            predict_action.episode_end_recorded = False
-            predict_action.skipped_reward_indices = set()
-            predict_action.last_processed_floor = -1
-            predict_action.last_player_hp = 0
-            predict_action.last_total_enemy_hp = 0
+            session_cumulative_reward = 0.0
+            episode_end_recorded = False
+            skipped_reward_indices = set()
+            last_processed_floor = -1
+            last_player_hp = 0
+            last_total_enemy_hp = 0
         if not state_json:
             return json.dumps({"action": "wait"})
             
@@ -1494,17 +1588,32 @@ def predict_action(state_json):
         state_dict = encode_state(state)
         
         # Calculate Action Mask
-        masked_rewards = getattr(predict_action, 'skipped_reward_indices', set())
+        masked_rewards = skipped_reward_indices
         mask = get_action_mask(state, masked_reward_indices=masked_rewards)
         do_deferred_imports()
         assert np is not None
         assert jnp is not None
         mask_jnp = jnp.array(mask)
         
-        # Preparing dictionary with leading batch dimensions for inference
-        batched_state = {
-            k: jnp.array(v)[None, ...] for k, v in state_dict.items()
-        }
+        # Check if we have a deferred chunk waiting for this state to bootstrap
+        if deferred_chunk:
+            log(f"Pushing deferred chunk with {len(deferred_chunk['steps'])} steps using current state for bootstrapping.")
+            deferred_chunk["next_step"] = {"obs": state_dict, "mask": mask_jnp}
+            experience_queue.put(deferred_chunk)
+            deferred_chunk = None
+
+        # Update history for temporal context
+        history.append((state_dict, mask_jnp))
+        if config and len(history) > config.seq_len:
+            history.pop(0)
+
+        # Preparing dictionary with leading T and B dimensions for inference
+        T_hist = len(history)
+        batched_state = {}
+        for k in state_dict.keys():
+            batched_state[k] = jnp.stack([h[0][k] for h in history], axis=0)[:, None, ...] # (T, B, ...)
+        
+        batched_mask = jnp.stack([h[1] for h in history], axis=0)[:, None, :] # (T, B, num_actions)
         
         # Inference
         t_inf_start = time.time()
@@ -1530,18 +1639,22 @@ def predict_action(state_json):
         
         if _predict_step is None:
             # Fallback if jit failed
-            logits, value = learner.network.apply(learner.params, predict_key, batched_state, mask[None, :].astype(jnp.float32))
+            logits_seq, value_seq = learner.network.apply(learner.params, predict_key, batched_state, batched_mask.astype(jnp.float32))
         else:
-            logits, value = _predict_step(learner.params, predict_key, batched_state, mask[None, :].astype(jnp.float32))
+            logits_seq, value_seq = _predict_step(learner.params, predict_key, batched_state, batched_mask.astype(jnp.float32))
         t_inference = time.time() - t_inf_start
         
+        # Rollout: we only care about the latest step in the sequence
+        logits = logits_seq[-1:] # (1, B, num_actions)
+        value = value_seq[-1:]  # (1, B)
+        
         # Probs are calculated from logits which are already masked in the network
-        probs = jax_local.nn.softmax(logits, axis=-1)
+        probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
         
         # Sample action from masked distribution
         rng_key, subkey = jax_local.random.split(rng_key)
         action_idx = jax_local.random.categorical(subkey, logits).item()
-        log_prob = jax_local.nn.log_softmax(logits)[0, action_idx].item()
+        log_prob = jax_local.nn.log_softmax(logits)[0, 0, action_idx].item()
         
         # ▼ [DEBUG LOGGING]
         try:
@@ -1555,7 +1668,7 @@ def predict_action(state_json):
             }
             
             # Format probabilities for logging (all 100)
-            probs_list = probs[0].tolist()
+            probs_list = probs.tolist()
             mask_list = mask.tolist()
             
             log_decision(f"--- AI Decision Log ---")
@@ -1695,9 +1808,7 @@ def predict_action(state_json):
                 reward = base_reward + intermediate_reward
                 
                 # Accumulate session reward
-                if not hasattr(predict_action, 'session_cumulative_reward'):
-                    predict_action.session_cumulative_reward = 0.0
-                predict_action.session_cumulative_reward += reward
+                session_cumulative_reward += reward
  
                 # Existing experience collection for TrainingWorker
                 if state_type in VALID_TRAJECTORY_STATES:
@@ -1714,8 +1825,10 @@ def predict_action(state_json):
                 terminal = (state_type == "game_over")
                 raw_logger.log_step(state_json, action_idx, probs, mask, reward, terminal=terminal)
 
-                if len(current_trajectory) >= config.unroll_length:
-                    experience_queue.put(list(current_trajectory))
+                if config and len(current_trajectory) >= config.unroll_length:
+                    # Defer flushing until we see the next state for bootstrapping
+                    log(f"Trajectory reached unroll_length ({config.unroll_length}). Moving to deferred_chunk.")
+                    deferred_chunk = {"steps": list(current_trajectory)}
                     current_trajectory = []
  
         # If we chose to skip a card reward, remember this to mask it in next rewards screen call
@@ -1725,13 +1838,12 @@ def predict_action(state_json):
                  if action["index"] < len(buttons):
                      btn_name = buttons[action["index"]].get("name", "").lower()
                      if "skip" in btn_name or "remov" in btn_name or "dismiss" in btn_name: 
-                         last_reward_idx = getattr(predict_action, 'last_selected_reward_idx', None)
-                         if last_reward_idx is not None:
-                             log(f"Detected SKIP in card reward. Masking reward index {last_reward_idx} for floor {state.get('floor')}")
-                             predict_action.skipped_reward_indices.add(last_reward_idx)
+                         if last_selected_reward_idx is not None:
+                             log(f"Detected SKIP in card reward. Masking reward index {last_selected_reward_idx} for floor {state.get('floor')}")
+                             skipped_reward_indices.add(last_selected_reward_idx)
  
         if action.get("action") == "select_reward":
-            predict_action.last_selected_reward_idx = action.get("index")
+            last_selected_reward_idx = action.get("index")
  
         res = json.dumps(action)
         t_total = time.time() - t0
@@ -1755,15 +1867,19 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.send_header("Content-type", "application/json")
             self.end_headers()
             
-            # Combine experience_queue and training_worker.batch_buffer for more accurate queue reporting
-            # This helps avoid "Queue: 0/8" flicker when the worker has already pulled the trajectory
+            # Combine experience_queue, training_worker.batch_buffer, and deferred_chunk for more accurate queue reporting
             total_queue_size = experience_queue.qsize()
             if training_worker:
                 total_queue_size += len(training_worker.batch_buffer)
+            
+            # Include deferred_chunk in queue size if it exists, as it's almost ready to be pushed
+            if deferred_chunk:
+                total_queue_size += 1
                 
             self.wfile.write(json.dumps({
                 "learning_active": learning_active,
                 "queue_size": total_queue_size,
+                "has_deferred": deferred_chunk is not None,
                 "traj_size": len(current_trajectory),
                 "unroll_length": config.unroll_length if config else 0,
                 "batch_size": config.batch_size if config else 0,

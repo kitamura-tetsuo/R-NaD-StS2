@@ -57,7 +57,7 @@ class RNaDConfig(NamedTuple):
     num_blocks: int = 4
     seq_len: int = 8
     hidden_size: int = 128
-    unroll_length: int = 128
+    unroll_length: int = 96
     seed: int = None
 
 def v_trace(
@@ -106,17 +106,22 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     T, B = any_val.shape[:2]
     valid_mask = batch.get('valid', jnp.ones((T, B))) # (T, B)
     done_mask = batch.get('done', jnp.zeros((T, B))) # (T, B)
+    bootstrap_value = batch.get('bootstrap_value', jnp.zeros(B)) # (B,)
     
     # Flatten T and B for forward pass using PyTree map
     obs_flat = jax.tree_util.tree_map(lambda x: x.reshape(T * B, *x.shape[2:]), obs)
     mask_flat = mask.reshape(T * B, -1)
     
-    logits, values = apply_fn(params, jax.random.PRNGKey(0), obs_flat, mask_flat)
-    logits = logits.reshape(T, B, -1)
-    values = values.reshape(T, B)
+    # logits, values = apply_fn(params, jax.random.PRNGKey(0), obs_flat, mask_flat)
+    # logits = logits.reshape(T, B, -1)
+    # values = values.reshape(T, B)
     
-    fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), obs_flat, mask_flat)
-    fixed_logits = fixed_logits.reshape(T, B, -1)
+    # NEW: Pass T and B directly to the network
+    logits, values = apply_fn(params, jax.random.PRNGKey(0), obs, mask)
+    
+    # fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), obs_flat, mask_flat)
+    # fixed_logits = fixed_logits.reshape(T, B, -1)
+    fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), obs, mask)
     
     log_probs = jax.nn.log_softmax(logits)
     fixed_log_probs = jax.nn.log_softmax(fixed_logits)
@@ -131,7 +136,7 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     log_rho = log_pi_a - log_prob_bhv
     rho = jnp.exp(log_rho)
     
-    v_next = jnp.concatenate([values[1:], jnp.zeros((1, B))], axis=0)
+    v_next = jnp.concatenate([values[1:], bootstrap_value[None, :]], axis=0)
     vs, pg_adv = v_trace(values, v_next, r_reg, rho, done_t=done_mask, gamma=config.discount_factor)
     
     # Mask losses by validity
@@ -243,13 +248,83 @@ class SimpleExpert(hk.Module):
         h = jnp.concatenate([h_global, expert_obs, bow_combined], axis=-1)
         return hk.nets.MLP([self.hidden_size * 2, self.hidden_size], name="mlp")(h)
 
+class TemporalTransformer(hk.Module):
+    def __init__(self, num_heads, key_size, hidden_size, num_blocks, seq_len, name=None):
+        super().__init__(name=name)
+        self.num_heads = num_heads
+        self.key_size = key_size
+        self.hidden_size = hidden_size
+        self.num_blocks = num_blocks
+        self.seq_len = seq_len
+
+    def __call__(self, x, is_training=False):
+        # x: (T, B, hidden_size)
+        T, B, C = x.shape
+        # logging.info(f"[Temporal] num_heads={self.num_heads}, key_size={self.key_size}, hidden_size={self.hidden_size}")
+        
+        # Causal mask for temporal attention
+        mask = jnp.tril(jnp.ones((T, T)))
+        mask = mask[None, None, :, :] # (1, 1, T, T) for Haiku MultiHeadAttention
+        
+        # Position embedding (up to 512 steps)
+        pos_emb = hk.get_parameter("pos_emb_temporal", [512, C], init=hk.initializers.TruncatedNormal())
+        x = x + pos_emb[:T, None, :]
+        
+        for i in range(self.num_blocks):
+            # Haiku MultiHeadAttention expects (T, B, C) and mask (B, num_heads, T, T)
+            # Actually hk.MultiHeadAttention expects (T, B, C) and mask of shape (B, num_heads, T, T)
+            # Wait, standard Haiku MHA takes (query, key, value, mask)
+            # Let's use it simply.
+            # Manual Multi-Head Attention to avoid mysterious Haiku shape doubling
+            query = hk.Linear(self.hidden_size, name=f"manual_q_{i}")(x)
+            key = hk.Linear(self.hidden_size, name=f"manual_k_{i}")(x)
+            value = hk.Linear(self.hidden_size, name=f"manual_v_{i}")(x)
+            
+            # Split heads: (T, B, hidden_size) -> (T, B, num_heads, key_size)
+            q_heads = query.reshape(T, B, self.num_heads, -1)
+            k_heads = key.reshape(T, B, self.num_heads, -1)
+            v_heads = value.reshape(T, B, self.num_heads, -1)
+            
+            # (T, B, H, K) x (T, B, H, K) -> (B, H, T, T)
+            # Transpose to (B, H, T, K) for easier dot product
+            q_heads = q_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
+            k_heads = k_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
+            v_heads = v_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
+            
+            # Dot-product attention
+            # (B, H, T, K) @ (B, H, K, T) -> (B, H, T, T)
+            logits = jnp.einsum("bhik,bhjk->bhij", q_heads, k_heads) / jnp.sqrt(self.key_size)
+            
+            # Apply causal mask
+            # mask shape is (1, 1, T, T) or (T, T)
+            # causal_mask = jnp.tril(jnp.ones((T, T)))
+            # logits = jnp.where(causal_mask[None, None, :, :].astype(bool), logits, -1e9)
+            logits = jnp.where(mask.astype(bool), logits, -1e9)
+            
+            weights = jax.nn.softmax(logits, axis=-1)
+            
+            # (B, H, T, T) @ (B, H, T, K) -> (B, H, T, K)
+            attn_out_heads = jnp.einsum("bhij,bhjk->bhik", weights, v_heads)
+            
+            # Transpose back: (B, H, T, K) -> (T, B, H, K) -> (T, B, hidden_size)
+            attn_out = attn_out_heads.transpose(2, 0, 1, 3).reshape(T, B, -1)
+            attn_out = hk.Linear(self.hidden_size, name=f"manual_proj_{i}")(attn_out)
+            
+            x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True, name=f"hist_ln_1_{i}")(x + attn_out)
+            
+            mlp_out = hk.nets.MLP([C * 4, C], activation=jax.nn.gelu, name=f"hist_mlp_{i}")(x)
+            x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True, name=f"hist_ln_2_{i}")(x + mlp_out)
+            
+        return x
+
 class TransformerNet(hk.Module):
-    def __init__(self, num_actions, hidden_size, num_blocks, num_heads, name=None):
+    def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len=8, name=None):
         super().__init__(name=name)
         self.num_actions = num_actions
         self.hidden_size = hidden_size 
         self.num_blocks = num_blocks
         self.num_heads = num_heads
+        self.seq_len = seq_len
 
     def __call__(self, state_dict, mask, is_training=False):
         # Use a more direct name and ensure it's not nested in '~'
@@ -260,6 +335,14 @@ class TransformerNet(hk.Module):
         event_expert = SimpleExpert(self.hidden_size, name="event_expert")
         grid_expert = SimpleExpert(self.hidden_size, name="grid_expert")
         hand_expert = SimpleExpert(self.hidden_size, name="hand_expert")
+        temporal_transformer = TemporalTransformer(
+            num_heads=4,
+            key_size=32,
+            hidden_size=self.hidden_size,
+            num_blocks=1,
+            seq_len=self.seq_len,
+            name="temporal_history_v4"
+        )
         policy_head = hk.Linear(self.num_actions, name="policy_head")
         value_head = hk.Linear(1, name="value_head")
 
@@ -278,11 +361,14 @@ class TransformerNet(hk.Module):
                 lambda: hand_expert(h_g, s_dict["event"], bow_obs)
             ])
 
+        # Get T and B dimensions
+        any_val = jax.tree_util.tree_leaves(state_dict)[0]
+        T, B = any_val.shape[:2]
+
         if hk.running_init():
             # Mandatory visit to all branches during initialization
-            # Use index-based visit to ensure all jax.lax.switch branches are registered
-            dummy_h_g = h_g_batch[0]
-            dummy_bow_obs = {k: v[0] for k, v in {
+            dummy_h_g = h_g_batch[0, 0] # (hidden_size,)
+            dummy_bow_obs = {k: v[0, 0] for k, v in {
                 "draw_bow": state_dict["draw_bow"],
                 "discard_bow": state_dict["discard_bow"],
                 "exhaust_bow": state_dict["exhaust_bow"],
@@ -290,18 +376,35 @@ class TransformerNet(hk.Module):
             }.items()}
             
             # Ensure every expert is called at least once during init
-            _ = combat_expert(dummy_h_g, state_dict["combat"][0], dummy_bow_obs, is_training)
-            _ = map_expert(dummy_h_g, state_dict["map"][0], dummy_bow_obs, is_training)
-            _ = event_expert(dummy_h_g, state_dict["event"][0], dummy_bow_obs)
-            _ = grid_expert(dummy_h_g, state_dict["event"][0], dummy_bow_obs)
-            _ = hand_expert(dummy_h_g, state_dict["event"][0], dummy_bow_obs)
+            _ = combat_expert(dummy_h_g, state_dict["combat"][0, 0], dummy_bow_obs, is_training)
+            _ = map_expert(dummy_h_g, state_dict["map"][0, 0], dummy_bow_obs, is_training)
+            _ = event_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs)
+            _ = grid_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs)
+            _ = hand_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs)
             
             # Policy and value heads also need to be called during init
-            dummy_features = jnp.zeros((1, self.hidden_size))
+            dummy_features = jnp.zeros((1, 1, self.hidden_size))
+            _ = temporal_transformer(dummy_features, is_training)
             _ = policy_head(dummy_features)
             _ = value_head(dummy_features)
 
-        features = hk.vmap(route_expert, split_rng=False)(state_dict["state_type"], h_g_batch, state_dict)
+        # Flatten T and B for expert processing via vmap
+        state_dict_flat = jax.tree_util.tree_map(lambda x: x.reshape(T * B, *x.shape[2:]), state_dict)
+        h_g_batch_flat = h_g_batch.reshape(T * B, -1)
+        
+        # Expert processing (B dimension in vmap output will be T*B)
+        features_flat = hk.vmap(route_expert, split_rng=False)(state_dict_flat["state_type"], h_g_batch_flat, state_dict_flat)
+        
+        # Reshape back to (T, B, hidden_size) for temporal attention
+        features = features_flat.reshape(T, B, -1)
+        if features.shape[-1] != self.hidden_size:
+            # logging.error(f"[R-NaD] Shape mismatch: features.shape={features.shape}, expected hidden_size={self.hidden_size}")
+            # Explicitly project to hidden_size if mismatch occurs as a fallback
+            features = hk.Linear(self.hidden_size, name="features_fix_proj")(features)
+            
+        # Apply temporal transformer
+        features = temporal_transformer(features, is_training)
+
         logits = policy_head(features)
         logits = jnp.where(mask.astype(bool), logits, -1e9)
         value = value_head(features)
@@ -334,12 +437,19 @@ def partial_load_params(target_params, source_params):
     source_keys = list(source_params.keys())
     
     for key, target_val in target_params.items():
-        source_key = _find_matching_key(key, source_keys)
-        if source_key is None:
-            # logging.info(f"[R-NaD] Parameter {key} not found in checkpoint. Using initialized values.")
+        # ABSOLUTE ISOLATION: if this is a new history/temporal component, do NOT load from checkpoint
+        # This check is performed before matching to prevent accidental overwrites
+        is_new_component = any(k in key.lower() for k in ['temporal', 'hist', 'v2'])
+        if is_new_component:
+            # logging.info(f"[R-NaD] ISOLATION: Skipping checkpoint load for {key}")
             new_params[key] = target_val
             continue
-        
+
+        source_key = _find_matching_key(key, source_keys)
+        if source_key is None:
+            new_params[key] = target_val
+            continue
+            
         if key != source_key:
             logging.info(f"[R-NaD] Mapping {source_key} -> {key}")
             
@@ -376,7 +486,7 @@ class RNaDLearner:
         hk.mixed_precision.set_policy(hk.nets.MLP, policy)
         
         def forward(state_dict, mask, is_training=False):
-            model = TransformerNet(num_actions, config.hidden_size, config.num_blocks, config.num_heads)
+            model = TransformerNet(num_actions, config.hidden_size, config.num_blocks, config.num_heads, seq_len=config.seq_len)
             return model(state_dict, mask, is_training=is_training)
             
         self.network = hk.transform(forward)
@@ -392,18 +502,19 @@ class RNaDLearner:
         self._update_fn = jax.jit(self._update_pure)
 
     def init(self, key):
+        # Dummy state with T=1, B=1 to trigger temporal blocks initialization
         dummy_state = {
-            "global": jnp.zeros((1, 128)),
-            "combat": jnp.zeros((1, 384)),
-            "draw_bow": jnp.zeros((1, 100)),
-            "discard_bow": jnp.zeros((1, 100)),
-            "exhaust_bow": jnp.zeros((1, 100)),
-            "master_bow": jnp.zeros((1, 100)),
-            "map": jnp.zeros((1, 2048)),
-            "event": jnp.zeros((1, 128)),
-            "state_type": jnp.zeros((1,), dtype=jnp.int32)
+            "global": jnp.zeros((1, 1, 128)),
+            "combat": jnp.zeros((1, 1, 384)),
+            "draw_bow": jnp.zeros((1, 1, 100)),
+            "discard_bow": jnp.zeros((1, 1, 100)),
+            "exhaust_bow": jnp.zeros((1, 1, 100)),
+            "master_bow": jnp.zeros((1, 1, 100)),
+            "map": jnp.zeros((1, 1, 2048)),
+            "event": jnp.zeros((1, 1, 128)),
+            "state_type": jnp.zeros((1, 1), dtype=jnp.int32)
         }
-        dummy_mask = jnp.ones((1, self.num_actions))
+        dummy_mask = jnp.ones((1, 1, self.num_actions))
         self.params = self.network.init(key, dummy_state, dummy_mask)
         self.fixed_params = self.params
         self.opt_state = self.optimizer.init(self.params)

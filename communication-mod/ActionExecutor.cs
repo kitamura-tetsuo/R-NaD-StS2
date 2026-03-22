@@ -49,6 +49,7 @@ public partial class MainFile : Node
             case "discard_potion": await HandleDiscardPotion(dict); break;
             case "select_hand_card": await HandleSelectHandCard(dict); break;
             case "confirm_selection": await HandleConfirmSelection(dict); break;
+            case "select_grid_card": await HandleSelectGridCard(dict); break;
             case "proceed": await HandleProceed(dict); break;
             default: Logger.Warn($"[AutoAI] Unhandled combat action: {action}"); break;
         }
@@ -484,8 +485,15 @@ public partial class MainFile : Node
         }
         else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridScreen)
         {
-            var gridField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen).GetField("_grid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var type = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen);
+            var gridField = type.GetField("_grid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (gridField == null) {
+                gridField = top.GetType().GetField("_grid", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            }
             var grid = gridField?.GetValue(gridScreen) as MegaCrit.Sts2.Core.Nodes.Cards.NCardGrid;
+            if (grid == null) {
+                Logger.Warn($"[AutoAI] Could NOT find _grid field on {top.GetType().Name}. gridField exists? {gridField != null}");
+            }
 
             if (grid != null)
             {
@@ -676,6 +684,11 @@ public partial class MainFile : Node
             
             if (singleBtn != null && ((CanvasItem)singleBtn).IsVisibleInTree()) confirmBtn = singleBtn;
             else if (multiBtn != null && ((CanvasItem)multiBtn).IsVisibleInTree()) confirmBtn = multiBtn;
+        }
+        else if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NSimpleCardSelectScreen simpleScreen)
+        {
+            var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NSimpleCardSelectScreen).GetField("_confirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            confirmBtn = field?.GetValue(simpleScreen) as Node;
         }
 
         if (confirmBtn != null)

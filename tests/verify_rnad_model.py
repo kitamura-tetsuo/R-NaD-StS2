@@ -31,25 +31,27 @@ def test_rnad_model():
     for name, st_type in state_types.items():
         print(f"Testing expert type: {name} (idx: {st_type})")
         
+        # Test with T=1, B=1
         obs = {
-            "global": jnp.zeros((1, 128)),
-            "combat": jnp.zeros((1, 384)),
-            "draw_bow": jnp.zeros((1, 100)),
-            "discard_bow": jnp.zeros((1, 100)),
-            "exhaust_bow": jnp.zeros((1, 100)),
-            "master_bow": jnp.zeros((1, 100)),
-            "map": jnp.zeros((1, 2048)),
-            "event": jnp.zeros((1, 128)),
-            "state_type": jnp.array([st_type], dtype=jnp.int32)
+            "global": jnp.zeros((1, 1, 128)),
+            "combat": jnp.zeros((1, 1, 384)),
+            "draw_bow": jnp.zeros((1, 1, 100)),
+            "discard_bow": jnp.zeros((1, 1, 100)),
+            "exhaust_bow": jnp.zeros((1, 1, 100)),
+            "master_bow": jnp.zeros((1, 1, 100)),
+            "map": jnp.zeros((1, 1, 2048)),
+            "event": jnp.zeros((1, 1, 128)),
+            "state_type": jnp.array([[st_type]], dtype=jnp.int32)
         }
-        mask = jnp.ones((1, 400))
+        mask = jnp.ones((1, 1, 400))
         
         try:
             logits, value = learner.network.apply(learner.params, key, obs, mask)
             print(f"  Success! Logits shape: {logits.shape}, Value shape: {value.shape}")
         except Exception as e:
             print(f"  Failed for {name}: {e}")
-            # print(traceback.format_exc())
+            import traceback
+            traceback.print_exc()
 
 if __name__ == "__main__":
     test_rnad_model()

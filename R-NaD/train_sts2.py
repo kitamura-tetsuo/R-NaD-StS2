@@ -329,8 +329,8 @@ def perform_restart(process, current_checkpoint, args):
         logging.error("Failed to recover: game server didn't start.")
         return new_process, checkpoint
     
-    logging.info("Waiting 10 seconds for Game Scene Tree to initialize...")
-    time.sleep(10)
+    logging.info("Waiting 30 seconds for Game Scene Tree to initialize...")
+    time.sleep(30)
     
     logging.info("Re-enabling learning mode...")
     try:
@@ -358,7 +358,7 @@ def perform_restart(process, current_checkpoint, args):
     except Exception as e:
         logging.error(f"Failed to start new game: {e}")
     
-    time.sleep(10)
+    time.sleep(30)
 
     return new_process, checkpoint
 
@@ -436,8 +436,8 @@ def main():
         requests.get(new_game_url)
 
         # Wait for the first game to actually start and generate a seed
-        logging.info("Waiting 20 seconds for first game to initialize...")
-        time.sleep(20)
+        logging.info("Waiting 60 seconds for first game to initialize...")
+        time.sleep(60)
 
         last_state_path = os.path.join(os.path.dirname(__file__), "logs/rnad_last_state.json")
         

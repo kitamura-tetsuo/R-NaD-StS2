@@ -297,6 +297,12 @@ public partial class MainFile : Node
                 
                 isConfirming = (singlePreview != null && singlePreview.Visible) || (multiPreview != null && multiPreview.Visible);
             }
+            else if (gridSelection is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NSimpleCardSelectScreen simpleScreen)
+            {
+                var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NSimpleCardSelectScreen).GetField("_confirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var confirmBtn = field?.GetValue(simpleScreen) as MegaCrit.Sts2.Core.Nodes.GodotExtensions.NButton;
+                isConfirming = confirmBtn != null && confirmBtn.Visible && confirmBtn.IsEnabled;
+            }
 
             return System.Text.Json.JsonSerializer.Serialize(new
             {
