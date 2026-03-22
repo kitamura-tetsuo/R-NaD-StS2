@@ -134,12 +134,12 @@ public partial class MainFile : Node
 
             string action = dict["action"].AsString();
             
-            // Minimum delay between actions (except wait/screenshot)
-            if (currentTime - _lastActionTime < 50 && action != "wait" && action != "take_screenshot")
+            if (action == "end_turn")
             {
-                Logger.Info("[AutoAI] StepAI: Minimum delay not met, skipping");
-                return false;
+                _waitingForVerification = true;
+                Logger.Info("[AutoAI] StepAI: end_turn detected. Verification enabled for next turn.");
             }
+
             _lastActionTime = currentTime;
 
             if (action == "wait")

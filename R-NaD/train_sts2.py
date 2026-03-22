@@ -13,6 +13,8 @@ import shutil
 
 logging.basicConfig(level=logging.INFO)
 
+BRIDGE_URL = "http://127.0.0.1:8081"
+
 class BridgeConnectionError(Exception):
     """Exception raised when the bridge server is unreachable."""
     pass
@@ -82,6 +84,26 @@ def wait_for_server(url, timeout=60):
             time.sleep(1)
     logging.error("Server did not start in time.")
     raise BridgeConnectionError(f"Server at {url} did not start in time.")
+
+def wait_for_bridge_initialization(timeout=300):
+    logging.info("Waiting for R-NaD bridge to initialize (pre-warm JAX)...")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            resp = requests.get(f"{BRIDGE_URL}/status", timeout=2)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("initialized", False):
+                    logging.info("R-NaD bridge fully initialized.")
+                    return True
+        except requests.exceptions.RequestException:
+            pass
+        except Exception as e:
+            logging.error(f"Unexpected error in wait_for_bridge_initialization: {e}")
+            # Don't loop forever on non-request errors (like NameError)
+            return False
+        time.sleep(2)
+    return False
 
 def get_latest_mlflow_run_id(experiment_name="R-NaD-StS2"):
     """Finds the latest run ID in the specified MLflow experiment, regardless of checkpoints."""
@@ -402,9 +424,15 @@ def main():
         logging.info("Waiting 5 seconds for Game Scene Tree to initialize...")
         time.sleep(5)
 
+        # Wait for R-NaD bridge to fully initialize (learner and worker ready)
+        if not wait_for_bridge_initialization(timeout=300):
+            raise RuntimeError("R-NaD bridge initialization timed out.")
+
         # Enable learning mode
         logging.info("Enabling learning mode via bridge server...")
-        requests.get("http://127.0.0.1:8081/start")
+        resp = requests.get("http://127.0.0.1:8081/start")
+        if resp.status_code != 200:
+            logging.error(f"Failed to enable learning: {resp.status_code} {resp.text}")
 
         # Start first run
         try:
@@ -417,11 +445,14 @@ def main():
                     traj_dir = "/home/ubuntu/src/R-NaD-StS2/R-NaD/trajectories"
                     if os.path.exists(traj_dir) and any(f.endswith(".json") for f in os.listdir(traj_dir) if f.startswith("traj_")):
                         logging.info("Step 0 detected and trajectories found. Triggering offline training...")
-                        requests.get("http://127.0.0.1:8081/offline_train", timeout=5)
-                        # Wait for offline training to actually start and finish
-                        time.sleep(2)
-                        wait_for_update_to_finish(max_failures=300) # Long timeout for offline training
-                        logging.info("Offline training complete.")
+                        off_resp = requests.get("http://127.0.0.1:8081/offline_train", timeout=5)
+                        if off_resp.status_code == 200:
+                            # Wait for offline training to actually start and finish
+                            time.sleep(2)
+                            wait_for_update_to_finish(max_failures=300) # Long timeout for offline training
+                            logging.info("Offline training complete.")
+                        else:
+                            logging.error(f"Failed to start offline training: {off_resp.status_code} {off_resp.text}")
             
             wait_for_update_to_finish(max_failures=10)
         except BridgeConnectionError:

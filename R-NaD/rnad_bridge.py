@@ -193,6 +193,7 @@ last_player_hp = 0
 last_total_enemy_hp = 0
 last_selected_reward_idx = None
 
+# Combat Prediction Verification
 # Preserve globals across re-imports if already in sys.modules
 if 'rnad_bridge' in sys.modules:
     old_mod = sys.modules['rnad_bridge']
@@ -219,7 +220,7 @@ if 'rnad_bridge' in sys.modules:
     last_player_hp = getattr(old_mod, 'last_player_hp', last_player_hp)
     last_total_enemy_hp = getattr(old_mod, 'last_total_enemy_hp', last_total_enemy_hp)
     last_selected_reward_idx = getattr(old_mod, 'last_selected_reward_idx', last_selected_reward_idx)
-
+    
     log(f"Preserved state from existing rnad_bridge module. Queue size: {experience_queue.qsize() if hasattr(experience_queue, 'qsize') else 'unknown'}")
 else:
     log("rnad_bridge module fresh load.")
@@ -459,7 +460,7 @@ class RawTrajectoryLogger:
         self.current_episode = []
         self.lock = threading.Lock()
 
-    def log_step(self, state_json, action_idx, probs, mask, reward, terminal=False):
+    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, terminal=False):
         with self.lock:
             self.current_episode.append({
                 "state_json": state_json,
@@ -467,6 +468,7 @@ class RawTrajectoryLogger:
                 "probs": probs.tolist() if hasattr(probs, "tolist") else list(probs),
                 "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
                 "reward": float(reward),
+                "log_prob": float(log_prob),
                 "terminal": terminal
             })
             if terminal:
@@ -558,10 +560,10 @@ class TrainingWorker(threading.Thread):
         self.batch_buffer = []
         self.running = True
         self.step_count = step_count
-        self.episode_last_floors = []
-        self.episode_last_rewards = []
-        self.last_known_mean_floor: float | None = None
-        self.last_known_mean_reward: float | None = None
+        self.episode_game_overed_floors = []
+        self.episode_game_overed_rewards = []
+        self.last_known_mean_game_overed_floor: float | None = None
+        self.last_known_mean_game_overed_reward: float | None = None
         self.lock = threading.Lock()
         self.buffer_lock = threading.Lock()
         self.last_error: str | None = None
@@ -592,11 +594,11 @@ class TrainingWorker(threading.Thread):
                 print(f"[Python] Error in TrainingWorker: {e}")
                 traceback.print_exc()
 
-    def record_episode_end(self, floor, reward):
+    def record_game_over(self, floor, reward):
         with self.lock:
-            self.episode_last_floors.append(floor)
-            self.episode_last_rewards.append(reward)
-            print(f"[Python] Recorded episode end at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_last_floors)}")
+            self.episode_game_overed_floors.append(floor)
+            self.episode_game_overed_rewards.append(reward)
+            print(f"[Python] Recorded game over at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_game_overed_floors)}")
 
     def perform_offline_training(self):
         with self.lock:
@@ -605,6 +607,7 @@ class TrainingWorker(threading.Thread):
                 return
             self.is_updating = True
         
+        do_deferred_imports()
         log(f"[Python] Starting offline training from trajectories in {TRAJECTORY_DIR}...")
         
         try:
@@ -633,12 +636,21 @@ class TrainingWorker(threading.Thread):
                             intermediate_reward = compute_intermediate_reward(state, state_type, action_idx)
                             reward = base_reward + intermediate_reward
                             
+                            # Fallback for older trajectories missing log_prob
+                            log_p = step.get("log_prob")
+                            if log_p is None:
+                                # Calculate from probs if available
+                                if "probs" in step and action_idx < len(step["probs"]):
+                                    log_p = float(np.log(max(step["probs"][action_idx], 1e-10)))
+                                else:
+                                    log_p = 0.0 # Default fallback
+                                    
                             traj_step = {
                                 "obs": state_dict,
                                 "act": action_idx,
                                 "rew": reward,
                                 "mask": np.array(step["mask"], dtype=np.float32),
-                                "log_prob": step["log_prob"],
+                                "log_prob": log_p,
                                 "done": 1.0 if step.get("terminal") else 0.0
                             }
                             traj_segment.append(traj_step)
@@ -851,28 +863,28 @@ class TrainingWorker(threading.Thread):
 
             print(f"[Python] TrainingWorker: Update done in {t_end - t_start:.2f}s.")
 
-            # Add mean last floor/reward if we have data
+            # Add mean game overed floor/reward if we have data
             with self.lock:
-                if self.episode_last_floors:
+                if self.episode_game_overed_floors:
                     # Calculate mean of episodes that ended since last update
-                    self.last_known_mean_floor = sum(self.episode_last_floors) / len(self.episode_last_floors)
-                    self.last_known_mean_reward = sum(self.episode_last_rewards) / len(self.episode_last_rewards)
-                    self.episode_last_floors = [] # Clear for next update
-                    self.episode_last_rewards = []
+                    self.last_known_mean_game_overed_floor = sum(self.episode_game_overed_floors) / len(self.episode_game_overed_floors)
+                    self.last_known_mean_game_overed_reward = sum(self.episode_game_overed_rewards) / len(self.episode_game_overed_rewards)
+                    self.episode_game_overed_floors = [] # Clear for next update
+                    self.episode_game_overed_rewards = []
                 
                 # Report the last known means to keep metrics visible in MLflow
-                if self.last_known_mean_floor is not None:
-                    metrics['mean_last_floor'] = self.last_known_mean_floor
-                if self.last_known_mean_reward is not None:
-                    metrics['mean_last_reward'] = self.last_known_mean_reward
+                if self.last_known_mean_game_overed_floor is not None:
+                    metrics['mean_game_overed_floor'] = self.last_known_mean_game_overed_floor
+                if self.last_known_mean_game_overed_reward is not None:
+                    metrics['mean_game_overed_reward'] = self.last_known_mean_game_overed_reward
 
             self.step_count += 1
             
             log_msg = f"[Python] Training Step {self.step_count}: Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}"
-            if 'mean_last_floor' in metrics:
-                log_msg += f", Mean Last Floor={metrics['mean_last_floor']:.2f}"
-            if 'mean_last_reward' in metrics:
-                log_msg += f", Mean Last Reward={metrics['mean_last_reward']:.2f}"
+            if 'mean_game_overed_floor' in metrics:
+                log_msg += f", Mean Game Overed Floor={metrics['mean_game_overed_floor']:.2f}"
+            if 'mean_game_overed_reward' in metrics:
+                log_msg += f", Mean Game Overed Reward={metrics['mean_game_overed_reward']:.2f}"
             print(log_msg)
             
             if self.experiment_manager:
@@ -1130,10 +1142,14 @@ def encode_state(state):
             for j in range(min(len(intents), 2)):
                 intent = intents[j]
                 intent_idx = base_idx + 4 + j * 4
-                it_map = {"Attack": 1, "Defense": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "Stun": 7}
-                combat_vec[intent_idx] = it_map.get(intent.get("type"), 0) / 10.0
+                it_map = {"Attack": 1, "Defense": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "DebuffStrong": 6, "Stun": 7, "StatusCard": 8, "Summon": 9}
+                it_type = intent.get("type")
+                assert it_type in it_map, f"intent: {it_type} not in map"
+                combat_vec[intent_idx] = it_map.get(it_type, 0) / 10.0
                 combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
                 combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
+                combat_vec[intent_idx + 3] = intent.get("count", 0) / 10.0
+                log(f"[Python] Debug: {intent}, {combat_vec[intent_idx]}, {combat_vec[intent_idx + 1]}, {combat_vec[intent_idx + 2]}, {combat_vec[intent_idx + 3]}")
                 
         # Powers (starting at 200)
         # Player powers (up to 10, index 200-219)
@@ -1154,6 +1170,13 @@ def encode_state(state):
                 combat_vec[idx] = get_power_idx(p.get("id")) / float(POWER_VOCAB_SIZE)
                 combat_vec[idx + 1] = p.get("amount", 0) / 10.0
                 
+        # --- Predicted Features (starting at 320) ---
+        combat_vec[320] = state.get("predicted_total_damage", 0) / 50.0
+        combat_vec[321] = state.get("predicted_end_block", 0) / 50.0
+        combat_vec[322] = 1.0 if state.get("surplus_block") else 0.0
+        
+        log(f"[Python] Predicted Damage: {state.get('predicted_total_damage', 0)}, Predicted Block: {state.get('predicted_end_block', 0)}, Surplus: {state.get('surplus_block')}")
+
     # --- Map Features (Size 2048) ---
     map_vec = np.zeros(2048, dtype=np.float32)
     if st_idx == 1:
@@ -1511,7 +1534,7 @@ def predict_action(state_json):
                 total_reward = session_cumulative_reward + terminal_reward
                 log(f"Episode end detected at floor {floor}, final reward {total_reward:.2f}. Recording...")
                 if training_worker:
-                    training_worker.record_episode_end(floor, total_reward)
+                    training_worker.record_game_over(floor, total_reward)
                 episode_end_recorded = True
                 
                 # Flush trajectory if it exists
@@ -1823,7 +1846,7 @@ def predict_action(state_json):
                 
                 # NEW: Raw trajectory logging for offline learning
                 terminal = (state_type == "game_over")
-                raw_logger.log_step(state_json, action_idx, probs, mask, reward, terminal=terminal)
+                raw_logger.log_step(state_json, action_idx, probs, mask, reward, log_prob, terminal=terminal)
 
                 if config and len(current_trajectory) >= config.unroll_length:
                     # Defer flushing until we see the next state for bootstrapping
@@ -1886,6 +1909,7 @@ class CommandHandler(BaseHTTPRequestHandler):
                 "step_count": training_worker.step_count if training_worker else 0,
                 "worker_error": training_worker.last_error if training_worker else None,
                 "is_updating": training_worker.is_updating if training_worker else False,
+                "initialized": initialized,
                 "last_activity_time": last_activity_time
             }).encode())
             
@@ -1931,7 +1955,8 @@ class CommandHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"status": "offline_training_started"}).encode())
             else:
-                self.send_response(500)
+                log("WARNING: /offline_train called but TrainingWorker not initialized yet.")
+                self.send_response(503) # Service Unavailable
                 self.send_header("Content-type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({"status": "error", "message": "TrainingWorker not initialized"}).encode())

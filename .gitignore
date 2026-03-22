@@ -5,7 +5,6 @@ R-NaD/venv/
 communication-mod/communication-mod.pck
 R-NaD/__pycache__/
 
-tmp/
 **/__pycache__/
 R-NaD/checkpoints/
 bin/
@@ -20,5 +19,6 @@ mlruns/
 R-NaD/trajectories/
 
 
+tmp/
 StS2_Decompiled/
 R-NaD/logs/

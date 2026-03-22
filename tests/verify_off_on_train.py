@@ -38,6 +38,8 @@ def create_mock_trajectory():
     filename = f"traj_{timestamp}_{episode_idx}.json"
     filepath = os.path.join(TRAJ_DIR, filename)
     
+    NUM_ACTIONS = 100 # Match R-NaD model output dimension
+    
     steps = []
     for i in range(128):
         state = {
@@ -50,9 +52,10 @@ def create_mock_trajectory():
         step_data = {
             "state_json": json.dumps(state),
             "action_idx": 5,
-            "probs": [0.0] * 400,
-            "mask": [False] * 400,
-            "reward": 0.0
+            "probs": [0.0] * NUM_ACTIONS,
+            "mask": [False] * NUM_ACTIONS,
+            "reward": 0.0,
+            "log_prob": 0.0
         }
         step_data["probs"][5] = 1.0
         step_data["mask"][5] = True

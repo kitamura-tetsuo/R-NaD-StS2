@@ -45,7 +45,7 @@ class RNaDConfig(NamedTuple):
     accumulation_steps: int = 1
     learning_rate: float = 1e-4
     discount_factor: float = 0.99
-    max_steps: int = 1000
+    max_steps: int = 2000
     entropy_schedule_start: float = 0.1
     entropy_schedule_end: float = 0.01
     clip_rho_threshold: float = 1.0
@@ -57,7 +57,7 @@ class RNaDConfig(NamedTuple):
     num_blocks: int = 4
     seq_len: int = 8
     hidden_size: int = 128
-    unroll_length: int = 96
+    unroll_length: int = 32
     seed: int = None
 
 def v_trace(

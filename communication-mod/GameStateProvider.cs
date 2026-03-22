@@ -15,6 +15,63 @@ public partial class MainFile : Node
     private static string _lastMapBoss = "";
     private static (int row, int col)? _lastMapPos = null;
 
+    // Combat Prediction Verification
+    private static int _lastPredictedDamage = 0;
+    private static int _lastPredictedBlock = 0;
+    private static int _lastPlayerHp = 0;
+    private static int _lastFloor = -1;
+    private static bool _lastRetainsBlock = false;
+    private static bool _waitingForVerification = false;
+
+    private void VerifyCombatPrediction(MegaCrit.Sts2.Core.Entities.Players.Player player, int currentFloor)
+    {
+        if (!_waitingForVerification) return;
+        _waitingForVerification = false;
+
+        if (currentFloor != _lastFloor) return;
+
+        int currentHp = player?.Creature.CurrentHp ?? 0;
+        int currentBlock = player?.Creature.Block ?? 0;
+
+        int actualHpLoss = _lastPlayerHp - currentHp;
+        int expectedHpLoss = Math.Max(0, _lastPredictedDamage - _lastPredictedBlock);
+
+        bool mismatch = false;
+        string reason = "";
+
+        if (actualHpLoss != expectedHpLoss)
+        {
+            mismatch = true;
+            reason += $"HP Loss Mismatch: Actual {actualHpLoss}, Expected {expectedHpLoss}. ";
+        }
+
+        if (_lastRetainsBlock)
+        {
+            int expectedRemainingBlock = Math.Max(0, _lastPredictedBlock - _lastPredictedDamage);
+            if (currentBlock < expectedRemainingBlock)
+            {
+                mismatch = true;
+                reason += $"Retained Block Mismatch: Actual {currentBlock}, Expected {expectedRemainingBlock}. ";
+            }
+        }
+
+        if (mismatch)
+        {
+            string logMsg = $"\n[CRITICAL ERROR] Combat prediction verification FAILED!\n" +
+                            $"Reason: {reason}\n" +
+                            $"Predictions: Damage={_lastPredictedDamage}, EndBlock={_lastPredictedBlock}, Retains={_lastRetainsBlock}\n" +
+                            $"Previous Turn: HP={_lastPlayerHp}\n" +
+                            $"Current Turn: HP={currentHp}, Block={currentBlock}\n";
+            Logger.Error(logMsg);
+            GD.PrintErr(logMsg);
+            System.Environment.Exit(1);
+        }
+        else
+        {
+            Logger.Info($"[VERIFIED] Combat prediction matched! HP Loss: {actualHpLoss}, Current Block: {currentBlock}");
+        }
+    }
+
     private string GetJsonState()
     {
         var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
@@ -357,6 +414,9 @@ public partial class MainFile : Node
 
         if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom combatRoom)
         {
+            var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
+            VerifyCombatPrediction(player, runState.TotalFloor);
+
             // Check if hand is in selection mode (e.g., Armaments, Grid selection in combat)
             // MUST do this before busy/queue check because selection is part of an action execution
             var handNode = MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Instance;
@@ -406,7 +466,6 @@ public partial class MainFile : Node
                 return "{\"type\":\"combat_waiting\"}";
             }
 
-            var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
             var pState = player?.PlayerCombatState;
 
             // Diagnostic: Log card properties once
@@ -441,14 +500,8 @@ public partial class MainFile : Node
             var combatNode = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
             bool canProceed = combatNode?.ProceedButton?.IsEnabled ?? false;
 
-            return System.Text.Json.JsonSerializer.Serialize(new
+            var combatData = new
             {
-                type = "combat",
-                floor = runState.TotalFloor,
-                seed = currentSeed,
-                is_gym = _gymMode,
-                can_proceed = canProceed,
-                actions_disabled = cm.PlayerActionsDisabled,
                 player = new
                 {
                     hp = player?.Creature.CurrentHp ?? 0,
@@ -512,7 +565,8 @@ public partial class MainFile : Node
                             intents.Add(new {
                                 type = intent.IntentType.ToString(),
                                 damage = damage,
-                                repeats = repeats
+                                repeats = repeats,
+                                count = (intent is MegaCrit.Sts2.Core.MonsterMoves.Intents.StatusIntent si) ? si.CardCount : 0
                             });
                         }
                     }
@@ -527,7 +581,112 @@ public partial class MainFile : Node
                         intents = intents
                     };
                 }).ToList()
-            }, JsonOptions);
+            };
+
+            // --- Predicted Damage and Block ---
+            int predictedTotalDamage = 0;
+            foreach (var e in combatRoom.Enemies.Where(monster => monster.IsAlive))
+            {
+                if (e.Monster?.NextMove?.Intents != null)
+                {
+                    foreach (var intent in e.Monster.NextMove.Intents)
+                    {
+                        if (intent is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent attackIntent)
+                        {
+                            predictedTotalDamage += attackIntent.GetSingleDamage(combatRoom.CombatState.PlayerCreatures, e) * attackIntent.Repeats;
+                        }
+                    }
+                }
+            }
+
+            int predictedEndBlock = 0;
+            if (player != null)
+            {
+                // Check if block is retained
+                bool retainsBlock = player.Creature.Powers.Any(p => p.Id.Entry == "Barricade" || p.Id.Entry == "Blur");
+                if (retainsBlock)
+                {
+                    predictedEndBlock = player.Creature.Block;
+                }
+
+                // Add Metallicize and Plated Armor
+                foreach (var p in player.Creature.Powers)
+                {
+                    if (p.Id.Entry == "Metallicize" || p.Id.Entry == "Plated Armor")
+                    {
+                        predictedEndBlock += p.Amount;
+                    }
+                }
+
+                // Relics: Orichalcum
+                if (player.Relics.Any(r => r.Id.Entry == "Orichalcum"))
+                {
+                    // Orichalcum triggers if the player has 0 block at the end of the turn
+                    if (predictedEndBlock == 0 && player.Creature.Block == 0)
+                    {
+                        predictedEndBlock += 6;
+                    }
+                }
+
+                // Orbs (Frost)
+                if (pState != null)
+                {
+                    try
+                    {
+                        var orbsProp = pState.GetType().GetProperty("Orbs");
+                        var orbs = orbsProp?.GetValue(pState) as System.Collections.IEnumerable;
+                        if (orbs != null)
+                        {
+                            foreach (var orb in orbs)
+                            {
+                                var idProp = orb.GetType().GetProperty("Id");
+                                var idObj = idProp?.GetValue(orb);
+                                string orbId = "";
+                                if (idObj != null)
+                                {
+                                    var entryProp = idObj.GetType().GetProperty("Entry");
+                                    orbId = entryProp?.GetValue(idObj) as string ?? "";
+                                }
+                                if (orbId == "Frost")
+                                {
+                                    var passiveProp = orb.GetType().GetProperty("PassiveAmount");
+                                    predictedEndBlock += (int)(passiveProp?.GetValue(orb) ?? 0);
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            var resultDict = new Dictionary<string, object>
+            {
+                ["type"] = "combat",
+                ["floor"] = runState.TotalFloor,
+                ["seed"] = currentSeed,
+                ["is_gym"] = _gymMode,
+                ["can_proceed"] = canProceed,
+                ["actions_disabled"] = cm.PlayerActionsDisabled,
+                ["player"] = combatData.player,
+                ["hand"] = combatData.hand,
+                ["potions"] = combatData.potions,
+                ["enemies"] = combatData.enemies,
+                ["predicted_total_damage"] = predictedTotalDamage,
+                ["predicted_end_block"] = predictedEndBlock,
+                ["surplus_block"] = predictedEndBlock >= predictedTotalDamage,
+                ["retains_block"] = player != null && player.Creature.Powers.Any(p => p.Id.Entry == "Barricade" || p.Id.Entry == "Blur")
+            };
+
+            var result = System.Text.Json.JsonSerializer.Serialize(resultDict, JsonOptions);
+
+            // Update trackers (StepAI will set _waitingForVerification if needed)
+            _lastPredictedDamage = predictedTotalDamage;
+            _lastPredictedBlock = predictedEndBlock;
+            _lastPlayerHp = player?.Creature.CurrentHp ?? 0;
+            _lastFloor = runState.TotalFloor;
+            _lastRetainsBlock = resultDict.ContainsKey("retains_block") && (bool)resultDict["retains_block"];
+
+            return result;
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.MapRoom || (MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false))
         {
