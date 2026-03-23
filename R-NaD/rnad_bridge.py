@@ -181,17 +181,70 @@ experience_queue = queue.Queue()
 current_trajectory = []
 training_worker = None
 deferred_chunk = None
-
-# predict_action state globals (formerly function attributes)
 history = []
-episode_end_recorded = False
-session_cumulative_reward = 0.0
-skipped_reward_indices = set()
-last_reward_floor = -1
-last_processed_floor = -1
-last_player_hp = 0
-last_total_enemy_hp = 0
-last_selected_reward_idx = None
+# Bridge state trackers
+# Reward and Game State Tracking
+class RewardTracker:
+    def __init__(self):
+        self.last_processed_floor: int = -1
+        self.last_player_hp: int = 0
+        self.last_total_enemy_hp: int = 0
+        self.last_reward_floor: int = -1
+        self.last_selected_reward_idx: int | None = None
+        self.skipped_reward_indices: set[int] = set()
+        self.session_cumulative_reward: float = 0.0
+        self.episode_end_recorded: bool = False
+        self.combat_initialized: bool = False
+
+    def reset_for_new_run(self):
+        """Reset state when returning to main menu or starting a fresh run."""
+        self.last_processed_floor = -1
+        self.last_player_hp = 0
+        self.last_total_enemy_hp = 0
+        self.last_reward_floor = -1
+        self.last_selected_reward_idx = None
+        self.skipped_reward_indices = set()
+        self.session_cumulative_reward = 0.0
+        self.episode_end_recorded = False
+        self.combat_initialized = False
+        log("RewardTracker: Full reset for new run.")
+
+    def reset_for_next_episode(self):
+        """Reset per-episode flags but maybe keep some session info if needed."""
+        self.episode_end_recorded = False
+        self.session_cumulative_reward = 0.0
+        self.skipped_reward_indices = set()
+        self.combat_initialized = False
+        # Do NOT reset last_processed_floor here as it might be used across screens
+        log("RewardTracker: Per-episode reset.")
+
+    def initialize_combat(self, hp, enemy_hp):
+        """Initialize combat trackers to avoid the start-of-combat penalty."""
+        self.last_player_hp = hp
+        self.last_total_enemy_hp = enemy_hp
+        self.combat_initialized = True
+        log(f"RewardTracker: Combat initialized (Player HP: {hp}, Enemy HP: {enemy_hp})")
+
+# Preserve RewardTracker state across re-imports
+if 'rnad_bridge' in sys.modules:
+    old_mod = sys.modules['rnad_bridge']
+    if hasattr(old_mod, 'reward_tracker'):
+        old_tracker = old_mod.reward_tracker
+        reward_tracker = RewardTracker()
+        reward_tracker.last_processed_floor = getattr(old_tracker, 'last_processed_floor', -1)
+        reward_tracker.last_player_hp = getattr(old_tracker, 'last_player_hp', 0)
+        reward_tracker.last_total_enemy_hp = getattr(old_tracker, 'last_total_enemy_hp', 0)
+        reward_tracker.last_reward_floor = getattr(old_tracker, 'last_reward_floor', -1)
+        reward_tracker.last_selected_reward_idx = getattr(old_tracker, 'last_selected_reward_idx', None)
+        reward_tracker.skipped_reward_indices = getattr(old_tracker, 'skipped_reward_indices', set())
+        reward_tracker.session_cumulative_reward = getattr(old_tracker, 'session_cumulative_reward', 0.0)
+        reward_tracker.episode_end_recorded = getattr(old_tracker, 'episode_end_recorded', False)
+        reward_tracker.combat_initialized = getattr(old_tracker, 'combat_initialized', False)
+        log("Preserved RewardTracker state.")
+    else:
+        reward_tracker = RewardTracker()
+else:
+    reward_tracker = RewardTracker()
 
 # Combat Prediction Verification
 # Preserve globals across re-imports if already in sys.modules
@@ -211,15 +264,7 @@ if 'rnad_bridge' in sys.modules:
     deferred_chunk = getattr(old_mod, 'deferred_chunk', None)
     
     # NEW: Preserve predict_action state
-    history = getattr(old_mod, 'history', history)
-    episode_end_recorded = getattr(old_mod, 'episode_end_recorded', episode_end_recorded)
-    session_cumulative_reward = getattr(old_mod, 'session_cumulative_reward', session_cumulative_reward)
-    skipped_reward_indices = getattr(old_mod, 'skipped_reward_indices', skipped_reward_indices)
-    last_reward_floor = getattr(old_mod, 'last_reward_floor', last_reward_floor)
-    last_processed_floor = getattr(old_mod, 'last_processed_floor', last_processed_floor)
-    last_player_hp = getattr(old_mod, 'last_player_hp', last_player_hp)
-    last_total_enemy_hp = getattr(old_mod, 'last_total_enemy_hp', last_total_enemy_hp)
-    last_selected_reward_idx = getattr(old_mod, 'last_selected_reward_idx', last_selected_reward_idx)
+    history = getattr(old_mod, 'history', [])
     
     log(f"Preserved state from existing rnad_bridge module. Queue size: {experience_queue.qsize() if hasattr(experience_queue, 'qsize') else 'unknown'}")
 else:
@@ -1308,44 +1353,55 @@ def compute_intermediate_reward(state, state_type, action_idx):
     # Current state values
     current_floor = state.get("floor", 0)
     player_data = state.get("player", {}) or {}
-    current_hp = player_data.get("hp", state.get("hp", 0))
+    current_hp = int(player_data.get("hp", state.get("hp", 0)) or 0)
+    current_energy = int(player_data.get("energy", state.get("energy", 0)) or 0)
     enemies = state.get("enemies", []) or []
-    current_enemy_hp = sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0)
+    current_enemy_hp = int(sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0) or 0)
 
     # Floor progression reward
-    last_processed_floor = getattr(predict_action, 'last_processed_floor', -1)
-    
-    if current_floor > last_processed_floor:
+    if current_floor > reward_tracker.last_processed_floor:
         # Give reward only when moving forward (not initial 0)
-        if last_processed_floor != -1:
+        if reward_tracker.last_processed_floor != -1:
             intermediate_reward += 0.1
             log(f"Intermediate reward for floor {current_floor}: +0.1")
         
-        # Reset relative trackers when floor changes
-        setattr(predict_action, 'last_processed_floor', current_floor)
-        setattr(predict_action, 'last_player_hp', current_hp)
-        setattr(predict_action, 'last_total_enemy_hp', current_enemy_hp)
+        # Update trackers when floor changes
+        reward_tracker.last_processed_floor = current_floor
+        reward_tracker.last_player_hp = current_hp
+        reward_tracker.last_total_enemy_hp = current_enemy_hp
+        reward_tracker.combat_initialized = False # Reset combat init on floor change
         return intermediate_reward # Return early for floor change to avoid double counting deltas
 
     # Combat delta reward (Dense Reward)
     if state_type == "combat":
-        last_hp = getattr(predict_action, 'last_player_hp', current_hp)
-        last_enemy_hp = getattr(predict_action, 'last_total_enemy_hp', current_enemy_hp)
+        # Task 2: Fix combat initialization to avoid start-of-combat penalty
+        if not reward_tracker.combat_initialized:
+            reward_tracker.initialize_combat(current_hp, current_enemy_hp)
+            # return 0.0 # No delta on initialization step
         
-        # Calculate deltas (positive means damage dealt/taken accordingly)
-        damage_dealt = last_enemy_hp - current_enemy_hp
-        damage_taken = last_hp - current_hp
+        last_hp = reward_tracker.last_player_hp
+        last_enemy_hp = reward_tracker.last_total_enemy_hp
+        
+        # Task 2: Fix combat reward logic (damage dealt/taken clamping)
+        # Prevent negative rewards for enemy heals/summons or player heals
+        damage_dealt = max(0.0, float(last_enemy_hp - current_enemy_hp))
+        damage_taken = max(0.0, float(last_hp - current_hp))
         
         # Reward for damage dealt (0.002) and penalty for damage taken (-0.005)
         combat_reward = (damage_dealt * 0.002) - (damage_taken * 0.005)
         
         if abs(combat_reward) > 1e-6:
             intermediate_reward += combat_reward
-            # log(f"Combat delta reward: {combat_reward:.4f} (Dealt: {damage_dealt}, Taken: {damage_taken})")
         
         # Update trackers for next step
-        setattr(predict_action, 'last_player_hp', current_hp)
-        setattr(predict_action, 'last_total_enemy_hp', current_enemy_hp)
+        reward_tracker.last_player_hp = current_hp
+        reward_tracker.last_total_enemy_hp = current_enemy_hp
+
+    # Task 3: Energy efficiency reward (鼓励节省能量或尽早结束回合)
+    # 奖励值极小，仅作为打破僵局的 tie-breaker
+    if current_energy > 0:
+        energy_reward = current_energy * 1e-8
+        intermediate_reward += energy_reward
         
     return intermediate_reward
 
@@ -1358,7 +1414,7 @@ def get_action_mask(state, masked_reward_indices=None):
     
     if state_type == "combat":
         hand = state.get("hand") or []
-        enemies = [e for e in state.get("enemies", []) if e.get("hp", 0) > 0]
+        enemies = state.get("enemies", []) or []
         num_enemies = len(enemies)
         
         actions_disabled = state.get("actions_disabled", False)
@@ -1372,8 +1428,11 @@ def get_action_mask(state, masked_reward_indices=None):
                     needs_target = "Enemy" in target_type or "Single" in target_type
                     
                     if needs_target:
-                        for t in range(min(num_enemies, 5)):
-                            mask[i * 5 + t] = True
+                        # Task 3: Fix target masking for gaps in indices
+                        for t in range(min(len(enemies), 5)):
+                            enemy = enemies[t]
+                            if enemy.get("hp", 0) > 0:
+                                mask[i * 5 + t] = True
                     else:
                         # Self or No target cards use target_idx 0
                         mask[i * 5] = True
@@ -1390,8 +1449,11 @@ def get_action_mask(state, masked_reward_indices=None):
                     needs_target = "Enemy" in target_type or "Single" in target_type
                     
                     if needs_target:
-                        for t in range(min(num_enemies, 5)):
-                            mask[50 + i * 5 + t] = True
+                        # Task 3: Fix target masking for gaps in indices
+                        for t in range(min(len(enemies), 5)):
+                            enemy = enemies[t]
+                            if enemy.get("hp", 0) > 0:
+                                mask[50 + i * 5 + t] = True
                     else:
                         mask[50 + i * 5] = True
         else:
@@ -1535,8 +1597,7 @@ def predict_action(state_json):
     
     t_imports = time.time() - t0
     
-    global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key, last_activity_time
-    global history, episode_end_recorded, session_cumulative_reward, skipped_reward_indices, last_reward_floor, last_processed_floor, last_player_hp, last_total_enemy_hp, last_selected_reward_idx, deferred_chunk
+    global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key, last_activity_time, deferred_chunk, history
     
     try:
         t_json_start = time.time()
@@ -1552,19 +1613,17 @@ def predict_action(state_json):
         if state_type == "game_over":
             # Use a flag to record only once per game_over screen. 
             # Reset the flag when we see any gameplay state.
-            if not episode_end_recorded:
+            if not reward_tracker.episode_end_recorded:
                 floor = state.get("floor", 1)
-                # Ensure we include the terminal reward in the logged metric
                 terminal_reward = compute_reward(state, state_type)
-                total_reward = session_cumulative_reward + terminal_reward
+                total_reward = reward_tracker.session_cumulative_reward + terminal_reward
                 log(f"Episode end detected at floor {floor}, final reward {total_reward:.2f}. Recording...")
                 if training_worker:
                     training_worker.record_game_over(floor, total_reward)
-                episode_end_recorded = True
+                reward_tracker.episode_end_recorded = True
                 
                 # Flush trajectory if it exists
                 if current_trajectory:
-                    # Attribution of terminal reward and done flag
                     log(f"Attributing terminal reward {terminal_reward:.2f} to the last step of the episode.")
                     current_trajectory[-1]["rew"] += terminal_reward
                     current_trajectory[-1]["done"] = 1.0
@@ -1573,10 +1632,8 @@ def predict_action(state_json):
                     experience_queue.put(list(current_trajectory))
                     current_trajectory = []
                 
-                # Reset reward for next episode (will be reset below too, but safe)
-                session_cumulative_reward = 0.0
-            skipped_reward_indices = set()
-            last_total_enemy_hp = 0
+                # Reset reward for next episode
+                reward_tracker.reset_for_next_episode()
             
             # Clear history on episode end
             history = []
@@ -1588,23 +1645,16 @@ def predict_action(state_json):
                 deferred_chunk = None
 
         elif state_type in ["combat", "map", "event", "rest_site", "shop", "treasure"]:
-            episode_end_recorded = False
-            # Ensure cumulative reward is initialized is handled by global
-            # Reset skipped rewards when leaving rewards flow
-            skipped_reward_indices = set()
-            last_reward_floor = state.get("floor", -1)
+            reward_tracker.episode_end_recorded = False
+            reward_tracker.skipped_reward_indices = set()
+            reward_tracker.last_reward_floor = state.get("floor", -1)
         elif state_type == "rewards":
-            episode_end_recorded = False
-            if last_reward_floor != state.get("floor"):
-                skipped_reward_indices = set()
-                last_reward_floor = state.get("floor")
+            reward_tracker.episode_end_recorded = False
+            if reward_tracker.last_reward_floor != state.get("floor"):
+                reward_tracker.skipped_reward_indices = set()
+                reward_tracker.last_reward_floor = state.get("floor")
         elif state_type in ["main_menu", "none"]:
-            session_cumulative_reward = 0.0
-            episode_end_recorded = False
-            skipped_reward_indices = set()
-            last_processed_floor = -1
-            last_player_hp = 0
-            last_total_enemy_hp = 0
+            reward_tracker.reset_for_new_run()
         if not state_json:
             return json.dumps({"action": "wait"})
             
@@ -1616,8 +1666,8 @@ def predict_action(state_json):
         # Debug: write last state to a local file for monitoring
         try:
             last_state_path = os.path.join(LOG_DIR, "rnad_last_state.json")
-            with open(last_state_path, "w") as f:
-                f.write(state_json)
+            with open(last_state_path, "w", encoding="utf-8") as f:
+                f.write(str(state_json))
         except:
             pass
 
@@ -1636,7 +1686,7 @@ def predict_action(state_json):
         state_dict = encode_state(state)
         
         # Calculate Action Mask
-        masked_rewards = skipped_reward_indices
+        masked_rewards = reward_tracker.skipped_reward_indices
         mask = get_action_mask(state, masked_reward_indices=masked_rewards)
         do_deferred_imports()
         assert np is not None
@@ -1883,7 +1933,7 @@ def predict_action(state_json):
                 reward = base_reward + intermediate_reward
                 
                 # Accumulate session reward
-                session_cumulative_reward += reward
+                reward_tracker.session_cumulative_reward += reward
  
                 # Existing experience collection for TrainingWorker
                 if state_type in VALID_TRAJECTORY_STATES:
@@ -1913,12 +1963,15 @@ def predict_action(state_json):
                  if action["index"] < len(buttons):
                      btn_name = buttons[action["index"]].get("name", "").lower()
                      if "skip" in btn_name or "remov" in btn_name or "dismiss" in btn_name: 
-                         if last_selected_reward_idx is not None:
-                             log(f"Detected SKIP in card reward. Masking reward index {last_selected_reward_idx} for floor {state.get('floor')}")
-                             skipped_reward_indices.add(last_selected_reward_idx)
+                         if reward_tracker.last_selected_reward_idx is not None:
+                             log(f"Detected SKIP in card reward. Masking reward index {reward_tracker.last_selected_reward_idx} for floor {state.get('floor')}")
+                             last_idx = reward_tracker.last_selected_reward_idx
+                             if isinstance(last_idx, (int, float)):
+                                 reward_tracker.skipped_reward_indices.add(int(last_idx))
  
         if action.get("action") == "select_reward":
-            last_selected_reward_idx = action.get("index")
+            idx = action.get("index")
+            reward_tracker.last_selected_reward_idx = int(idx) if idx is not None else None
  
         res = json.dumps(action)
         t_total = time.time() - t0
