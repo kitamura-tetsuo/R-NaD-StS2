@@ -198,10 +198,16 @@ class CombatExpert(hk.Module):
             hand_cards.append(hk.Linear(self.hidden_size, name=f"hand_linear_{i}")(card_feat))
             
         enemy_nodes = []
+        monster_embedding = hk.Embed(vocab_size=40, embed_dim=32, name="monster_embedding")
         for i in range(5):
-            base_idx = 110 + i * 12
-            enemy_feat = combat_obs[base_idx : base_idx+12]
-            enemy_nodes.append(hk.Linear(self.hidden_size, name=f"enemy_linear_{i}")(enemy_feat))
+            base_idx = 110 + i * 16
+            alive = combat_obs[base_idx : base_idx + 1]
+            monster_id_idx = combat_vec_to_id(combat_obs[base_idx + 1])
+            monster_embed = monster_embedding(monster_id_idx)
+            is_minion = combat_obs[base_idx + 2 : base_idx + 3]
+            other_feats = combat_obs[base_idx + 3 : base_idx + 14]
+            combined_enemy_feat = jnp.concatenate([alive, monster_embed, is_minion, other_feats], axis=-1)
+            enemy_nodes.append(hk.Linear(self.hidden_size, name=f"enemy_linear_{i}")(combined_enemy_feat))
             
         tokens = jnp.stack([context_proj] + hand_cards + enemy_nodes, axis=0)
         pos_emb = hk.get_parameter("pos_emb_combat", [16, self.hidden_size], init=hk.initializers.TruncatedNormal())

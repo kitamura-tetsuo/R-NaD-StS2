@@ -431,26 +431,32 @@ POWER_VOCAB = {
     "EVOLVE": 16,
     "FEEL_THE_BURN": 17,
     "FIRE_BREATHING": 18,
-    "FLAME_BARRIER": 19
+    "FLAME_BARRIER": 19,
+    "MINION": 20
 }
-POWER_VOCAB_SIZE = 20
+POWER_VOCAB_SIZE = 21
 
 BOSS_VOCAB = {
-    "UNKNOWN": 0,
-    "SLIME_BOSS": 1,
-    "THE_GUARDIAN": 2,
-    "HEXAGHOST": 3,
-    "COLLECTOR": 4,
-    "AUTOMATON": 5,
-    "CHAMP": 6,
-    "AWAKENED_ONE": 7,
-    "TIME_EATER": 8,
-    "DONU_DECA": 9,
-    "THE_TWINS": 10,
-    "THE_CONJURER": 11,
     "THE_GHOST": 12
 }
 BOSS_VOCAB_SIZE = 20
+
+MONSTER_VOCAB = {
+    "UNKNOWN": 0,
+    "SLIME_M": 1, "SLIME_L": 2, "SLIME_S": 3,
+    "GREMLIN_FAT": 4, "GREMLIN_TSAR": 5, "GREMLIN_WIZ": 6, "GREMLIN_SHIELD": 7, "GREMLIN_SNEAK": 8,
+    "CULTIST": 9, "JAW_WORM": 10, "LOUSE_RED": 11, "LOUSE_GREEN": 12,
+    "SLAVER_BLUE": 13, "SLAVER_RED": 14, "SCRATCHER": 15,
+    "SENTRY": 16, "NOB": 17, "LAGAVULIN": 18,
+    "BOOK_OF_STABBING": 19, "SLAYER_STATUE": 20, "NEMESIS": 21,
+    "AUTOMATON_MINION": 22, "TORCH_HEAD": 23, "ORB_CORE": 24
+}
+MONSTER_VOCAB_SIZE = 40
+
+def get_monster_idx(monster_id):
+    if not monster_id: return 0
+    mid = str(monster_id).upper().replace(" ", "_")
+    return MONSTER_VOCAB.get(mid, 0)
 
 def get_boss_idx(boss_id):
     if not boss_id: return 0
@@ -1199,21 +1205,24 @@ def encode_state(state):
             combat_vec[base_idx + 8] = card.get("currentDamage", 0) / 50.0
             combat_vec[base_idx + 9] = card.get("currentBlock", 0) / 50.0
 
-        # Enemies (up to 5 enemies, 12 features each)
-        # Offset to 110 to avoid overlap with hand cards
+        # Enemies (up to 5 enemies, 16 features each)
+        # Offset to 110: 110 + 5*16 = 190 (fits before powers at 200)
         enemies = state.get("enemies", [])
         for i in range(min(len(enemies), 5)):
             enemy = enemies[i]
-            base_idx = 110 + i * 12
-            combat_vec[base_idx] = 1.0 # Alive
-            combat_vec[base_idx + 1] = enemy.get("hp", 0) / 200.0
-            combat_vec[base_idx + 2] = enemy.get("maxHp", 1) / 200.0
-            combat_vec[base_idx + 3] = enemy.get("block", 0) / 50.0
+            base_idx = 110 + i * 16
+            
+            combat_vec[base_idx] = 1.0 # Alive flag restored
+            combat_vec[base_idx + 1] = get_monster_idx(enemy.get("id")) # Enemy ID shifted
+            combat_vec[base_idx + 2] = 1.0 if enemy.get("isMinion") else 0.0 # Minion flag shifted
+            combat_vec[base_idx + 3] = enemy.get("hp", 0) / 200.0
+            combat_vec[base_idx + 4] = enemy.get("maxHp", 1) / 200.0
+            combat_vec[base_idx + 5] = enemy.get("block", 0) / 50.0
             
             intents = enemy.get("intents", [])
             for j in range(min(len(intents), 2)):
                 intent = intents[j]
-                intent_idx = base_idx + 4 + j * 4
+                intent_idx = base_idx + 6 + j * 4
                 it_map = {"Attack": 1, "Defense": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "DebuffStrong": 6, "Stun": 7, "StatusCard": 8, "Summon": 9}
                 it_type = intent.get("type")
                 assert it_type in it_map, f"intent: {it_type} not in map"
@@ -1221,7 +1230,7 @@ def encode_state(state):
                 combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
                 combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
                 combat_vec[intent_idx + 3] = intent.get("count", 0) / 10.0
-                log(f"[Python] Debug: {intent}, {combat_vec[intent_idx]}, {combat_vec[intent_idx + 1]}, {combat_vec[intent_idx + 2]}, {combat_vec[intent_idx + 3]}")
+                log(f"[Python] Debug Enemy {i}: ID={enemy.get('id')}, Alive={combat_vec[base_idx]}, Minion={combat_vec[base_idx+2]}, Intent={it_type}")
                 
         # Powers (starting at 200)
         # Player powers (up to 10, index 200-219)
@@ -1362,7 +1371,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
     current_hp = int(player_data.get("hp", state.get("hp", 0)) or 0)
     current_energy = int(player_data.get("energy", state.get("energy", 0)) or 0)
     enemies = state.get("enemies", []) or []
-    current_enemy_hp = int(sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0) or 0)
+    current_enemy_hp = int(sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0 and not e.get("isMinion", False)) or 0)
 
     # Floor progression reward
     if current_floor > reward_tracker.last_processed_floor:

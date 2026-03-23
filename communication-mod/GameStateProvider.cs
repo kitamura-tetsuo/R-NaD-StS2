@@ -577,6 +577,7 @@ public partial class MainFile : Node
                         hp = e.CurrentHp,
                         maxHp = e.MaxHp,
                         block = e.Block,
+                        isMinion = e.IsSecondaryEnemy,
                         powers = e.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>(),
                         intents = intents
                     };
