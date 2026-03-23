@@ -4,7 +4,7 @@ import time
 
 # Set XLA environment variables before JAX/other imports to prevent GPU OOM
 # Godot game and JAX both need GPU memory.
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.7" # Allow game some room
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5" # Allow game more room
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer=" # As suggested by JAX error
 
 # Ensure stdout/stderr are unbuffered and also log to a file
@@ -695,10 +695,7 @@ class TrainingWorker(threading.Thread):
                 # Or we can just call the logic directly if we want to avoid double locking or redundancy.
                 # However, perform_update is designed to be called with a batch.
                 
-                with self.lock:
-                    self.is_updating = False # Temporarily release to allow perform_update to set it
-                
-                self.perform_update(batch)
+                self.perform_update(batch, increment_step=False)
                 
                 with self.lock:
                     self.is_updating = True
@@ -711,7 +708,7 @@ class TrainingWorker(threading.Thread):
             with self.lock:
                 self.is_updating = False
 
-    def perform_update(self, batch):
+    def perform_update(self, batch, increment_step=True):
         with self.lock:
             self.is_updating = True
         
@@ -878,29 +875,36 @@ class TrainingWorker(threading.Thread):
                 if self.last_known_mean_game_overed_reward is not None:
                     metrics['mean_game_overed_reward'] = self.last_known_mean_game_overed_reward
 
-            self.step_count += 1
-            
-            log_msg = f"[Python] Training Step {self.step_count}: Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}"
-            if 'mean_game_overed_floor' in metrics:
-                log_msg += f", Mean Game Overed Floor={metrics['mean_game_overed_floor']:.2f}"
-            if 'mean_game_overed_reward' in metrics:
-                log_msg += f", Mean Game Overed Reward={metrics['mean_game_overed_reward']:.2f}"
-            print(log_msg)
-            
-            if self.experiment_manager:
-                self.experiment_manager.log_metrics(self.step_count, metrics)
+            if increment_step:
+                self.step_count += 1
+                
+                log_msg = f"[Python] Training Step {self.step_count}: Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}"
+                if 'mean_game_overed_floor' in metrics:
+                    log_msg += f", Mean Game Overed Floor={metrics['mean_game_overed_floor']:.2f}"
+                if 'mean_game_overed_reward' in metrics:
+                    log_msg += f", Mean Game Overed Reward={metrics['mean_game_overed_reward']:.2f}"
+                print(log_msg)
+                
+                if self.experiment_manager:
+                    self.experiment_manager.log_metrics(self.step_count, metrics)
 
-            if self.step_count % self.config.save_interval == 0:
-                checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_{self.step_count}.pkl"
+                if self.step_count % self.config.save_interval == 0:
+                    checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_{self.step_count}.pkl"
+                    if self.experiment_manager:
+                        # Use experiment-specific subdir if possible
+                        checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_{self.step_count}.pkl")
+                    
+                    self.learner.save_checkpoint(checkpoint_path, self.step_count)
+                    print(f"[Python] TrainingWorker: Saved checkpoint to {checkpoint_path}")
+                    
+                    if self.experiment_manager:
+                        self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
+            else:
+                log_msg = f"[Python] Offline Training (Step {self.step_count}): Loss={metrics['loss']:.4f}, Policy Loss={metrics['policy_loss']:.4f}, Entropy Alpha={metrics['alpha']:.4f}"
+                print(log_msg)
                 if self.experiment_manager:
-                    # Use experiment-specific subdir if possible
-                    checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_{self.step_count}.pkl")
-                
-                self.learner.save_checkpoint(checkpoint_path, self.step_count)
-                print(f"[Python] TrainingWorker: Saved checkpoint to {checkpoint_path}")
-                
-                if self.experiment_manager:
-                    self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
+                    # Log to the current step (likely 0 for pre-training)
+                    self.experiment_manager.log_metrics(self.step_count, metrics)
         finally:
             with self.lock:
                 self.is_updating = False
@@ -941,8 +945,8 @@ def load_model(checkpoint_path=None):
     # Define JIT-compiled prediction step to avoid re-compilation
     global _predict_step
     @jax.jit
-    def _predict_step(params, rng, state, mask):
-        logits, value = learner.network.apply(params, rng, state, mask)
+    def _predict_step(params, rng, state, mask, is_training):
+        logits, value = learner.network.apply(params, rng, state, mask, is_training=is_training)
         return logits, value
 
     # Pre-warm JAX compilation for all state types
@@ -956,13 +960,19 @@ def load_model(checkpoint_path=None):
         
         # Pre-warm for each switch branch (combat:0, map:1, event-like:2, grid:3, hand:4)
         for st_idx in [0, 1, 2, 3, 4]:
-            temp_obs = jax.tree_util.tree_map(lambda x: x[None, ...], dummy_obs) # (1, 1, ...)
-            temp_obs["state_type"] = jnp.array([[st_idx]], dtype=jnp.int32) # (1, 1)
-            dummy_mask_jit = jnp.zeros((1, 1, num_actions), dtype=jnp.float32)
+            # Pre-warm for all history lengths up to seq_len
+            # Actually, with padding we only need to warm for the fixed seq_len.
+            # But let's keep it robust and warm for T=config.seq_len.
+            T_warm = config.seq_len if config else 8
+            temp_obs = jax.tree_util.tree_map(lambda x: jnp.repeat(x[None, ...], T_warm, axis=0), dummy_obs) # (T, 1, ...)
+            temp_obs["state_type"] = jnp.zeros((T_warm, 1), dtype=jnp.int32) + st_idx # (T, 1)
+            dummy_mask_jit = jnp.zeros((T_warm, 1, num_actions), dtype=jnp.float32)
             
             # Split key for each pre-warm call to ensure stability
             predict_key, rng_key = jax.random.split(rng_key)
-            _ = _predict_step(learner.params, predict_key, temp_obs, dummy_mask_jit)
+            # Pre-warm for both training and inference modes
+            for is_train_val in [True, False]:
+                _ = _predict_step(learner.params, predict_key, temp_obs, dummy_mask_jit, is_train_val)
             log(f"[Python] JAX pre-warm for type {st_idx} complete.")
             
         log(f"[Python] All JAX pre-warms complete in {time.time() - t_warm_start:.2f}s")
@@ -1053,8 +1063,11 @@ def encode_state(state):
         "treasure_relics": 2,
         "card_reward": 2,
         "grid_selection": 3,
-        "hand_selection": 4
+        "hand_selection": 4,
+        "combat_waiting": 0
     }
+    assert state_type in type_map, f"{state_type} not in type_map"
+
     st_idx = type_map.get(state_type, 2)
     
     # --- Global Features (Size 128) ---
@@ -1117,7 +1130,15 @@ def encode_state(state):
             combat_vec[base_idx + 1] = 1.0 if card.get("isPlayable") else 0.0
             
             target_type = card.get("targetType", "None")
-            tt_map = {"SingleEnemy": 1, "AllEnemy": 2, "RandomEnemy": 3, "None": 0, "Self": 4}
+            # Map C# TargetType.ToString() to indices. Note: C# uses AnyEnemy and AllEnemies.
+            tt_map = {
+                "AnyEnemy": 1, "SingleEnemy": 1, 
+                "AllEnemies": 2, "AllEnemy": 2, 
+                "RandomEnemy": 3, 
+                "None": 0, 
+                "Self": 4
+            }
+            assert target_type in tt_map, f"Unknown targetType: {target_type}"
             combat_vec[base_idx + 2] = tt_map.get(target_type, 0) / 10.0
             combat_vec[base_idx + 3] = card.get("cost", 0) / 5.0
             combat_vec[base_idx + 4] = card.get("baseDamage", 0) / 20.0
@@ -1195,8 +1216,10 @@ def encode_state(state):
             map_vec[base_idx + 1] = row / 20.0
             map_vec[base_idx + 2] = col / 7.0
             
-            nt_map = {"Monster": 1, "Elite": 2, "Event": 3, "Rest": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
-            map_vec[base_idx + 3] = nt_map.get(node.get("type"), 0) / 10.0
+            nt_map = {"Monster": 1, "Elite": 2, "Unknown": 3, "RestSite": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
+            map_type = node.get("type")
+            assert map_type in nt_map, f"intent: {map_type} not in map"
+            map_vec[base_idx + 3] = nt_map.get(map_type, 0) / 10.0
             
             if current_pos and row == current_pos.get("row") and col == current_pos.get("col"):
                 map_vec[base_idx + 4] = 1.0
@@ -1210,8 +1233,10 @@ def encode_state(state):
                 reward = rewards[i]
                 base_idx = i * 4
                 event_vec[base_idx] = 1.0
-                rt_map = {"Gold": 1, "Card": 2, "Relic": 3, "Potion": 4, "Curse": 5}
-                event_vec[base_idx + 1] = rt_map.get(reward.get("type"), 0) / 10.0
+                rt_map = {"GoldReward": 1, "Gold": 1, "Card": 2, "CardReward": 2, "Relic": 3, "PotionReward": 4, "Potion": 4, "Curse": 5}
+                reward_type = reward.get("type")
+                assert reward_type in rt_map, f"intent: {reward_type} not in map"
+                event_vec[base_idx + 1] = rt_map.get(reward_type, 0) / 10.0
         elif state_type == "event":
             options = state.get("options", [])
             event_id = state.get("id", "Unknown")
@@ -1596,7 +1621,7 @@ def predict_action(state_json):
         except:
             pass
 
-        if state_type in ["none", "main_menu", "unknown"]:
+        if state_type in ["none", "main_menu", "unknown", "combat_waiting"]:
             return json.dumps({"action": "wait"})
 
         if not initialization_event.is_set():
@@ -1630,13 +1655,27 @@ def predict_action(state_json):
         if config and len(history) > config.seq_len:
             history.pop(0)
 
-        # Preparing dictionary with leading T and B dimensions for inference
-        T_hist = len(history)
+        # Preparing dictionary with fixed T (seq_len) for inference to avoid re-compilation
+        T_actual = len(history)
+        T_limit = config.seq_len if config else 8
+        
         batched_state = {}
         for k in state_dict.keys():
-            batched_state[k] = jnp.stack([h[0][k] for h in history], axis=0)[:, None, ...] # (T, B, ...)
+            # Extract real data from history
+            real_data = jnp.stack([h[0][k] for h in history], axis=0)
+            # Pad with zeros to fixed T_limit at the end
+            # Shape for padding: (T_limit - T_actual, ...)
+            pad_shape = (T_limit - T_actual,) + real_data.shape[1:]
+            padded_data = jnp.concatenate([real_data, jnp.zeros(pad_shape, dtype=real_data.dtype)], axis=0)
+            batched_state[k] = padded_data[:, None, ...] # (T_limit, 1, ...)
         
-        batched_mask = jnp.stack([h[1] for h in history], axis=0)[:, None, :] # (T, B, num_actions)
+        real_mask = jnp.stack([h[1] for h in history], axis=0)
+        pad_mask_shape = (T_limit - T_actual,) + real_mask.shape[1:]
+        padded_mask = jnp.concatenate([real_mask, jnp.zeros(pad_mask_shape, dtype=real_mask.dtype)], axis=0)
+        batched_mask = padded_mask[:, None, :] # (T_limit, 1, num_actions)
+        
+        # Inference mode toggle
+        inference_mode = os.environ.get("RNAD_INFERENCE_MODE") == "true"
         
         # Inference
         t_inf_start = time.time()
@@ -1660,23 +1699,36 @@ def predict_action(state_json):
             # We skip the critical log but could log a quiet confirmation if we wanted.
             pass
         
+        # Pass is_training flag to the network
+        is_training = not inference_mode
+        
         if _predict_step is None:
             # Fallback if jit failed
-            logits_seq, value_seq = learner.network.apply(learner.params, predict_key, batched_state, batched_mask.astype(jnp.float32))
+            logits_seq, value_seq = learner.network.apply(learner.params, predict_key, batched_state, batched_mask.astype(jnp.float32), is_training=is_training)
         else:
-            logits_seq, value_seq = _predict_step(learner.params, predict_key, batched_state, batched_mask.astype(jnp.float32))
+            # Note: _predict_step is JITed in load_model. We need to make sure it handles is_training.
+            # However, _predict_step currently doesn't take is_training as an argument.
+            # We'll need to update load_model as well.
+            logits_seq, value_seq = _predict_step(learner.params, predict_key, batched_state, batched_mask.astype(jnp.float32), is_training)
         t_inference = time.time() - t_inf_start
         
-        # Rollout: we only care about the latest step in the sequence
-        logits = logits_seq[-1:] # (1, B, num_actions)
-        value = value_seq[-1:]  # (1, B)
+        # Rollout: we only care about the actual latest step in the sequence (index T_actual - 1)
+        logits = logits_seq[T_actual - 1 : T_actual] # (1, B, num_actions)
+        value = value_seq[T_actual - 1 : T_actual]  # (1, B)
         
         # Probs are calculated from logits which are already masked in the network
         probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
         
-        # Sample action from masked distribution
-        rng_key, subkey = jax_local.random.split(rng_key)
-        action_idx = jax_local.random.categorical(subkey, logits).item()
+        # Sample or Argmax action
+        if inference_mode:
+            # Highest probability selection (Greedy)
+            action_idx = jnp.argmax(logits).item()
+            log(f"[Python] Inference mode (Greedy selection): index={action_idx}, prob={probs[action_idx]:.4f}")
+        else:
+            # Stochastic selection (Sampling)
+            rng_key, subkey = jax_local.random.split(rng_key)
+            action_idx = jax_local.random.categorical(subkey, logits).item()
+            
         log_prob = jax_local.nn.log_softmax(logits)[0, 0, action_idx].item()
         
         # ▼ [DEBUG LOGGING]

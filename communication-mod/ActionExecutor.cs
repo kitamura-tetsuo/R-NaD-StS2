@@ -155,14 +155,16 @@ public partial class MainFile : Node
         if (card != null)
         {
             bool canPlay = card.CanPlay();
-            string targetType = card.TargetType.ToString();
-            Logger.Info($"[AutoAI] Playing card: {card.Title} (ID: {cardId}, CanPlay: {canPlay}, TargetType: {targetType})");
+            var tt = card.TargetType;
+            Logger.Info($"[AutoAI] Playing card: {card.Title} (ID: {cardId}, CanPlay: {canPlay}, TargetType: {tt})");
 
             if (canPlay)
             {
                 MegaCrit.Sts2.Core.Entities.Creatures.Creature? target = null;
                 
-                if (targetType.Contains("Enemy") || targetType.Contains("Single"))
+                // Only resolve target for types that actually require a selection (AnyEnemy, AnyAlly, AnyPlayer)
+                // RandomEnemy and AllEnemies should be played with null target.
+                if (tt == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
                 {
                     int targetIdx = dict.ContainsKey("target_index") ? (int)dict["target_index"].AsInt64() : 0;
                     var aliveEnemies = combatState.Enemies.Where(e => e.IsAlive).ToList();
@@ -174,16 +176,16 @@ public partial class MainFile : Node
                     {
                         target = aliveEnemies.FirstOrDefault();
                     }
-                    Logger.Info($"[AutoAI] Targeted enemy index {targetIdx}: {target?.Name ?? "None"}");
+                    Logger.Info($"[AutoAI] Resolved target for {tt}: {target?.Name ?? "None"} (Index: {targetIdx})");
                 }
-                else if (targetType.Contains("Player") || targetType.Contains("Ally"))
+                else if (tt == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyAlly || tt == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyPlayer)
                 {
                     target = player.Creature;
-                    Logger.Info($"[AutoAI] Targeted player: {target?.Name ?? "None"}");
+                    Logger.Info($"[AutoAI] Resolved target for {tt}: {target?.Name ?? "None"}");
                 }
 
-                card.TryManualPlay(target);
-                Logger.Info($"[AutoAI] Called TryManualPlay for {card.Title} (Target: {target?.Name ?? "None"})");
+                bool result = card.TryManualPlay(target);
+                Logger.Info($"[AutoAI] TryManualPlay result for {card.Title}: {result} (Target: {target?.Name ?? "None"})");
             }
             else
             {

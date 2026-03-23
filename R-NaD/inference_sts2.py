@@ -32,10 +32,15 @@ def play_game(seed=None):
     print("[Inference] Launching Slay the Spire 2...")
     root_dir = "/home/ubuntu/src/R-NaD-StS2"
     
+    # Enable Inference Mode (Greedy selection, etc.)
+    env = os.environ.copy()
+    env["RNAD_INFERENCE_MODE"] = "true"
+    
     # We use launch.sh to ensure environment is correct
     process = subprocess.Popen(
         ["/bin/bash", "./launch.sh"],
         cwd=root_dir,
+        env=env,
         stdout=open(os.path.join(log_dir, "sts2_inference_stdout.log"), "w"),
         stderr=open(os.path.join(log_dir, "sts2_inference_stderr.log"), "w")
     )

@@ -56,7 +56,7 @@ class RNaDConfig(NamedTuple):
     num_heads: int = 6
     num_blocks: int = 4
     seq_len: int = 8
-    hidden_size: int = 128
+    hidden_size: int = 256
     unroll_length: int = 32
     seed: int = None
 
@@ -242,7 +242,7 @@ class SimpleExpert(hk.Module):
         super().__init__(name=name)
         self.hidden_size = hidden_size
         
-    def __call__(self, h_global, expert_obs, bow_obs):
+    def __call__(self, h_global, expert_obs, bow_obs, is_training=False):
         bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
         bow_combined = jnp.concatenate(bow_vecs, axis=-1)
         h = jnp.concatenate([h_global, expert_obs, bow_combined], axis=-1)
@@ -356,9 +356,9 @@ class TransformerNet(hk.Module):
             return jax.lax.switch(st_idx, [
                 lambda: combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
                 lambda: map_expert(h_g, s_dict["map"], bow_obs, is_training),
-                lambda: event_expert(h_g, s_dict["event"], bow_obs),
-                lambda: grid_expert(h_g, s_dict["event"], bow_obs),
-                lambda: hand_expert(h_g, s_dict["event"], bow_obs)
+                lambda: event_expert(h_g, s_dict["event"], bow_obs, is_training),
+                lambda: grid_expert(h_g, s_dict["event"], bow_obs, is_training),
+                lambda: hand_expert(h_g, s_dict["event"], bow_obs, is_training)
             ])
 
         # Get T and B dimensions
@@ -378,9 +378,9 @@ class TransformerNet(hk.Module):
             # Ensure every expert is called at least once during init
             _ = combat_expert(dummy_h_g, state_dict["combat"][0, 0], dummy_bow_obs, is_training)
             _ = map_expert(dummy_h_g, state_dict["map"][0, 0], dummy_bow_obs, is_training)
-            _ = event_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs)
-            _ = grid_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs)
-            _ = hand_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs)
+            _ = event_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
+            _ = grid_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
+            _ = hand_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             
             # Policy and value heads also need to be called during init
             dummy_features = jnp.zeros((1, 1, self.hidden_size))

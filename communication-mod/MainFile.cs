@@ -93,6 +93,8 @@ public partial class MainFile : Node
         try
         {
             string stateJson = GetJsonState();
+            if (string.IsNullOrEmpty(stateJson)) return false;
+
             long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
 
             var swBridge = System.Diagnostics.Stopwatch.StartNew();

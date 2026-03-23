@@ -57,14 +57,14 @@ public partial class MainFile : Node
 
         if (mismatch)
         {
-            string logMsg = $"\n[CRITICAL ERROR] Combat prediction verification FAILED!\n" +
+            string logMsg = $"\n[ERROR] Combat prediction verification FAILED!\n" +
                             $"Reason: {reason}\n" +
                             $"Predictions: Damage={_lastPredictedDamage}, EndBlock={_lastPredictedBlock}, Retains={_lastRetainsBlock}\n" +
                             $"Previous Turn: HP={_lastPlayerHp}\n" +
                             $"Current Turn: HP={currentHp}, Block={currentBlock}\n";
             Logger.Error(logMsg);
             GD.PrintErr(logMsg);
-            System.Environment.Exit(1);
+            // System.Environment.Exit(1); // Made non-fatal to avoid "freezing" the inference run
         }
         else
         {
@@ -463,7 +463,7 @@ public partial class MainFile : Node
                 if (queueProcessing) {
                     Logger.Info("[AutoAI] combat_waiting: ActionQueue is not empty. Waiting for execution.");
                 }
-                return "{\"type\":\"combat_waiting\"}";
+                return null;
             }
 
             var pState = player?.PlayerCombatState;
@@ -599,17 +599,10 @@ public partial class MainFile : Node
                 }
             }
 
-            int predictedEndBlock = 0;
-            if (player != null)
-            {
-                // Check if block is retained
-                bool retainsBlock = player.Creature.Powers.Any(p => p.Id.Entry == "Barricade" || p.Id.Entry == "Blur");
-                if (retainsBlock)
-                {
-                    predictedEndBlock = player.Creature.Block;
-                }
-
-                // Add Metallicize and Plated Armor
+        int predictedEndBlock = player?.Creature.Block ?? 0;
+        if (player != null)
+        {
+            // Add Metallicize and Plated Armor
                 foreach (var p in player.Creature.Powers)
                 {
                     if (p.Id.Entry == "Metallicize" || p.Id.Entry == "Plated Armor")
