@@ -42,7 +42,7 @@ class LeagueConfig(NamedTuple):
 
 class RNaDConfig(NamedTuple):
     batch_size: int = 1
-    accumulation_steps: int = 1
+    accumulation_steps: int = 16
     learning_rate: float = 1e-4
     discount_factor: float = 0.99
     max_steps: int = 2000
@@ -437,14 +437,6 @@ def partial_load_params(target_params, source_params):
     source_keys = list(source_params.keys())
     
     for key, target_val in target_params.items():
-        # ABSOLUTE ISOLATION: if this is a new history/temporal component, do NOT load from checkpoint
-        # This check is performed before matching to prevent accidental overwrites
-        is_new_component = any(k in key.lower() for k in ['temporal', 'hist', 'v2'])
-        if is_new_component:
-            # logging.info(f"[R-NaD] ISOLATION: Skipping checkpoint load for {key}")
-            new_params[key] = target_val
-            continue
-
         source_key = _find_matching_key(key, source_keys)
         if source_key is None:
             new_params[key] = target_val
@@ -580,5 +572,13 @@ class RNaDLearner:
             self.fixed_params = partial_load_params(self.params, data['fixed_params'])
         else:
             self.fixed_params = self.params
-        self.opt_state = self.optimizer.init(self.params)
+
+        if 'opt_state' in data and data['opt_state'] is not None:
+            self.opt_state = data['opt_state']
+            logging.info("[R-NaD] Optimizer state loaded from checkpoint.")
+        else:
+            logging.warning("[R-NaD] No optimizer state found in checkpoint. Initializing fresh.")
+            self.opt_state = self.optimizer.init(self.params)
+            
         return data['step']
+        

@@ -296,21 +296,22 @@ def perform_restart(process, current_checkpoint, args):
     
     checkpoint = current_checkpoint
     # Try to find a newer checkpoint if we are in auto-resume mode
-    if not args.checkpoint:
-        logging.info("Searching for latest checkpoint for restart...")
-        new_checkpoint, run_id = get_latest_mlflow_checkpoint()
-        if new_checkpoint:
-            logging.info(f"Updating checkpoint for restart: {new_checkpoint}")
-            checkpoint = new_checkpoint
-            if run_id:
-                os.environ["RNAD_RUN_ID"] = run_id
-                logging.info(f"Continuing MLflow Run ID: {run_id}")
-        else:
-            # If no checkpoint found, still try to stay on the same run
-            run_id = get_latest_mlflow_run_id()
-            if run_id:
-                os.environ["RNAD_RUN_ID"] = run_id
-                logging.info(f"Continuing MLflow Run ID (no new checkpoint): {run_id}")
+    # Even if args.checkpoint was provided, on restart we usually want to continue from where we left off (the latest save)
+    # unless a specific flag was set to keep using the old one.
+    logging.info("Searching for latest checkpoint for restart...")
+    new_checkpoint, run_id = get_latest_mlflow_checkpoint()
+    if new_checkpoint:
+        logging.info(f"Updating checkpoint for restart: {new_checkpoint}")
+        checkpoint = new_checkpoint
+        if run_id:
+            os.environ["RNAD_RUN_ID"] = run_id
+            logging.info(f"Continuing MLflow Run ID: {run_id}")
+    elif not os.environ.get("RNAD_RUN_ID"):
+        # If no checkpoint found, still try to stay on the same run if not already set
+        run_id = get_latest_mlflow_run_id()
+        if run_id:
+            os.environ["RNAD_RUN_ID"] = run_id
+            logging.info(f"Continuing MLflow Run ID (no new checkpoint): {run_id}")
 
     # 1. Save the current trajectory buffer to disk before killing the process
     try:
@@ -398,6 +399,16 @@ def main():
     
     checkpoint = args.checkpoint
     run_id = os.environ.get("RNAD_RUN_ID")
+    
+    # If checkpoint is provided, try to extract run_id from its path if it follows standard pattern
+    if checkpoint and not run_id:
+        # Checkpoints are often in .../checkpoints/<run_id>/checkpoint_X.pkl
+        match = re.search(r"checkpoints/([0-9a-f]{32})/", checkpoint)
+        if match:
+            run_id = match.group(1)
+            logging.info(f"Extracted MLflow Run ID from checkpoint path: {run_id}")
+            os.environ["RNAD_RUN_ID"] = run_id
+
     if not checkpoint:
         logging.info("Searching for latest checkpoint in MLflow...")
         checkpoint, run_id = get_latest_mlflow_checkpoint()

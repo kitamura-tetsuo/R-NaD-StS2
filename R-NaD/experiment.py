@@ -4,11 +4,15 @@ from typing import Any, Dict
 import logging
 
 class ExperimentManager:
-    def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str = None, log_checkpoints: bool = False):
+    def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str | None = None, log_checkpoints: bool = False):
         # Ensure logs go to the project root regardless of CWD
         mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
         mlflow.set_experiment(experiment_name=experiment_name)
         self.log_checkpoints = log_checkpoints
+
+        # Force run_id to None if it's an empty string or just whitespace to trigger latest run search
+        if run_id is not None and not run_id.strip():
+            run_id = None
 
         # If no specific run_id is provided, try to resume the latest run from this experiment
         if not run_id and not mlflow.active_run():
@@ -19,21 +23,26 @@ class ExperimentManager:
                     runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["attributes.start_time DESC"], max_results=1)
                     if not runs.empty:
                         run_id = runs.iloc[0].run_id
-                        logging.info(f"Resuming latest MLflow run: {run_id}")
+                        logging.info(f"ExperimentManager: No run_id provided. Auto-detected latest MLflow run to resume: {run_id}")
                 except Exception as e:
-                    logging.warning(f"Failed to search for existing runs: {e}")
+                    logging.warning(f"ExperimentManager: Failed to search for existing runs: {e}")
 
         # Start a run explicitly if not already active
         if run_id:
             if mlflow.active_run() and mlflow.active_run().info.run_id != run_id:
+                logging.info(f"ExperimentManager: Ending current active run ({mlflow.active_run().info.run_id}) to switch to {run_id}")
                 mlflow.end_run()
+            
             if not mlflow.active_run():
                 try:
+                    # Attempt to resume existing run
                     mlflow.start_run(run_id=run_id)
+                    logging.info(f"ExperimentManager: Successfully resumed MLflow run: {run_id}")
                 except Exception as e:
-                    logging.warning(f"Failed to resume run {run_id}: {e}. Starting a new run.")
+                    logging.warning(f"ExperimentManager: Failed to resume run {run_id}: {e}. Starting a NEW run instead.")
                     mlflow.start_run()
         elif not mlflow.active_run():
+            logging.info("ExperimentManager: No run_id provided or found. Starting a NEW MLflow run.")
             mlflow.start_run()
 
         self.run_id = mlflow.active_run().info.run_id

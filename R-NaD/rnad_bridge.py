@@ -137,6 +137,12 @@ import datetime
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 # os.environ["JAX_PLATFORMS"] = "cpu"
 
+# Debug MLflow environment variables
+log(f"[Python] Debug: RNAD_RUN_ID={os.environ.get('RNAD_RUN_ID')}")
+log(f"[Python] Debug: RNAD_CHECKPOINT={os.environ.get('RNAD_CHECKPOINT')}")
+log(f"[Python] Debug: RNAD_SEED={os.environ.get('RNAD_SEED')}")
+log(f"[Python] Debug: RNAD_ROUTE={os.environ.get('RNAD_ROUTE')}")
+
 # Placeholders for deferred imports
 jax = None
 jnp = None
