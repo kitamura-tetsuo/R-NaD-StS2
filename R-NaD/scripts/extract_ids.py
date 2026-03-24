@@ -4,16 +4,15 @@ import json
 
 def slugify(txt):
     # CamelCase to snake_case transition:
-    # This regex is a simplified version of MegaCrit.Sts2.Core.Helpers.StringHelper.Slugify
-    # It adds an underscore before any capital letter preceded by another character.
-    # Pattern: ([A-Za-z0-9])([A-Z])
-    text = re.sub(r'([A-Za-z0-9])([A-Z])', r'\1_\2', txt.strip())
+    # We use a multi-pass approach to handle cases like ExpectAFight correctly.
+    # 1. Underscore before any uppercase letter preceded by lowercase/digit
+    text = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', txt.strip())
+    # 2. Underscore before any uppercase letter followed by lowercase (handles URLHelper -> URL_Helper)
+    text = re.sub(r'([A-Z])([A-Z][a-z])', r'\1_\2', text)
     # Convert to uppercase
     text = text.upper()
-    # Replace whitespace with underscore
-    text = re.sub(r'\s+', '_', text)
-    # Remove non-alphanumeric (excluding underscore)
-    text = re.sub(r'[^A-Z0-9_]', '', text)
+    # Replace whitespace/non-alphanumeric with underscore
+    text = re.sub(r'[^A-Z0-9]', '_', text)
     # Collapse multiple underscores
     text = re.sub(r'_+', '_', text)
     return text.strip('_')
@@ -43,6 +42,7 @@ def main():
         "POWERS": "MegaCrit.Sts2.Core.Models.Powers",
         "EVENTS": "MegaCrit.Sts2.Core.Models.Events",
         "ORBS": "MegaCrit.Sts2.Core.Models.Orbs",
+        "ENCOUNTERS": "MegaCrit.Sts2.Core.Models.Encounters",
     }
     
     all_ids = {}

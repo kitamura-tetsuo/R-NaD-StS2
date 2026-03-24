@@ -229,7 +229,7 @@ class MapExpert(hk.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
     
-    def __call__(self, h_global, map_obs, bow_obs, is_training=False):
+    def __call__(self, h_global, map_obs, bow_obs, is_training: bool = False, config: Optional[RNaDConfig] = None):
         bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
         bow_combined = jnp.concatenate(bow_vecs, axis=-1)
         bow_proj = jax.nn.relu(hk.Linear(128, name="bow_proj")(bow_combined))
@@ -366,7 +366,7 @@ class TransformerNet(hk.Module):
             }
             return jax.lax.switch(st_idx, [
                 lambda: combat_expert(h_g, s_dict["combat"], bow_obs, is_training, config=self.config),
-                lambda: map_expert(h_g, s_dict["map"], bow_obs, is_training),
+                lambda: map_expert(h_g, s_dict["map"], bow_obs, is_training, config=self.config),
                 lambda: event_expert(h_g, s_dict["event"], bow_obs, is_training),
                 lambda: grid_expert(h_g, s_dict["event"], bow_obs, is_training),
                 lambda: hand_expert(h_g, s_dict["event"], bow_obs, is_training)
@@ -394,7 +394,7 @@ class TransformerNet(hk.Module):
             
             # Ensure every expert is called at least once during init
             _ = combat_expert(dummy_h_g, state_dict["combat"][0, 0], dummy_bow_obs, is_training, config=self.config)
-            _ = map_expert(dummy_h_g, state_dict["map"][0, 0], dummy_bow_obs, is_training)
+            _ = map_expert(dummy_h_g, state_dict["map"][0, 0], dummy_bow_obs, is_training, config=self.config)
             _ = event_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             _ = grid_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             _ = hand_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
@@ -524,12 +524,12 @@ class RNaDLearner:
     def init(self, key):
         # Dummy state with T=1, B=1 to trigger temporal blocks initialization
         dummy_state = {
-            "global": jnp.zeros((1, 1, 128)),
+            "global": jnp.zeros((1, 1, 512)),
             "combat": jnp.zeros((1, 1, 384)),
-            "draw_bow": jnp.zeros((1, 1, 100)),
-            "discard_bow": jnp.zeros((1, 1, 100)),
-            "exhaust_bow": jnp.zeros((1, 1, 100)),
-            "master_bow": jnp.zeros((1, 1, 100)),
+            "draw_bow": jnp.zeros((1, 1, self.config.card_vocab_size)),
+            "discard_bow": jnp.zeros((1, 1, self.config.card_vocab_size)),
+            "exhaust_bow": jnp.zeros((1, 1, self.config.card_vocab_size)),
+            "master_bow": jnp.zeros((1, 1, self.config.card_vocab_size)),
             "map": jnp.zeros((1, 1, 2048)),
             "event": jnp.zeros((1, 1, 128)),
             "state_type": jnp.zeros((1, 1), dtype=jnp.int32),

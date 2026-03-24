@@ -513,7 +513,7 @@ public partial class MainFile : Node
                     drawPile = pState?.DrawPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
                     discardPile = pState?.DiscardPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
                     exhaustPile = pState?.ExhaustPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
-                    masterDeck = GetPropValue<string>(runState, "MasterDeck", GetPropValue<string>(runState, "Deck", GetPropValue<string>(player, "MasterDeck", "[]"))),
+                    masterDeck = player?.Deck.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
                     relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
                     powers = player?.Creature.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>()
                 },
@@ -861,9 +861,9 @@ public partial class MainFile : Node
         // Cache management: Check if floor or position changed or if we have no cache
         string currentBoss = "Unknown";
         try {
-            var currentAct = GetPropValue<object>(runState, "CurrentAct", null);
-            if (currentAct != null) {
-                var bossEncounter = GetPropValue<object>(currentAct, "BossEncounter", null);
+            var act = GetPropValue<object>(runState, "Act", null);
+            if (act != null) {
+                var bossEncounter = GetPropValue<object>(act, "BossEncounter", null);
                 if (bossEncounter != null) {
                     var idObj = GetPropValue<object>(bossEncounter, "Id", null);
                     if (idObj != null) {
@@ -925,9 +925,9 @@ public partial class MainFile : Node
         // Try to get Boss information
         string bossId = "Unknown";
         try {
-            var currentAct = GetPropValue<object>(runState, "CurrentAct", null);
-            if (currentAct != null) {
-                var bossEncounter = GetPropValue<object>(currentAct, "BossEncounter", null);
+            var act = GetPropValue<object>(runState, "Act", null);
+            if (act != null) {
+                var bossEncounter = GetPropValue<object>(act, "BossEncounter", null);
                 if (bossEncounter != null) {
                     var idObj = GetPropValue<object>(bossEncounter, "Id", null);
                     if (idObj != null) {

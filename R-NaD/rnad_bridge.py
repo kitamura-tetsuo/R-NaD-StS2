@@ -300,6 +300,8 @@ CARD_VOCAB = {
     "BASH": 3,
     "ANGER": 4,
     "BODY_SLAM": 5,
+    "EXPECT_A_FIGHT": 6,
+    "EXPECT_AFIGHT": 6, # Aliased for safety
     "CLASH": 6,
     "CLEAVE": 7,
     "CLOTHESLINE": 8,
@@ -471,8 +473,9 @@ if os.path.exists(GAME_IDS_PATH):
         RELIC_VOCAB, _ = expand_vocab(RELIC_VOCAB, game_ids_data.get("RELICS", []))
         POWER_VOCAB, _ = expand_vocab(POWER_VOCAB, game_ids_data.get("POWERS", []))
         MONSTER_VOCAB, _ = expand_vocab(MONSTER_VOCAB, game_ids_data.get("MONSTERS", []))
-        # Bosses are often handled as events or specifically in BOSS_VOCAB
-        BOSS_VOCAB, _ = expand_vocab(BOSS_VOCAB, game_ids_data.get("EVENTS", []))
+        # Bosses in StS2 are defined in Encounters
+        BOSS_VOCAB, _ = expand_vocab(BOSS_VOCAB, game_ids_data.get("ENCOUNTERS", []))
+        BOSS_VOCAB["Unknown"] = 0 # Safety fallback
         
         log(f"Expanded vocabularies from {GAME_IDS_PATH}")
         log(f"CARD_VOCAB: {len(CARD_VOCAB)}, MONSTER_VOCAB: {len(MONSTER_VOCAB)}")
@@ -523,12 +526,24 @@ def get_power_idx(power_id):
     assert pid in POWER_VOCAB, f"Unknown power_id: {power_id} (mapped to {pid})"
     return POWER_VOCAB[pid]
 
-def encode_bow(card_ids):
+def encode_bow(card_list):
     do_deferred_imports()
     assert np is not None
     vec = np.zeros(VOCAB_SIZE, dtype=np.float32)
-    if not card_ids: return vec
-    for cid in card_ids:
+    if isinstance(card_list, str):
+        log(f"WARNING: encode_bow received a string instead of a list: {card_list[:100]}...")
+        if card_list.strip().startswith("["):
+            try:
+                import json
+                card_list = json.loads(card_list)
+            except Exception as e:
+                log(f"ERROR: Failed to parse card_list string as JSON: {e}")
+                return vec
+        else:
+            return vec
+            
+    if not card_list: return vec
+    for cid in card_list:
         idx = get_card_idx(cid)
         if idx < VOCAB_SIZE:
             vec[idx] += 1.0
@@ -1080,7 +1095,7 @@ def load_model(checkpoint_path=None):
             # Actually, with padding we only need to warm for the fixed seq_len.
             # But let's keep it robust and warm for T=config.seq_len.
             T_warm = config.seq_len if config else 8
-            temp_obs = jax.tree_util.tree_map(lambda x: jnp.repeat(x[None, ...], T_warm, axis=0), dummy_obs) # (T, 1, ...)
+            temp_obs = jax.tree_util.tree_map(lambda x: jnp.repeat(x, T_warm, axis=0), dummy_obs) # (T, 1, ...)
             temp_obs["state_type"] = jnp.zeros((T_warm, 1), dtype=jnp.int32) + st_idx # (T, 1)
             dummy_mask_jit = jnp.zeros((T_warm, 1, num_actions), dtype=jnp.float32)
             
@@ -1218,8 +1233,8 @@ def encode_state(state):
         assert False, f"Unknown state_type for head_map: {state_type}"
     head_idx = head_map[state_type]
     
-    # --- Global Features (Size 128) ---
-    global_vec = np.zeros(128, dtype=np.float32)
+    # Global features (Size 512)
+    global_vec = np.zeros(512, dtype=np.float32)
     global_vec[0] = state.get("floor", 0) / 50.0
     global_vec[1] = state.get("gold", 0) / 500.0
     
@@ -1243,10 +1258,12 @@ def encode_state(state):
     # Relics (Multi-hot, size 50, starting at index 30)
     relics = state.get("relics", [])
     if not relics and player: # Fallback for combat state where player is a child
+        # Relics (Multi-hot, starting at index 30)
         relics = player.get("relics", [])
     for rid in relics:
+        rid = rid.upper().replace(" ", "_")
         idx = get_relic_idx(rid)
-        if 0 < idx < RELIC_VOCAB_SIZE:
+        if 0 < idx and 30 + idx < 512:
             global_vec[30 + idx] = 1.0
 
     # --- Combat Features (Size 384) ---
