@@ -349,8 +349,8 @@ class TransformerNet(hk.Module):
             seq_len=self.seq_len,
             name="temporal_history_v4"
         )
-        policy_head = hk.Linear(self.num_actions, name="policy_head")
-        value_head = hk.Linear(1, name="value_head")
+        policy_heads = [hk.Linear(self.num_actions, name=f"policy_head_{i}") for i in range(6)]
+        value_heads = [hk.Linear(1, name=f"value_head_{i}") for i in range(6)]
 
         def route_expert(st_idx, h_g, s_dict):
             bow_obs = {
@@ -365,6 +365,12 @@ class TransformerNet(hk.Module):
                 lambda: event_expert(h_g, s_dict["event"], bow_obs, is_training),
                 lambda: grid_expert(h_g, s_dict["event"], bow_obs, is_training),
                 lambda: hand_expert(h_g, s_dict["event"], bow_obs, is_training)
+            ])
+
+        def route_head(head_idx, feat):
+            # Using i=i to capture the value of i at definition time
+            return jax.lax.switch(head_idx, [
+                lambda i=i: (policy_heads[i](feat), value_heads[i](feat)) for i in range(6)
             ])
 
         # Get T and B dimensions
@@ -388,11 +394,14 @@ class TransformerNet(hk.Module):
             _ = grid_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             _ = hand_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             
-            # Policy and value heads also need to be called during init
-            dummy_features = jnp.zeros((1, 1, self.hidden_size))
-            _ = temporal_transformer(dummy_features, is_training)
-            _ = policy_head(dummy_features)
-            _ = value_head(dummy_features)
+            # Ensure every head is called at least once during init
+            dummy_features = jnp.zeros(self.hidden_size)
+            for i in range(6):
+                _ = policy_heads[i](dummy_features)
+                _ = value_heads[i](dummy_features)
+            
+            # Temporal transformer also needs to be called during init
+            _ = temporal_transformer(jnp.zeros((1, 1, self.hidden_size)), is_training)
 
         # Flatten T and B for expert processing via vmap
         state_dict_flat = jax.tree_util.tree_map(lambda x: x.reshape(T * B, *x.shape[2:]), state_dict)
@@ -411,10 +420,18 @@ class TransformerNet(hk.Module):
         # Apply temporal transformer
         features = temporal_transformer(features, is_training)
 
-        logits = policy_head(features)
+        # Apply multi-head Actor/Critic
+        # Reshape for head routing
+        features_flat = features.reshape(T * B, -1)
+        head_type_flat = state_dict["head_type"].reshape(T * B)
+        
+        logits_flat, value_flat = hk.vmap(route_head, split_rng=False)(head_type_flat, features_flat)
+        
+        logits = logits_flat.reshape(T, B, self.num_actions)
         logits = jnp.where(mask.astype(bool), logits, -1e9)
-        value = value_head(features)
-        return logits, jnp.squeeze(value, axis=-1)
+        value = value_flat.reshape(T, B)
+        
+        return logits, value
 
 # --- End Model Definition ---
 
@@ -510,7 +527,8 @@ class RNaDLearner:
             "master_bow": jnp.zeros((1, 1, 100)),
             "map": jnp.zeros((1, 1, 2048)),
             "event": jnp.zeros((1, 1, 128)),
-            "state_type": jnp.zeros((1, 1), dtype=jnp.int32)
+            "state_type": jnp.zeros((1, 1), dtype=jnp.int32),
+            "head_type": jnp.zeros((1, 1), dtype=jnp.int32)
         }
         dummy_mask = jnp.ones((1, 1, self.num_actions))
         self.params = self.network.init(key, dummy_state, dummy_mask)
@@ -580,8 +598,16 @@ class RNaDLearner:
             self.fixed_params = self.params
 
         if 'opt_state' in data and data['opt_state'] is not None:
-            self.opt_state = data['opt_state']
-            logging.info("[R-NaD] Optimizer state loaded from checkpoint.")
+            # Check if opt_state structure matches params to avoid "Dict key mismatch"
+            try:
+                # We do a dry-run of the optimizer update to verify tree structure compatibility
+                dummy_grads = jax.tree_util.tree_map(jnp.zeros_like, self.params)
+                _ = self.optimizer.update(dummy_grads, data['opt_state'], self.params)
+                self.opt_state = data['opt_state']
+                logging.info("[R-NaD] Optimizer state loaded and verified from checkpoint.")
+            except Exception as e:
+                logging.warning(f"[R-NaD] Optimizer state mismatch detected ({type(e).__name__}: {e}). Re-initializing fresh.")
+                self.opt_state = self.optimizer.init(self.params)
         else:
             logging.warning("[R-NaD] No optimizer state found in checkpoint. Initializing fresh.")
             self.opt_state = self.optimizer.init(self.params)

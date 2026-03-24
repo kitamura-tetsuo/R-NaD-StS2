@@ -62,7 +62,7 @@ def test_shapes():
     
     combat_vec = encoded["combat"]
     print(f"Combat vector shape: {combat_vec.shape}")
-    assert combat_vec.shape == (256,)
+    assert combat_vec.shape == (384,)
     
     # Check if currentDamage is at correct index
     # Hand features start at index 10. Each card has 10 features.
@@ -84,33 +84,42 @@ def test_shapes():
         # We need a batch axis
         import haiku as hk
         
-        # Access the learner from the bridge
+        # Access the learner from the bridge or create one
         learner = rnad_bridge.learner
         if learner is None:
-            print("Learner not initialized (bridge might be waiting for game). Mocking one...")
-            return
+            print("Learner not initialized. Creating a fresh one for testing...")
+            from src.rnad import RNaDConfig, RNaDLearner
+            config = RNaDConfig(hidden_size=256, num_heads=4, num_blocks=1)
+            learner = RNaDLearner(state_dim=128, num_actions=100, config=config)
+            learner.init(jax.random.PRNGKey(0))
             
         params = learner.params
         key = jax.random.PRNGKey(42)
         
-        obs_dict = {
-            "global": jnp.array([encoded["global"]]),
-            "combat": jnp.array([encoded["combat"]]),
-            "map": jnp.array([encoded["map"]]),
-            "event": jnp.array([encoded["event"]]),
-            "draw_bow": jnp.array([encoded["draw_bow"]]),
-            "discard_bow": jnp.array([encoded["discard_bow"]]),
-            "exhaust_bow": jnp.array([encoded["exhaust_bow"]]),
-            "master_bow": jnp.array([encoded["master_bow"]]),
-            "state_type": jnp.array([encoded["state_type"]])
-        }
-        mask_arr = jnp.ones((1, 100))
+        # Test all 6 heads
+        for h_type in range(6):
+            print(f"Testing head_type: {h_type}")
+            obs_dict = {
+                "global": jnp.array([[encoded["global"]]]),
+                "combat": jnp.array([[encoded["combat"]]]),
+                "map": jnp.array([[encoded["map"]]]),
+                "event": jnp.array([[encoded["event"]]]),
+                "draw_bow": jnp.array([[encoded["draw_bow"]]]),
+                "discard_bow": jnp.array([[encoded["discard_bow"]]]),
+                "exhaust_bow": jnp.array([[encoded["exhaust_bow"]]]),
+                "master_bow": jnp.array([[encoded["master_bow"]]]),
+                "state_type": jnp.array([[encoded["state_type"]]]), # (T=1, B=1)
+                "head_type": jnp.array([[h_type]])  # (T=1, B=1)
+            }
+            mask_arr = jnp.ones((1, 1, 100)) # (T=1, B=1, num_actions)
+            
+            # Run predict
+            logits, value = learner.network.apply(params, key, obs_dict, mask_arr, is_training=False)
+            print(f"  Model output shape: logits={logits.shape}, value={value.shape}")
+            assert logits.shape == (1, 1, 100)
+            assert value.shape == (1, 1)
         
-        # Run predict
-        logits, value = learner.network.apply(params, key, obs_dict, mask_arr, is_training=False)
-        print(f"Model output shape: {logits.shape}")
-        assert logits.shape == (1, 100)
-        print("Forward pass successful!")
+        print("Forward pass successful for all heads!")
         
     except Exception as e:
         print(f"Forward pass failed: {e}")

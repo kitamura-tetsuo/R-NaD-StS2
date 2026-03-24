@@ -789,7 +789,8 @@ class TrainingWorker(threading.Thread):
                 "master_bow": [],
                 "map": [],
                 "event": [],
-                "state_type": []
+                "state_type": [],
+                "head_type": []
             }
             padded_act = []
             padded_rew = []
@@ -798,7 +799,7 @@ class TrainingWorker(threading.Thread):
             padded_done = []
             padded_next_obs_dict = {
                 "global": [], "combat": [], "draw_bow": [], "discard_bow": [],
-                "exhaust_bow": [], "master_bow": [], "map": [], "event": [], "state_type": []
+                "exhaust_bow": [], "master_bow": [], "map": [], "event": [], "state_type": [], "head_type": []
             }
             padded_next_mask = []
             valid_mask = []
@@ -823,12 +824,16 @@ class TrainingWorker(threading.Thread):
                 
                 # Pad each element in the dict
                 for key in padded_obs_dict.keys():
-                    val_traj = [o[key] for o in obs_traj]
-                    # Pad with zeros (or last for state_type if preferred, but 2 is fine as default)
-                    if key == "state_type":
-                        val_traj += [np.int32(2)] * (max_len - l)
+                    # Default head_type to 5 (Reward/Selection) for old trajectories
+                    default_val = np.int32(5) if key == "head_type" else (np.int32(2) if key == "state_type" else None)
+                    
+                    if default_val is not None:
+                        val_traj = [o.get(key, default_val) for o in obs_traj]
+                        val_traj += [default_val] * (max_len - l)
                     else:
+                        val_traj = [o[key] for o in obs_traj]
                         val_traj += [np.zeros_like(val_traj[0])] * (max_len - l)
+                    
                     padded_obs_dict[key].append(val_traj)
 
                 # Pad act
@@ -864,12 +869,19 @@ class TrainingWorker(threading.Thread):
                 if next_step:
                     no = next_step['obs']
                     for key in padded_next_obs_dict.keys():
-                        padded_next_obs_dict[key].append(no[key])
+                        # Use same defaults as above for bootstrapping
+                        default_val = np.int32(5) if key == "head_type" else (np.int32(2) if key == "state_type" else None)
+                        if default_val is not None:
+                            padded_next_obs_dict[key].append(no.get(key, default_val))
+                        else:
+                            padded_next_obs_dict[key].append(no[key])
                     padded_next_mask.append(next_step['mask'])
                 else:
                     # Episode end or no next step available
                     for key in padded_next_obs_dict.keys():
-                        if key == "state_type":
+                        if key == "head_type":
+                            padded_next_obs_dict[key].append(np.int32(5))
+                        elif key == "state_type":
                             padded_next_obs_dict[key].append(np.int32(2))
                         else:
                             padded_next_obs_dict[key].append(np.zeros_like(padded_obs_dict[key][0][0]))
@@ -1104,10 +1116,12 @@ def encode_state(state):
     """Encodes the game state into a structured dictionary of NumPy arrays."""
     state_type = state.get("type", "unknown")
     
-    # State type mapping
+    # State type mapping for Experts (Backbone)
     # 0: Combat
     # 1: Map
     # 2: Event-like (Rewards, Event, Shop, Rest, Treasure, etc.)
+    # 3: Grid Selection
+    # 4: Hand Selection
     type_map = {
         "combat": 0,
         "map": 1,
@@ -1123,9 +1137,31 @@ def encode_state(state):
         "hand_selection": 4,
         "combat_waiting": 0
     }
-    assert state_type in type_map, f"{state_type} not in type_map"
-
     st_idx = type_map.get(state_type, 2)
+
+    # Head type mapping (Actor/Critic heads)
+    # 0: Combat
+    # 1: Map
+    # 2: Shop
+    # 3: Rest Site
+    # 4: Event
+    # 5: Reward (Post-Combat Reward screens + selection screens)
+    head_map = {
+        "combat": 0,
+        "combat_waiting": 0,
+        "map": 1,
+        "shop": 2,
+        "rest_site": 3,
+        "event": 4,
+        "rewards": 5,
+        "card_reward": 5,
+        "treasure": 5,
+        "treasure_relics": 5,
+        "grid_selection": 5,
+        "hand_selection": 5,
+        "game_over": 5
+    }
+    head_idx = head_map.get(state_type, 5)
     
     # --- Global Features (Size 128) ---
     global_vec = np.zeros(128, dtype=np.float32)
@@ -1341,7 +1377,8 @@ def encode_state(state):
         "master_bow": master_bow,
         "map": map_vec,
         "event": event_vec,
-        "state_type": np.int32(st_idx)
+        "state_type": np.int32(st_idx),
+        "head_type": np.int32(head_idx)
     }
 
 def compute_reward(state, state_type=None):
