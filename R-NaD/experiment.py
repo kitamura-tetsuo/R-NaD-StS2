@@ -1,10 +1,13 @@
 import mlflow
 import os
+import shutil
 from typing import Any, Dict
 import logging
 
 class ExperimentManager:
     def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str | None = None, log_checkpoints: bool = False):
+        self.last_checkpoint_path: str | None = None
+        self.last_checkpoint_step: int | None = None
         # Ensure logs go to the project root regardless of CWD
         mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
         mlflow.set_experiment(experiment_name=experiment_name)
@@ -106,7 +109,29 @@ class ExperimentManager:
         mlflow.log_metrics(flat_metrics, step=step)
 
     def log_checkpoint_artifact(self, step: int, ckpt_path: str):
-        """Logs the .pkl checkpoint as an MLflow artifact."""
+        """Logs the .pkl checkpoint as an MLflow artifact and cleans up the previous one."""
+        # Cleanup PREVIOUS local checkpoint if it exists and is different from the current one
+        if self.last_checkpoint_path and os.path.exists(self.last_checkpoint_path) and self.last_checkpoint_path != ckpt_path:
+            try:
+                os.remove(self.last_checkpoint_path)
+                logging.info(f"Cleaned up previous local checkpoint: {self.last_checkpoint_path}")
+            except Exception as e:
+                logging.warning(f"Failed to cleanup previous local checkpoint {self.last_checkpoint_path}: {e}")
+
+        # Cleanup PREVIOUS MLflow artifact if enabled
+        if self.log_checkpoints and self.last_checkpoint_step is not None:
+            try:
+                run = mlflow.get_run(self.run_id)
+                artifact_uri = run.info.artifact_uri
+                if artifact_uri.startswith("file://"):
+                    local_artifact_root = artifact_uri[7:]
+                    old_artifact_dir = os.path.join(local_artifact_root, "checkpoints", f"step_{self.last_checkpoint_step}")
+                    if os.path.exists(old_artifact_dir):
+                        shutil.rmtree(old_artifact_dir)
+                        logging.info(f"Cleaned up previous MLflow artifact directory: {old_artifact_dir}")
+            except Exception as e:
+                logging.warning(f"Failed to cleanup previous MLflow artifact for step {self.last_checkpoint_step}: {e}")
+
         if self.log_checkpoints and os.path.exists(ckpt_path):
             # Log the directory as an artifact in a 'checkpoints' folder in MLflow
             mlflow.log_artifact(ckpt_path, artifact_path=f"checkpoints/step_{step}")
@@ -115,3 +140,7 @@ class ExperimentManager:
             pass # logging.info(f"Skipping checkpoint upload to MLflow for step {step} (disabled).")
         else:
             logging.warning(f"Checkpoint path {ckpt_path} does not exist.")
+        
+        # Update last checkpoint info
+        self.last_checkpoint_path = ckpt_path
+        self.last_checkpoint_step = step

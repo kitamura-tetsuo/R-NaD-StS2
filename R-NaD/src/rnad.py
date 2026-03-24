@@ -58,6 +58,8 @@ class RNaDConfig(NamedTuple):
     seq_len: int = 8
     hidden_size: int = 256
     unroll_length: int = 32
+    card_vocab_size: int = 100
+    monster_vocab_size: int = 40
     seed: int = None
 
 def v_trace(
@@ -180,8 +182,9 @@ class CombatExpert(hk.Module):
         self.num_blocks = num_blocks
         self.num_heads = num_heads
     
-    def __call__(self, h_global, combat_obs, bow_obs, is_training=False):
-        card_embedding = hk.Embed(vocab_size=100, embed_dim=64, name="card_embedding")
+    def __call__(self, h_global, combat_obs, bow_obs, is_training: bool = False, config: Optional[RNaDConfig] = None):
+        card_vocab = config.card_vocab_size if config else 100
+        card_embedding = hk.Embed(vocab_size=card_vocab, embed_dim=64, name="card_embedding")
         bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
         bow_combined = jnp.concatenate(bow_vecs, axis=-1)
         bow_proj = jax.nn.relu(hk.Linear(128, name="bow_proj")(bow_combined))
@@ -198,7 +201,8 @@ class CombatExpert(hk.Module):
             hand_cards.append(hk.Linear(self.hidden_size, name=f"hand_linear_{i}")(card_feat))
             
         enemy_nodes = []
-        monster_embedding = hk.Embed(vocab_size=40, embed_dim=32, name="monster_embedding")
+        monster_vocab = config.monster_vocab_size if config else 40
+        monster_embedding = hk.Embed(vocab_size=monster_vocab, embed_dim=32, name="monster_embedding")
         for i in range(5):
             base_idx = 110 + i * 16
             alive = combat_obs[base_idx : base_idx + 1]
@@ -324,13 +328,14 @@ class TemporalTransformer(hk.Module):
         return x
 
 class TransformerNet(hk.Module):
-    def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len=8, name=None):
+    def __init__(self, num_actions, hidden_size, num_blocks, num_heads, seq_len=8, config=None, name=None):
         super().__init__(name=name)
         self.num_actions = num_actions
         self.hidden_size = hidden_size 
         self.num_blocks = num_blocks
         self.num_heads = num_heads
         self.seq_len = seq_len
+        self.config = config
 
     def __call__(self, state_dict, mask, is_training=False):
         # Use a more direct name and ensure it's not nested in '~'
@@ -360,7 +365,7 @@ class TransformerNet(hk.Module):
                 "master_bow": s_dict["master_bow"]
             }
             return jax.lax.switch(st_idx, [
-                lambda: combat_expert(h_g, s_dict["combat"], bow_obs, is_training),
+                lambda: combat_expert(h_g, s_dict["combat"], bow_obs, is_training, config=self.config),
                 lambda: map_expert(h_g, s_dict["map"], bow_obs, is_training),
                 lambda: event_expert(h_g, s_dict["event"], bow_obs, is_training),
                 lambda: grid_expert(h_g, s_dict["event"], bow_obs, is_training),
@@ -388,7 +393,7 @@ class TransformerNet(hk.Module):
             }.items()}
             
             # Ensure every expert is called at least once during init
-            _ = combat_expert(dummy_h_g, state_dict["combat"][0, 0], dummy_bow_obs, is_training)
+            _ = combat_expert(dummy_h_g, state_dict["combat"][0, 0], dummy_bow_obs, is_training, config=self.config)
             _ = map_expert(dummy_h_g, state_dict["map"][0, 0], dummy_bow_obs, is_training)
             _ = event_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             _ = grid_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
@@ -501,7 +506,7 @@ class RNaDLearner:
         hk.mixed_precision.set_policy(hk.nets.MLP, policy)
         
         def forward(state_dict, mask, is_training=False):
-            model = TransformerNet(num_actions, config.hidden_size, config.num_blocks, config.num_heads, seq_len=config.seq_len)
+            model = TransformerNet(num_actions, config.hidden_size, config.num_blocks, config.num_heads, seq_len=config.seq_len, config=config)
             return model(state_dict, mask, is_training=is_training)
             
         self.network = hk.transform(forward)

@@ -373,7 +373,6 @@ CARD_VOCAB = {
     "WOUND": 76,
     "ASCENDERS_BANE": 77
 }
-VOCAB_SIZE = 100 # Fixed size to allow for new cards
 
 RELIC_VOCAB = {
     "UNKNOWN": 0,
@@ -409,7 +408,6 @@ RELIC_VOCAB = {
     "WAR_PAINT": 30,
     "WHETSTONE": 31
 }
-RELIC_VOCAB_SIZE = 50
 
 POWER_VOCAB = {
     "UNKNOWN": 0,
@@ -434,12 +432,11 @@ POWER_VOCAB = {
     "FLAME_BARRIER": 19,
     "MINION": 20
 }
-POWER_VOCAB_SIZE = 21
 
 BOSS_VOCAB = {
+    "UNKNOWN": 0,
     "THE_GHOST": 12
 }
-BOSS_VOCAB_SIZE = 20
 
 MONSTER_VOCAB = {
     "UNKNOWN": 0,
@@ -451,16 +448,55 @@ MONSTER_VOCAB = {
     "BOOK_OF_STABBING": 19, "SLAYER_STATUE": 20, "NEMESIS": 21,
     "AUTOMATON_MINION": 22, "TORCH_HEAD": 23, "ORB_CORE": 24
 }
-MONSTER_VOCAB_SIZE = 40
+
+# --- Vocabulary Expansion Logic ---
+def expand_vocab(base_vocab, new_ids):
+    current_ids = set(base_vocab.keys())
+    # Find the next available index
+    next_idx = int(max(base_vocab.values()) + 1 if base_vocab else 0)
+    for id_str in sorted(new_ids):
+        if id_str not in current_ids:
+            base_vocab[id_str] = next_idx
+            next_idx += 1
+    return base_vocab, next_idx
+
+# Load extracted IDs if available
+GAME_IDS_PATH = "/home/ubuntu/src/R-NaD-StS2/R-NaD/scripts/game_ids.json"
+if os.path.exists(GAME_IDS_PATH):
+    try:
+        with open(GAME_IDS_PATH, 'r') as f:
+            game_ids_data = json.load(f)
+        
+        CARD_VOCAB, _ = expand_vocab(CARD_VOCAB, game_ids_data.get("CARDS", []))
+        RELIC_VOCAB, _ = expand_vocab(RELIC_VOCAB, game_ids_data.get("RELICS", []))
+        POWER_VOCAB, _ = expand_vocab(POWER_VOCAB, game_ids_data.get("POWERS", []))
+        MONSTER_VOCAB, _ = expand_vocab(MONSTER_VOCAB, game_ids_data.get("MONSTERS", []))
+        # Bosses are often handled as events or specifically in BOSS_VOCAB
+        BOSS_VOCAB, _ = expand_vocab(BOSS_VOCAB, game_ids_data.get("EVENTS", []))
+        
+        log(f"Expanded vocabularies from {GAME_IDS_PATH}")
+        log(f"CARD_VOCAB: {len(CARD_VOCAB)}, MONSTER_VOCAB: {len(MONSTER_VOCAB)}")
+    except Exception as e:
+        log(f"Error expanding vocabularies: {e}")
+
+# Re-calculate or fix vocab sizes for the model
+VOCAB_SIZE = max(max(CARD_VOCAB.values()) + 1, 600)
+RELIC_VOCAB_SIZE = max(max(RELIC_VOCAB.values()) + 1, 300)
+POWER_VOCAB_SIZE = max(max(POWER_VOCAB.values()) + 1, 280)
+BOSS_VOCAB_SIZE = max(max(BOSS_VOCAB.values()) + 1, 100)
+MONSTER_VOCAB_SIZE = max(max(MONSTER_VOCAB.values()) + 1, 128)
+
 
 def get_monster_idx(monster_id):
     if not monster_id: return 0
     mid = str(monster_id).upper().replace(" ", "_")
-    return MONSTER_VOCAB.get(mid, 0)
+    assert mid in MONSTER_VOCAB, f"Unknown monster_id: {monster_id} (mapped to {mid})"
+    return MONSTER_VOCAB[mid]
 
 def get_boss_idx(boss_id):
     if not boss_id: return 0
-    return BOSS_VOCAB.get(boss_id, 0)
+    assert boss_id in BOSS_VOCAB, f"Unknown boss_id: {boss_id}"
+    return BOSS_VOCAB[boss_id]
 
 def get_card_idx(card_id):
     if not card_id: return 0
@@ -468,21 +504,24 @@ def get_card_idx(card_id):
     if not card_id: return 0
     # Clean up (e.g., remove name suffixes if any)
     cid = str(card_id).split('+')[0].strip().upper()
-    return CARD_VOCAB.get(cid, 0)
+    assert cid in CARD_VOCAB, f"Unknown card_id: {card_id} (cleaned to {cid})"
+    return CARD_VOCAB[cid]
 
 def get_relic_idx(relic_id):
     if not relic_id: return 0
     if isinstance(relic_id, dict): relic_id = relic_id.get("id") or relic_id.get("name")
     if not relic_id: return 0
     rid = str(relic_id).upper()
-    return RELIC_VOCAB.get(rid, 0)
+    assert rid in RELIC_VOCAB, f"Unknown relic_id: {relic_id} (mapped to {rid})"
+    return RELIC_VOCAB[rid]
 
 def get_power_idx(power_id):
     if not power_id: return 0
     if isinstance(power_id, dict): power_id = power_id.get("id") or power_id.get("name")
     if not power_id: return 0
     pid = str(power_id).upper()
-    return POWER_VOCAB.get(pid, 0)
+    assert pid in POWER_VOCAB, f"Unknown power_id: {power_id} (mapped to {pid})"
+    return POWER_VOCAB[pid]
 
 def encode_bow(card_ids):
     do_deferred_imports()
@@ -981,34 +1020,42 @@ class TrainingWorker(threading.Thread):
 # training_worker = None # Handled at top now
 
 def load_model(checkpoint_path=None):
-    global learner, rng_key, training_worker, config, initialization_lock
+    global learner, rng_key, training_worker, config, initialization_lock, jax, jnp
     
     with initialization_lock:
+        do_deferred_imports()
         if initialization_event.is_set():
             return
-        
-        do_deferred_imports()
     
     num_actions = 100
-    config = RNaDConfig()
-    # Updated dummy state for structured dictionary input
+    # Create config with dynamic vocab sizes (already expanded at module level)
+    config = RNaDConfig(
+        card_vocab_size=VOCAB_SIZE,
+        monster_vocab_size=MONSTER_VOCAB_SIZE
+    )
+    
+    # Updated dummy observation for structured dictionary input
+    # Ensure dummy observation matches VOCAB_SIZE etc.
     dummy_obs = {
-        "global": jnp.zeros((1, 128)),
-        "combat": jnp.zeros((1, 384)),
-        "draw_bow": jnp.zeros((1, VOCAB_SIZE)),
-        "discard_bow": jnp.zeros((1, VOCAB_SIZE)),
-        "exhaust_bow": jnp.zeros((1, VOCAB_SIZE)),
-        "master_bow": jnp.zeros((1, VOCAB_SIZE)),
-        "map": jnp.zeros((1, 2048)),
-        "event": jnp.zeros((1, 128)),
-        "state_type": jnp.zeros((1,), dtype=jnp.int32)
+        "global": jnp.zeros((1, 1, 128)),
+        "combat": jnp.zeros((1, 1, 384)),
+        "draw_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
+        "discard_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
+        "exhaust_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
+        "master_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
+        "map": jnp.zeros((1, 1, 2048)),
+        "event": jnp.zeros((1, 1, 128)),
+        "state_type": jnp.zeros((1, 1), dtype=jnp.int32),
+        "head_type": jnp.zeros((1, 1), dtype=jnp.int32)
     }
-    do_deferred_imports()
+    dummy_mask = jnp.ones((1, 1, num_actions))
+    
+    # Pass 0 as state_dim (it's not used by Learner anymore, it uses config/obs_dict)
     assert RNaDLearner is not None
     assert jax is not None
     assert ExperimentManager is not None
     
-    learner = RNaDLearner(None, num_actions, config) # state_dim is now unused/ignored in init
+    learner = RNaDLearner(0, num_actions, config)
     rng_key = jax.random.PRNGKey(0)
 
     # Define JIT-compiled prediction step to avoid re-compilation
@@ -1039,9 +1086,13 @@ def load_model(checkpoint_path=None):
             
             # Split key for each pre-warm call to ensure stability
             predict_key, rng_key = jax.random.split(rng_key)
-            # Pre-warm for both training and inference modes
-            for is_train_val in [True, False]:
-                _ = _predict_step(learner.params, predict_key, temp_obs, dummy_mask_jit, is_train_val)
+            # Pre-warm for all head types (0-5)
+            for ht_idx in range(6):
+                temp_obs_ht = temp_obs.copy()
+                temp_obs_ht["head_type"] = jnp.zeros((T_warm, 1), dtype=jnp.int32) + ht_idx
+                # Pre-warm for both training and inference modes
+                for is_train_val in [True, False]:
+                    _ = _predict_step(learner.params, predict_key, temp_obs_ht, dummy_mask_jit, is_train_val)
             log(f"[Python] JAX pre-warm for type {st_idx} complete.")
             
         log(f"[Python] All JAX pre-warms complete in {time.time() - t_warm_start:.2f}s")
@@ -1137,7 +1188,9 @@ def encode_state(state):
         "hand_selection": 4,
         "combat_waiting": 0
     }
-    st_idx = type_map.get(state_type, 2)
+    if state_type not in type_map:
+        assert False, f"Unknown state_type for type_map: {state_type}"
+    st_idx = type_map[state_type]
 
     # Head type mapping (Actor/Critic heads)
     # 0: Combat
@@ -1161,7 +1214,9 @@ def encode_state(state):
         "hand_selection": 5,
         "game_over": 5
     }
-    head_idx = head_map.get(state_type, 5)
+    if state_type not in head_map:
+        assert False, f"Unknown state_type for head_map: {state_type}"
+    head_idx = head_map[state_type]
     
     # --- Global Features (Size 128) ---
     global_vec = np.zeros(128, dtype=np.float32)
@@ -1182,7 +1237,7 @@ def encode_state(state):
             global_vec[10 + i] = 1.0
             
     # Boss ID
-    boss_id = state.get("boss", "Unknown")
+    boss_id = state.get("boss")
     global_vec[20] = get_boss_idx(boss_id) / float(BOSS_VOCAB_SIZE)
     
     # Relics (Multi-hot, size 50, starting at index 30)
@@ -1232,7 +1287,7 @@ def encode_state(state):
                 "Self": 4
             }
             assert target_type in tt_map, f"Unknown targetType: {target_type}"
-            combat_vec[base_idx + 2] = tt_map.get(target_type, 0) / 10.0
+            combat_vec[base_idx + 2] = tt_map[target_type] / 10.0
             combat_vec[base_idx + 3] = card.get("cost", 0) / 5.0
             combat_vec[base_idx + 4] = card.get("baseDamage", 0) / 20.0
             combat_vec[base_idx + 5] = card.get("baseBlock", 0) / 20.0
@@ -1259,10 +1314,10 @@ def encode_state(state):
             for j in range(min(len(intents), 2)):
                 intent = intents[j]
                 intent_idx = base_idx + 6 + j * 4
-                it_map = {"Attack": 1, "Defense": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "DebuffStrong": 6, "Stun": 7, "StatusCard": 8, "Summon": 9}
+                it_map = {"Attack": 1, "Defense": 2, "Defend": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "DebuffStrong": 6, "Stun": 7, "StatusCard": 8, "Summon": 9}
                 it_type = intent.get("type")
-                assert it_type in it_map, f"intent: {it_type} not in map"
-                combat_vec[intent_idx] = it_map.get(it_type, 0) / 10.0
+                assert it_type in it_map, f"intent type: {it_type} not in it_map"
+                combat_vec[intent_idx] = it_map[it_type] / 10.0
                 combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
                 combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
                 combat_vec[intent_idx + 3] = intent.get("count", 0) / 10.0
@@ -1314,8 +1369,8 @@ def encode_state(state):
             
             nt_map = {"Monster": 1, "Elite": 2, "Unknown": 3, "RestSite": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
             map_type = node.get("type")
-            assert map_type in nt_map, f"intent: {map_type} not in map"
-            map_vec[base_idx + 3] = nt_map.get(map_type, 0) / 10.0
+            assert map_type in nt_map, f"map type: {map_type} not in nt_map"
+            map_vec[base_idx + 3] = nt_map[map_type] / 10.0
             
             if current_pos and row == current_pos.get("row") and col == current_pos.get("col"):
                 map_vec[base_idx + 4] = 1.0
@@ -1331,8 +1386,8 @@ def encode_state(state):
                 event_vec[base_idx] = 1.0
                 rt_map = {"GoldReward": 1, "Gold": 1, "Card": 2, "CardReward": 2, "Relic": 3, "PotionReward": 4, "Potion": 4, "Curse": 5}
                 reward_type = reward.get("type")
-                assert reward_type in rt_map, f"intent: {reward_type} not in map"
-                event_vec[base_idx + 1] = rt_map.get(reward_type, 0) / 10.0
+                assert reward_type in rt_map, f"reward type: {reward_type} not in rt_map"
+                event_vec[base_idx + 1] = rt_map[reward_type] / 10.0
         elif state_type == "event":
             options = state.get("options", [])
             event_id = state.get("id", "Unknown")
