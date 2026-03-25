@@ -1439,20 +1439,21 @@ def encode_state(state):
         elif state_type == "shop":
              # Placeholder for shop
              event_vec[0] = 1.0
-        elif state_type in ["grid_selection", "hand_selection"]:
-            # Feature encoding for card selection
-            cards = state.get("cards", [])
-            for i in range(min(len(cards), 10)):
-                card = cards[i]
-                base_idx = i * 4
-                event_vec[base_idx] = 1.0 # Presence flag
-                
-                # Card ID index
-                card_id = card.get("id") or card.get("name", "")
-                event_vec[base_idx + 1] = get_card_idx(card_id)
-                
-                event_vec[base_idx + 2] = 1.0 if card.get("upgraded") else 0.0
-                event_vec[base_idx + 3] = card.get("cost", 0) / 5.0
+             
+    if st_idx in [3, 4]:
+        # Feature encoding for card selection (Grid or Hand selection screens)
+        cards = state.get("cards", [])
+        for i in range(min(len(cards), 10)):
+            card = cards[i]
+            base_idx = i * 4
+            event_vec[base_idx] = 1.0 # Presence flag
+            
+            # Card ID index
+            card_id = card.get("id") or card.get("name", "")
+            event_vec[base_idx + 1] = get_card_idx(card_id)
+            
+            event_vec[base_idx + 2] = 1.0 if card.get("upgraded") else 0.0
+            event_vec[base_idx + 3] = card.get("cost", 0) / 5.0
     
     # Differentiation flag: 1.0 for permanent grid, -1.0 for temporary hand
     if state_type == "grid_selection":
@@ -2433,4 +2434,5 @@ def init():
     except Exception as e:
         print(f"[Python] Critical error during initialization: {e}")
 
-init()
+if os.environ.get("SKIP_RNAD_INIT") != "1":
+    init()

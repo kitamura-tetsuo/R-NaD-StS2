@@ -3,6 +3,8 @@ import os
 import shutil
 from typing import Any, Dict
 import logging
+import time
+import pandas as pd
 
 class ExperimentManager:
     def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str | None = None, log_checkpoints: bool = False):
@@ -10,6 +12,8 @@ class ExperimentManager:
         self.last_checkpoint_step: int | None = None
         # Ensure logs go to the project root regardless of CWD
         mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+        self.client = mlflow.tracking.MlflowClient()
+        
         mlflow.set_experiment(experiment_name=experiment_name)
         self.log_checkpoints = log_checkpoints
 
@@ -19,7 +23,7 @@ class ExperimentManager:
 
         # If no specific run_id is provided, try to resume the latest run from this experiment
         if not run_id and not mlflow.active_run():
-            experiment = mlflow.get_experiment_by_name(experiment_name)
+            experiment = self.client.get_experiment_by_name(experiment_name)
             if experiment:
                 try:
                     # Search for the most recently started run in this experiment
@@ -37,19 +41,32 @@ class ExperimentManager:
                 mlflow.end_run()
             
             if not mlflow.active_run():
-                try:
-                    # Attempt to resume existing run
-                    mlflow.start_run(run_id=run_id)
-                    logging.info(f"ExperimentManager: Successfully resumed MLflow run: {run_id}")
-                except Exception as e:
-                    logging.warning(f"ExperimentManager: Failed to resume run {run_id}: {e}. Starting a NEW run instead.")
-                    mlflow.start_run()
+                # Retry loop to handle temporary file locks or metadata sync delays
+                max_retries = 5
+                for attempt in range(max_retries):
+                    try:
+                        # Attempt to resume existing run
+                        mlflow.start_run(run_id=run_id)
+                        logging.info(f"ExperimentManager: Successfully resumed MLflow run: {run_id}")
+                        break
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            logging.warning(f"ExperimentManager: Failed to resume run {run_id} (attempt {attempt+1}/{max_retries}): {e}. Retrying in 2s...")
+                            time.sleep(2)
+                        else:
+                            logging.error(f"ExperimentManager: CRITICAL: Could not resume run {run_id} after {max_retries} attempts: {e}. Starting a NEW run instead.")
+                            mlflow.start_run()
         elif not mlflow.active_run():
             logging.info("ExperimentManager: No run_id provided or found. Starting a NEW MLflow run.")
             mlflow.start_run()
 
-        self.run_id = mlflow.active_run().info.run_id
-
+        active_run = mlflow.active_run()
+        if active_run:
+            self.run_id = active_run.info.run_id
+            if run_id and self.run_id != run_id:
+                logging.warning(f"ExperimentManager: Active run ID ({self.run_id}) does not match requested run ID ({run_id})!")
+        else:
+            raise RuntimeError("ExperimentManager: Failed to start or resume an MLflow run.")
 
         # We save checkpoints using run_id to avoid conflicts
         self.checkpoint_dir = os.path.abspath(os.path.join(checkpoint_dir, self.run_id))
@@ -78,7 +95,7 @@ class ExperimentManager:
         # Set tags
         for key in save_as_tags:
             if key in params:
-                mlflow.set_tag(key, str(params[key]))
+                self.client.set_tag(self.run_id, key, str(params[key]))
 
         # Filter params and ensure values are loggable (int, float, string, bool)
         filtered_params = {}
@@ -89,7 +106,8 @@ class ExperimentManager:
                 filtered_params[k] = str(v)
 
         if filtered_params:
-            mlflow.log_params(filtered_params)
+            for k, v in filtered_params.items():
+                self.client.log_param(self.run_id, k, v)
 
     def log_metrics(self, step: int, metrics: Dict[str, Any]):
         """Logs metrics to MLflow."""
@@ -106,7 +124,8 @@ class ExperimentManager:
                         pass # Skip non-numeric metrics
 
         flatten(metrics)
-        mlflow.log_metrics(flat_metrics, step=step)
+        for k, v in flat_metrics.items():
+            self.client.log_metric(self.run_id, k, v, step=step)
 
     def log_checkpoint_artifact(self, step: int, ckpt_path: str):
         """Logs the .pkl checkpoint as an MLflow artifact and cleans up the previous one."""
@@ -134,7 +153,7 @@ class ExperimentManager:
 
         if self.log_checkpoints and os.path.exists(ckpt_path):
             # Log the directory as an artifact in a 'checkpoints' folder in MLflow
-            mlflow.log_artifact(ckpt_path, artifact_path=f"checkpoints/step_{step}")
+            self.client.log_artifact(self.run_id, ckpt_path, artifact_path=f"checkpoints/step_{step}")
             logging.info(f"Saved checkpoint for step {step} to MLflow.")
         elif not self.log_checkpoints:
             pass # logging.info(f"Skipping checkpoint upload to MLflow for step {step} (disabled).")

@@ -108,22 +108,28 @@ def wait_for_bridge_initialization(timeout=300):
     return False
 
 def get_latest_mlflow_run_id(experiment_name="R-NaD-StS2"):
-    """Finds the latest run ID in the specified MLflow experiment, regardless of checkpoints."""
-    try:
-        mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
-        experiment = mlflow.get_experiment_by_name(experiment_name)
-        if not experiment:
-            return None
-        
-        runs = mlflow.search_runs(
-            experiment_ids=[experiment.experiment_id],
-            order_by=["attributes.start_time DESC"],
-            max_results=1
-        )
-        if not runs.empty:
-            return runs.iloc[0].run_id
-    except Exception as e:
-        logging.warning(f"Failed to fetch latest run ID from MLflow: {e}")
+    """Finds the latest run ID in the specified MLflow experiment with retries."""
+    for attempt in range(3):
+        try:
+            mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+            experiment = mlflow.get_experiment_by_name(experiment_name)
+            if not experiment:
+                return None
+            
+            runs = mlflow.search_runs(
+                experiment_ids=[experiment.experiment_id],
+                order_by=["attributes.start_time DESC"],
+                max_results=1
+            )
+            if not runs.empty:
+                return runs.iloc[0].run_id
+            break # No runs found is not an error
+        except Exception as e:
+            if attempt < 2:
+                logging.warning(f"Failed to fetch latest run ID from MLflow (attempt {attempt+1}/3): {e}. Retrying...")
+                time.sleep(2)
+            else:
+                logging.warning(f"Final failure to fetch latest run ID from MLflow: {e}")
     return None
 
 def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
@@ -136,10 +142,11 @@ def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
 
     try:
         # Search for the latest run in this experiment
+        # We look at up to 10 latest runs to be safe
         runs = mlflow.search_runs(
             experiment_ids=[experiment.experiment_id],
             order_by=["attributes.start_time DESC"],
-            max_results=5
+            max_results=10
         )
         
         if runs.empty:
@@ -314,6 +321,8 @@ def perform_restart(process, current_checkpoint, args):
         if run_id:
             os.environ["RNAD_RUN_ID"] = run_id
             logging.info(f"Continuing MLflow Run ID (no new checkpoint): {run_id}")
+        else:
+            logging.info("No active MLflow run found during restart.")
 
     # 1. Save the current trajectory buffer to disk before killing the process
     try:
