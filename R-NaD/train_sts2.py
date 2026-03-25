@@ -27,7 +27,7 @@ def cleanup_processes():
     except Exception:
         pass
 
-def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False):
+def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headless=False):
     logging.info("Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
     cmd = ["./SlayTheSpire2", "--gym"]
@@ -35,6 +35,8 @@ def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False):
         cmd.extend(["--seed", seed])
     if no_speedup:
         cmd.append("--no-speedup")
+    if headless:
+        cmd.append("--headless")
     # cmd = ["./SlayTheSpire2", "--verbose", "--gym"]
     env = os.environ.copy()
     keys_to_remove = [k for k in env if k.startswith("PYTHON") or k.startswith("VIRTUAL_ENV") or k.startswith("LD_") or k.startswith("CONDA_")]
@@ -344,7 +346,7 @@ def perform_restart(process, current_checkpoint, args):
     cleanup_processes()
     
     # 3. Relaunch the game
-    new_process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route)
+    new_process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless)
     
     # 4. Wait for server and re-initialize
     if not wait_for_server("http://127.0.0.1:8081/status", timeout=300):
@@ -387,11 +389,12 @@ def perform_restart(process, current_checkpoint, args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--max_steps", type=int, default=1000)
+    parser.add_argument("--max_steps", type=int, default=100000)
     parser.add_argument("--seed", type=str, default=None, help="Fixed seed for new games")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to a checkpoint file (.pkl) to resume from")
     parser.add_argument("--no-speedup", action="store_true", help="Disable game acceleration (Instant mode, preload disabling)")
     parser.add_argument("--route", action="store_true", help="Always choose the map room with the smallest index")
+    parser.add_argument("--headless", action="store_true", help="Run the game in headless mode")
     args = parser.parse_args()
     
     
@@ -424,7 +427,7 @@ def main():
             else:
                 logging.info("No MLflow run found, starting fresh.")
 
-    process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route)
+    process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless)
 
     try:
         # Wait for game to initialize by checking status endpoint

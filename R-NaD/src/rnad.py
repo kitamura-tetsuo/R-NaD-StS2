@@ -45,7 +45,7 @@ class RNaDConfig(NamedTuple):
     accumulation_steps: int = 16
     learning_rate: float = 1e-4
     discount_factor: float = 0.99
-    max_steps: int = 2000
+    max_steps: int = 1000
     entropy_schedule_start: float = 0.1
     entropy_schedule_end: float = 0.01
     clip_rho_threshold: float = 1.0

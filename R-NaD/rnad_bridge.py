@@ -491,38 +491,59 @@ MONSTER_VOCAB_SIZE = max(max(MONSTER_VOCAB.values()) + 1, 128)
 
 
 def get_monster_idx(monster_id):
-    if not monster_id: return 0
+    if not monster_id:
+        assert False, f"monster_id is missing or empty"
+    if isinstance(monster_id, dict):
+        monster_id = monster_id.get("id") or monster_id.get("name")
+    if not monster_id:
+        assert False, "monster_id is missing or empty after dict extraction"
     mid = str(monster_id).upper().replace(" ", "_")
     assert mid in MONSTER_VOCAB, f"Unknown monster_id: {monster_id} (mapped to {mid})"
     return MONSTER_VOCAB[mid]
 
 def get_boss_idx(boss_id):
-    if not boss_id: return 0
-    assert boss_id in BOSS_VOCAB, f"Unknown boss_id: {boss_id}"
-    return BOSS_VOCAB[boss_id]
+    if not boss_id:
+        assert False, f"boss_id is missing or empty"
+    if isinstance(boss_id, dict):
+        boss_id = boss_id.get("id") or boss_id.get("name")
+    if not boss_id:
+        assert False, "boss_id is missing or empty after dict extraction"
+    bid = str(boss_id).upper().replace(" ", "_")
+    assert bid in BOSS_VOCAB, f"Unknown boss_id: {boss_id} (mapped to {bid})"
+    return BOSS_VOCAB[bid]
 
 def get_card_idx(card_id):
-    if not card_id: return 0
-    if isinstance(card_id, dict): card_id = card_id.get("id") or card_id.get("name")
-    if not card_id: return 0
-    # Clean up (e.g., remove name suffixes if any)
-    cid = str(card_id).split('+')[0].strip().upper()
-    assert cid in CARD_VOCAB, f"Unknown card_id: {card_id} (cleaned to {cid})"
+    if not card_id:
+        # Some calls might pass empty strings for empty slots, but we should handle that at the call site or treat it as an error as requested.
+        assert False, f"card_id is missing or empty"
+    if isinstance(card_id, dict):
+        card_id = card_id.get("id") or card_id.get("name")
+    if not card_id:
+        assert False, "card_id is missing or empty after dict extraction"
+    # Clean up (e.g., remove name suffixes if any) and normalize spaces to underscores
+    cid = str(card_id).split('+')[0].strip().upper().replace(" ", "_")
+    assert cid in CARD_VOCAB, f"Unknown card_id: {card_id} (mapped to {cid})"
     return CARD_VOCAB[cid]
 
 def get_relic_idx(relic_id):
-    if not relic_id: return 0
-    if isinstance(relic_id, dict): relic_id = relic_id.get("id") or relic_id.get("name")
-    if not relic_id: return 0
-    rid = str(relic_id).upper()
+    if not relic_id:
+        assert False, f"relic_id is missing or empty"
+    if isinstance(relic_id, dict):
+        relic_id = relic_id.get("id") or relic_id.get("name")
+    if not relic_id:
+        assert False, "relic_id is missing or empty after dict extraction"
+    rid = str(relic_id).upper().replace(" ", "_")
     assert rid in RELIC_VOCAB, f"Unknown relic_id: {relic_id} (mapped to {rid})"
     return RELIC_VOCAB[rid]
 
 def get_power_idx(power_id):
-    if not power_id: return 0
-    if isinstance(power_id, dict): power_id = power_id.get("id") or power_id.get("name")
-    if not power_id: return 0
-    pid = str(power_id).upper()
+    if not power_id:
+        assert False, f"power_id is missing or empty"
+    if isinstance(power_id, dict):
+        power_id = power_id.get("id") or power_id.get("name")
+    if not power_id:
+        assert False, "power_id is missing or empty after dict extraction"
+    pid = str(power_id).upper().replace(" ", "_")
     assert pid in POWER_VOCAB, f"Unknown power_id: {power_id} (mapped to {pid})"
     return POWER_VOCAB[pid]
 
@@ -1052,7 +1073,7 @@ def load_model(checkpoint_path=None):
     # Updated dummy observation for structured dictionary input
     # Ensure dummy observation matches VOCAB_SIZE etc.
     dummy_obs = {
-        "global": jnp.zeros((1, 1, 128)),
+        "global": jnp.zeros((1, 1, 512)),
         "combat": jnp.zeros((1, 1, 384)),
         "draw_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
         "discard_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
@@ -1252,7 +1273,7 @@ def encode_state(state):
             global_vec[10 + i] = 1.0
             
     # Boss ID
-    boss_id = state.get("boss")
+    boss_id = state.get("boss") or "UNKNOWN"
     global_vec[20] = get_boss_idx(boss_id) / float(BOSS_VOCAB_SIZE)
     
     # Relics (Multi-hot, size 50, starting at index 30)
@@ -1261,8 +1282,7 @@ def encode_state(state):
         # Relics (Multi-hot, starting at index 30)
         relics = player.get("relics", [])
     for rid in relics:
-        rid = rid.upper().replace(" ", "_")
-        idx = get_relic_idx(rid)
+        idx = get_relic_idx(rid) # get_relic_idx handles dicts and strings consistently
         if 0 < idx and 30 + idx < 512:
             global_vec[30 + idx] = 1.0
 

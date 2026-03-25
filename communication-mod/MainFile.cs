@@ -391,7 +391,6 @@ public partial class MainFile : Node
             {
                 string seed = dict.ContainsKey("seed") ? dict["seed"].AsString() : "";
                 StartSts2Run(seed);
-                _aiSlayer?.Start(seed);
             }
         }
     }
@@ -407,7 +406,6 @@ public partial class MainFile : Node
         {
             string seed = command.Contains(":") ? command.Split(':')[1] : "";
             StartSts2Run(seed);
-            _aiSlayer?.Start(seed);
         }
     }
 
@@ -430,6 +428,9 @@ public partial class MainFile : Node
                 Logger.Info("[AutoAI] StartSts2RunDeferred: Already starting a run, skipping duplicate request.");
                 return;
             }
+
+            // Stop any active AI loop before cleanup
+            _aiSlayer?.Stop();
 
             var ngame = NGame.Instance;
             if (ngame == null) return;
@@ -454,7 +455,9 @@ public partial class MainFile : Node
 
             var state = rm?.DebugOnlyGetState();
             if (state?.CurrentRoom is MapRoom) await rm.EnterMapCoord(state.Map.StartingMapPoint.coord);
-            else ScheduleAI();
+            
+            Logger.Info($"[AutoAI] Run initialized. Starting AI loop with seed: {seedToUse}");
+            _aiSlayer?.Start(seedToUse);
         }
         catch (Exception ex)
         {
