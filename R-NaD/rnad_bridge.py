@@ -2209,88 +2209,8 @@ def predict_action(state_json):
             reward_tracker.reset_for_new_run()
         if not state_json:
             return json.dumps({"action": "wait"})
-            
-        state = json.loads(state_json)
-        state_type = state.get("type", "unknown")
-        
-        # Multiple Move Mode
-        multiple_move_mode = os.environ.get("RNAD_MULTIPLE_MOVE") == "true"
-        if multiple_move_mode and state_type == "combat" and battle_simulator is not None:
-            log("[Python] Multiple Move Mode ACTIVE")
-            try:
-                sim_json = validator.to_simulator_json(state)
-                sim = battle_simulator.Simulator.from_json(sim_json)
-                sim_manager.init_simulator(sim)
-                
-                num_results = sim.enumerate_final_states()
-                if num_results > 0:
-                    results = sim_manager.read_results()
-                    best_val = -float('inf')
-                    best_action_seq = None
-                    
-                    if jnp is not None and learner is not None and learner.params is not None:
-                        # Random sampling if space is too large
-                        is_sampled = False
-                        if len(results) > 32:
-                            log(f"[Python] Multiple Move Mode: combinations ({len(results)}) > 32. Random sampling 32.")
-                            results = random.sample(results, 32)
-                            is_sampled = True
 
-                        all_expected_vals = []
-                        max_val_in_results = -float('inf')
-                        
-                        for res in results:
-                            total_val = 0.0
-                            for prob, tensor in res["outcomes"]:
-                                # Encode tensor to structured dict
-                                obs = {
-                                    "global": jnp.array(tensor[0:512])[None, None, :],
-                                    "combat": jnp.array(tensor[512:896])[None, None, :],
-                                    "draw_bow": jnp.array(tensor[896:1496])[None, None, :],
-                                    "discard_bow": jnp.array(tensor[1496:2096])[None, None, :],
-                                    "exhaust_bow": jnp.array(tensor[2096:2696])[None, None, :],
-                                    "master_bow": jnp.array(tensor[2696:3296])[None, None, :],
-                                    "state_type": jnp.array([int(tensor[3296])])[None, None],
-                                    "head_type": jnp.array([int(tensor[3297])])[None, None]
-                                }
-                                mask_full = jnp.ones((1, 1, 100))
-                                
-                                _, value_seq = learner.network.apply(learner.params, predict_key, obs, mask_full, is_training=False)
-                                val = value_seq[0, 0].item()
-                                total_val += prob * val
-                            
-                            all_expected_vals.append(total_val)
-                            
-                            if total_val > max_val_in_results:
-                                max_val_in_results = total_val
-                                best_action_seq = res["actions"]
-                        
-                        # Use average if sampled, otherwise use max
-                        if is_sampled and all_expected_vals:
-                            best_val = sum(all_expected_vals) / len(all_expected_vals)
-                        else:
-                            best_val = max_val_in_results
-                    
-                    if best_action_seq:
-                        action_idx = best_action_seq[0]
-                        log(f"[Python] Multiple Move Selected Action: {action_idx} (Sequence: {best_action_seq}, Value: {best_val:.4f})")
-                        
-                        if action_idx != 75:
-                            validator.last_state = state
-                            validator.last_action_idx = action_idx
-                        
-                        card_idx = action_idx // 5
-                        target_idx = action_idx % 5
-                        card = state['hand'][card_idx]
-                        return json.dumps({
-                            "action": "play_card", 
-                            "card_id": card.get("id"),
-                            "card_index": card_idx,
-                            "target_index": target_idx
-                        }) if action_idx < 50 else json.dumps({"action": "end_turn"})
-            except Exception as e:
-                log(f"[Python] Error in Multiple Move evaluation: {e}")
-                traceback.print_exc()
+        log(f"predict_action called. state_type: {state_type}")
 
         log(f"predict_action called. state_type: {state_type}")
         
@@ -2404,8 +2324,81 @@ def predict_action(state_json):
         # Probs are calculated from logits which are already masked in the network
         probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
         
+        # --- Multiple Move Mode Search (Prioritize Kill-all procedures) ---
+        search_action_idx = None
+        multiple_move_mode = os.environ.get("RNAD_MULTIPLE_MOVE") == "true"
+        if multiple_move_mode and state_type == "combat" and battle_simulator is not None:
+            log("[Python] Multiple Move Mode Search: START")
+            try:
+                sim_json = validator.to_simulator_json(state)
+                sim = battle_simulator.Simulator.from_json(sim_json)
+                sim_manager.init_simulator(sim)
+                num_res = sim.enumerate_final_states()
+                if num_res > 0:
+                    all_results = sim_manager.read_results()
+                    # Filter for deterministic sequences (those that end with End Turn action 75)
+                    # Stochastic sequences stop at the point of uncertainty and do not include 75 in search.
+                    results = [r for r in all_results if r["actions"] and r["actions"][-1] == 75]
+                    log(f"[Python] Multiple Move Mode Search: {len(results)} deterministic sequences out of {len(all_results)} total.")
+
+                    # 1. Look for Kill-all sequence (deterministic victory)
+                    ka_seqs = []
+                    for res in results:
+                        is_ka = True
+                        for prob, tens in res["outcomes"]:
+                            # The simulator's encoder shifts alive enemies to the front.
+                            # Index 622 is state[512 + 110] (Enemy 0 Alive Flag).
+                            # If no enemies are alive, tens[622] will be 0.0.
+                            if tens[622] > 0.5:
+                                is_ka = False
+                                break
+                        if is_ka: ka_seqs.append(res)
+                    
+                    if ka_seqs:
+                        # Prioritize Kill-all by player HP (tensor[2])
+                        best_ka = max(ka_seqs, key=lambda r: sum(p * t[2] for p, t in r["outcomes"]))
+                        search_action_idx = best_ka["actions"][0]
+                        log(f"[Python] Search: KILL-ALL sequence FOUND! Action={search_action_idx}")
+                    elif learner and learner.params:
+                        # 2. Re-evaluate best sequence via value head (Batched)
+                        eval_res = results[:32] if len(results) > 32 else results
+                        outcomes_to_eval = []
+                        for ridx, r in enumerate(eval_res):
+                            for oidx, (p, t) in enumerate(r["outcomes"]):
+                                outcomes_to_eval.append((ridx, oidx, p, t))
+                        
+                        if outcomes_to_eval:
+                            t_batch = np.stack([o[3] for o in outcomes_to_eval])
+                            obs_batch = {
+                                "global": jnp.array(t_batch[:, :512])[:, None, :],
+                                "combat": jnp.array(t_batch[:, 512:896])[:, None, :],
+                                "draw_bow": jnp.array(t_batch[:, 896:1496])[:, None, :],
+                                "discard_bow": jnp.array(t_batch[:, 1496:2096])[:, None, :],
+                                "exhaust_bow": jnp.array(t_batch[:, 2096:2696])[:, None, :],
+                                "master_bow": jnp.array(t_batch[:, 2696:3296])[:, None, :],
+                                "state_type": jnp.array(t_batch[:, 3296], dtype=jnp.int32)[:, None],
+                                "head_type": jnp.array(t_batch[:, 3297], dtype=jnp.int32)[:, None],
+                            }
+                            m_batch = jnp.ones((len(t_batch), 1, 100))
+                            s_key, predict_key = jax_local.random.split(predict_key)
+                            _, v_out = learner.network.apply(learner.params, s_key, obs_batch, m_batch, is_training=False)
+                            
+                            r_vals = np.zeros(len(eval_res))
+                            for idx, (ridx, oidx, p, t) in enumerate(outcomes_to_eval):
+                                r_vals[ridx] += p * v_out[idx, 0].item()
+                            
+                            best_idx = np.argmax(r_vals)
+                            search_action_idx = eval_res[best_idx]["actions"][0]
+                            log(f"[Python] Search: Best-Value sequence identified. Action={search_action_idx} (EV={r_vals[best_idx]:.4f})")
+            except Exception as e:
+                log(f"[Python] Multiple Move Search ERROR: {e}")
+                traceback.print_exc()
+        
         # Sample or Argmax action
-        if inference_mode:
+        if search_action_idx is not None and mask[search_action_idx]:
+            action_idx = search_action_idx
+            log(f"[Python] Using SEARCH-selected action: {action_idx} (prob={probs[action_idx]:.4f})")
+        elif inference_mode:
             # Highest probability selection (Greedy)
             action_idx = jnp.argmax(logits).item()
             log(f"[Python] Inference mode (Greedy selection): index={action_idx}, prob={probs[action_idx]:.4f}")
