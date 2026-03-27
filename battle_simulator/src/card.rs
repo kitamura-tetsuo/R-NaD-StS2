@@ -44,16 +44,11 @@ impl Card {
         self.id == "BASH"
     }
 
-    // Factory methods for common cards (Ironclad example)
-    pub fn strike() -> Self {
-        Self::new("STRIKE_IRONCLAD".to_string(), 1, 6, 0, 0, TargetType::Single)
+    pub fn is_random(&self) -> bool {
+        self.id == "HAVOC" || self.id == "INFERNAL_BLADE" || self.id == "SWORD_BOOMERANG"
     }
-
-    pub fn defend() -> Self {
-        Self::new("DEFEND_IRONCLAD".to_string(), 1, 0, 5, 0, TargetType::SelfTarget)
-    }
-
-    pub fn bash() -> Self {
-        Self::new("BASH".to_string(), 2, 8, 0, 2, TargetType::Single)
+    
+    pub fn is_choice(&self) -> bool {
+        false 
     }
 }

@@ -15,8 +15,8 @@ def cleanup_processes():
     except Exception:
         pass
 
-def play_game(seed=None, route=False):
-    print(f"=== Starting R-NaD Inference (Headed) Seed={seed} Route={route} ===")
+def play_game(seed=None, route=False, multiple_move=True):
+    print(f"=== Starting R-NaD Inference (Headed) Seed={seed} Route={route} MultipleMove={multiple_move} ===")
     cleanup_processes()
     
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -39,6 +39,13 @@ def play_game(seed=None, route=False):
         env["RNAD_ROUTE"] = "true"
         print("[Inference] Setting RNAD_ROUTE environment variable to: true")
     
+    if multiple_move:
+        env["RNAD_MULTIPLE_MOVE"] = "true"
+        print("[Inference] Setting RNAD_MULTIPLE_MOVE environment variable to: true")
+    else:
+        env["RNAD_MULTIPLE_MOVE"] = "false"
+        print("[Inference] Setting RNAD_MULTIPLE_MOVE environment variable to: false")
+
     # We use launch.sh to ensure environment is correct
     process = subprocess.Popen(
         ["/bin/bash", "./launch.sh"],
@@ -149,9 +156,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=str, default=None, help="Fixed seed for reproducibility")
     parser.add_argument("--route", action="store_true", help="Always choose the map room with the smallest index")
+    parser.add_argument("--one-move", action="store_true", help="Use standard single-move decision making")
+    parser.add_argument("--multiple-move", action="store_true", help="Use lookahead-based multiple-move decision making (default)")
     args = parser.parse_args()
     
     if args.seed is None:
         args.seed = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
     
-    play_game(seed=args.seed, route=args.route)
+    multiple_move = not args.one_move
+    play_game(seed=args.seed, route=args.route, multiple_move=multiple_move)

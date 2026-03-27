@@ -152,7 +152,9 @@ public partial class MainFile : Node
         var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
         var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
         var combatState = cm.DebugOnlyGetState();
-        var card = player.PlayerCombatState.Hand.Cards.FirstOrDefault(c => c.Id.Entry == cardId);
+        int cardIdx = dict.ContainsKey("card_index") ? (int)dict["card_index"].AsInt64() : -1;
+        var hand = player.PlayerCombatState.Hand.Cards;
+        var card = (cardIdx >= 0 && cardIdx < hand.Count) ? hand[cardIdx] : hand.FirstOrDefault(c => c.Id.Entry == cardId);
 
         if (card != null)
         {

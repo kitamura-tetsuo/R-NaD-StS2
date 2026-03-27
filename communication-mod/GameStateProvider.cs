@@ -559,13 +559,11 @@ public partial class MainFile : Node
                     energy = pState?.Energy ?? 0,
                     maxEnergy = pState?.MaxEnergy ?? 0,
                     stars = pState?.Stars ?? 0,
-                    drawPile = pState?.DrawPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
-                    discardPile = pState?.DiscardPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
-                    exhaustPile = pState?.ExhaustPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
-                    masterDeck = player?.Deck.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
-                    relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
                     powers = player?.Creature.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>()
                 },
+                drawPile = pState?.DrawPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
+                discardPile = pState?.DiscardPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
+                exhaustPile = pState?.ExhaustPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
                 hand = pState?.Hand.Cards.Select(c => {
                     var dynamicVars = c.DynamicVars;
                     var firstEnemy = combatRoom.Enemies.FirstOrDefault(e => e.IsAlive);
@@ -574,6 +572,8 @@ public partial class MainFile : Node
                     int curDamage = 0;
                     int curBlock = 0;
                     if (dynamicVars.ContainsKey("Damage")) curDamage = (int)dynamicVars["Damage"].PreviewValue;
+                    else if (dynamicVars.ContainsKey("CalculatedDamage")) curDamage = (int)dynamicVars["CalculatedDamage"].PreviewValue;
+
                     if (dynamicVars.ContainsKey("CalculatedBlock")) curBlock = (int)dynamicVars["CalculatedBlock"].PreviewValue;
                     else if (dynamicVars.ContainsKey("Block")) curBlock = (int)dynamicVars["Block"].PreviewValue;
 
@@ -581,8 +581,14 @@ public partial class MainFile : Node
                     int bBlk = 0;
                     int mNum = 0;
                     if (dynamicVars.ContainsKey("Damage")) bDmg = (int)dynamicVars["Damage"].BaseValue;
+                    else if (dynamicVars.ContainsKey("CalculatedDamage")) bDmg = (int)dynamicVars["CalculatedDamage"].BaseValue;
+                    else if (dynamicVars.ContainsKey("CalculationBase")) bDmg = (int)dynamicVars["CalculationBase"].BaseValue;
+
                     if (dynamicVars.ContainsKey("Block")) bBlk = (int)dynamicVars["Block"].BaseValue;
-                    if (dynamicVars.ContainsKey("MagicNumber")) mNum = (int)dynamicVars["MagicNumber"].BaseValue;
+                    else if (dynamicVars.ContainsKey("CalculatedBlock")) bBlk = (int)dynamicVars["CalculatedBlock"].BaseValue;
+
+                    if (dynamicVars.ContainsKey("Magic")) mNum = (int)dynamicVars["Magic"].BaseValue;
+                    else if (dynamicVars.ContainsKey("MagicNumber")) mNum = (int)dynamicVars["MagicNumber"].BaseValue;
 
                     return new
                     {
@@ -718,6 +724,9 @@ public partial class MainFile : Node
                 ["can_proceed"] = canProceed,
                 ["actions_disabled"] = cm.PlayerActionsDisabled,
                 ["player"] = combatData.player,
+                ["drawPile"] = combatData.drawPile,
+                ["discardPile"] = combatData.discardPile,
+                ["exhaustPile"] = combatData.exhaustPile,
                 ["hand"] = combatData.hand,
                 ["potions"] = combatData.potions,
                 ["enemies"] = combatData.enemies,

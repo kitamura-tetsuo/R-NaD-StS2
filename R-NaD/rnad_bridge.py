@@ -194,9 +194,9 @@ class CombatValidator:
             "player": convert_creature(player_data, is_player=True),
             "enemies": [convert_creature(e) for e in cs_state.get("enemies", [])],
             "hand": [convert_card(c) for c in cs_state.get("hand", [])],
-            "draw_pile": [], # Piles not fully used for move validation yet
-            "discard_pile": [],
-            "exhaust_pile": [],
+            "draw_pile": [convert_card({"id": id}) for id in cs_state.get("drawPile", [])],
+            "discard_pile": [convert_card({"id": id}) for id in cs_state.get("discardPile", [])],
+            "exhaust_pile": [convert_card({"id": id}) for id in cs_state.get("exhaustPile", [])],
             "energy": player_data.get("energy", 0),
             "floor": cs_state.get("floor", 1)
         }
@@ -427,6 +427,71 @@ try:
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
+
+import mmap
+import struct
+
+class SimulatorManager:
+    def __init__(self, bridge_dir):
+        self.bridge_dir = bridge_dir
+        self.shm_path = "/tmp/sts2_sim_shm"
+        self.shm_size = 10 * 1024 * 1024 # 10MB
+        self.shm = None
+        self.tensor_size = 512 + 384 + 600 * 4 + 2
+        
+    def init_simulator(self, sim):
+        # Sync vocab
+        sim.set_vocabulary(CARD_VOCAB, MONSTER_VOCAB, POWER_VOCAB, BOSS_VOCAB)
+        # Init SHM
+        sim.init_shm(self.shm_path, self.shm_size)
+        # Map in Python
+        if os.path.exists(self.shm_path):
+            f = open(self.shm_path, "r+b")
+            self.shm = mmap.mmap(f.fileno(), self.shm_size)
+            log(f"[SimulatorManager] Shared memory mapped at {self.shm_path}")
+
+    def read_results(self):
+        if not self.shm or np is None:
+            return []
+        
+        try:
+            self.shm.seek(0)
+            num_results_data = self.shm.read(4)
+            if not num_results_data or len(num_results_data) < 4:
+                return []
+            num_results = struct.unpack("<i", num_results_data)[0]
+            
+            results = []
+            for _ in range(num_results):
+                header = self.shm.read(4)
+                if not header: break
+                num_actions = struct.unpack("<i", header)[0]
+                actions_data = self.shm.read(4 * num_actions)
+                actions = list(struct.unpack(f"<{num_actions}i", actions_data))
+                
+                num_outcomes_data = self.shm.read(4)
+                if not num_outcomes_data: break
+                num_outcomes = struct.unpack("<i", num_outcomes_data)[0]
+                
+                outcomes = []
+                for __ in range(num_outcomes):
+                    prob_data = self.shm.read(4)
+                    if not prob_data: break
+                    prob = struct.unpack("<f", prob_data)[0]
+                    tensor_data = self.shm.read(4 * self.tensor_size)
+                    tensor = np.frombuffer(tensor_data, dtype=np.float32).copy()
+                    outcomes.append((prob, tensor))
+                
+                results.append({
+                    "actions": actions,
+                    "outcomes": outcomes
+                })
+            return results
+        except Exception as e:
+            log(f"[SimulatorManager] Error reading SHM: {e}")
+            return []
+
+sim_manager = SimulatorManager(BRIDGE_DIR)
 
 import datetime
 
@@ -2084,7 +2149,7 @@ def predict_action(state_json):
     
     t_imports = time.time() - t0
     
-    global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key, last_activity_time, deferred_chunk, history
+    global command_queue, learning_active, current_seed, current_trajectory, learner, rng_key, predict_key, last_activity_time, deferred_chunk, history
     
     try:
         t_json_start = time.time()
@@ -2148,6 +2213,85 @@ def predict_action(state_json):
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
         
+        # Multiple Move Mode
+        multiple_move_mode = os.environ.get("RNAD_MULTIPLE_MOVE") == "true"
+        if multiple_move_mode and state_type == "combat" and battle_simulator is not None:
+            log("[Python] Multiple Move Mode ACTIVE")
+            try:
+                sim_json = validator.to_simulator_json(state)
+                sim = battle_simulator.Simulator.from_json(sim_json)
+                sim_manager.init_simulator(sim)
+                
+                num_results = sim.enumerate_final_states()
+                if num_results > 0:
+                    results = sim_manager.read_results()
+                    best_val = -float('inf')
+                    best_action_seq = None
+                    
+                    if jnp is not None and learner is not None and learner.params is not None:
+                        # Random sampling if space is too large
+                        is_sampled = False
+                        if len(results) > 32:
+                            log(f"[Python] Multiple Move Mode: combinations ({len(results)}) > 32. Random sampling 32.")
+                            results = random.sample(results, 32)
+                            is_sampled = True
+
+                        all_expected_vals = []
+                        max_val_in_results = -float('inf')
+                        
+                        for res in results:
+                            total_val = 0.0
+                            for prob, tensor in res["outcomes"]:
+                                # Encode tensor to structured dict
+                                obs = {
+                                    "global": jnp.array(tensor[0:512])[None, None, :],
+                                    "combat": jnp.array(tensor[512:896])[None, None, :],
+                                    "draw_bow": jnp.array(tensor[896:1496])[None, None, :],
+                                    "discard_bow": jnp.array(tensor[1496:2096])[None, None, :],
+                                    "exhaust_bow": jnp.array(tensor[2096:2696])[None, None, :],
+                                    "master_bow": jnp.array(tensor[2696:3296])[None, None, :],
+                                    "state_type": jnp.array([int(tensor[3296])])[None, None],
+                                    "head_type": jnp.array([int(tensor[3297])])[None, None]
+                                }
+                                mask_full = jnp.ones((1, 1, 100))
+                                
+                                _, value_seq = learner.network.apply(learner.params, predict_key, obs, mask_full, is_training=False)
+                                val = value_seq[0, 0].item()
+                                total_val += prob * val
+                            
+                            all_expected_vals.append(total_val)
+                            
+                            if total_val > max_val_in_results:
+                                max_val_in_results = total_val
+                                best_action_seq = res["actions"]
+                        
+                        # Use average if sampled, otherwise use max
+                        if is_sampled and all_expected_vals:
+                            best_val = sum(all_expected_vals) / len(all_expected_vals)
+                        else:
+                            best_val = max_val_in_results
+                    
+                    if best_action_seq:
+                        action_idx = best_action_seq[0]
+                        log(f"[Python] Multiple Move Selected Action: {action_idx} (Sequence: {best_action_seq}, Value: {best_val:.4f})")
+                        
+                        if action_idx != 75:
+                            validator.last_state = state
+                            validator.last_action_idx = action_idx
+                        
+                        card_idx = action_idx // 5
+                        target_idx = action_idx % 5
+                        card = state['hand'][card_idx]
+                        return json.dumps({
+                            "action": "play_card", 
+                            "card_id": card.get("id"),
+                            "card_index": card_idx,
+                            "target_index": target_idx
+                        }) if action_idx < 50 else json.dumps({"action": "end_turn"})
+            except Exception as e:
+                log(f"[Python] Error in Multiple Move evaluation: {e}")
+                traceback.print_exc()
+
         log(f"predict_action called. state_type: {state_type}")
         
         # Debug: write last state to a local file for monitoring
@@ -2352,7 +2496,7 @@ def predict_action(state_json):
                 target_idx = action_idx % 5
                 if card_idx < len(hand):
                     card = hand[card_idx]
-                    action = {"action": "play_card", "card_id": card.get("id"), "target_index": target_idx}
+                    action = {"action": "play_card", "card_id": card.get("id"), "card_index": card_idx, "target_index": target_idx}
             elif 50 <= action_idx < 75:
                 potion_linear_idx = action_idx - 50
                 potion_idx = potion_linear_idx // 5

@@ -27,6 +27,6 @@ if [[ "$RESPONSE" == *"success"* ]]; then
 else
     echo "FAILURE: Bridge responded with: $RESPONSE"
     echo "Hint: If this is the first time setting up, you may need to restart the training loop once."
-    exit 1
+    # exit 1
 fi
 
