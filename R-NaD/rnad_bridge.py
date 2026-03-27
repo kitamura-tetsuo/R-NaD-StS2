@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import importlib.util
+import glob
 
 # Set XLA environment variables before JAX/other imports to prevent GPU OOM
 # Godot game and JAX both need GPU memory.
@@ -17,6 +19,10 @@ if not os.path.exists(LOG_DIR):
 LOG_FILE = os.path.join(LOG_DIR, "rnad_bridge.log")
 MAX_LOG_SIZE = 10 * 1024 * 1024 # 10MB
 BACKUP_COUNT = 3
+
+DISCREPANCY_LOG_DIR = "/home/ubuntu/src/R-NaD-StS2/battle_simulator/discrepancy_logs"
+if not os.path.exists(DISCREPANCY_LOG_DIR):
+    os.makedirs(DISCREPANCY_LOG_DIR, exist_ok=True)
 
 class Logger:
     def __init__(self, original, filename):
@@ -111,6 +117,297 @@ try:
             print(f"[Python] libpython_fixer failed for {libname}: {res}")
 except Exception as e:
     print(f"[Python] Warning: Could not apply RTLD_GLOBAL hack via libpython_fixer: {e}")
+
+try:
+    import battle_simulator
+    log("[Python] Successfully imported battle_simulator")
+except Exception as e:
+    log(f"[Python] Error importing battle_simulator: {e}")
+    battle_simulator = None
+
+import json
+
+# Cards that should skip validation due to inherent randomness that the simulator doesn't handle
+VALIDATION_SKIP_RANDOM = {"SWORD_BOOMERANG", "FIEND_FIRE", "HAVOC", "INFERNAL_BLADE"}
+VALIDATION_SKIP_DRAW = {"POMMEL_STRIKE", "SHRUG_IT_OFF", "WARCRY", "OFFERING", "BATTLE_TRANCE", 
+                        "BURNING_PACT", "HAVOC", "DARK_EMBRACE", "EVOLVE"}
+
+class CombatValidator:
+    def __init__(self):
+        self.last_state = None
+        self.last_action_idx = None
+        self.enabled = True
+
+    def to_simulator_json(self, cs_state):
+        """Convert C# JSON state to Rust Simulator JSON format."""
+        player_data = cs_state.get("player", {})
+        
+        def convert_powers(powers):
+            res = []
+            if not powers:
+                return res
+            for p in powers:
+                p_id = p.get("id", "")
+                # Map common powers, others will be Unknown
+                res.append({
+                    "id": p_id,
+                    "amount": p.get("amount", 0)
+                })
+            return res
+
+        def convert_creature(c, is_player=False):
+            return {
+                "id": c.get("id", "Player" if is_player else "Enemy"),
+                "max_hp": c.get("maxHp", 100),
+                "cur_hp": c.get("hp", 100),
+                "block": c.get("block", 0),
+                "powers": convert_powers(c.get("powers", [])),
+                "intent": None # Simplified
+            }
+
+        def convert_card(c):
+            # TargetType mapping
+            tt_map = {
+                "AnyEnemy": "Single", "SingleEnemy": "Single", 
+                "AllEnemies": "All", "AllEnemy": "All", 
+                "Self": "SelfTarget", "None": "None"
+            }
+            # Use currentDamage as fallback for baseDamage if baseDamage is 0
+            base_dmg = c.get("baseDamage", 0)
+            if base_dmg == 0:
+                base_dmg = c.get("currentDamage", 0)
+            base_blk = c.get("baseBlock", 0)
+            if base_blk == 0:
+                base_blk = c.get("currentBlock", 0)
+                
+            return {
+                "id": c.get("id", "Unknown"),
+                "cost": c.get("cost", 0),
+                "base_damage": base_dmg,
+                "base_block": base_blk,
+                "magic_number": c.get("magicNumber", 0),
+                "target": tt_map.get(c.get("targetType", "None"), "None"),
+                "is_upgraded": c.get("upgraded", False)
+            }
+
+        sim_state = {
+            "player": convert_creature(player_data, is_player=True),
+            "enemies": [convert_creature(e) for e in cs_state.get("enemies", [])],
+            "hand": [convert_card(c) for c in cs_state.get("hand", [])],
+            "draw_pile": [], # Piles not fully used for move validation yet
+            "discard_pile": [],
+            "exhaust_pile": [],
+            "energy": player_data.get("energy", 0),
+            "floor": cs_state.get("floor", 1)
+        }
+        return json.dumps(sim_state)
+
+    def validate(self, current_state_json):
+        if not self.enabled or self.last_state is None or self.last_action_idx is None:
+            return
+
+        try:
+            current_state = json.loads(current_state_json)
+            if current_state.get("type") != "combat":
+                self.last_state = None
+                return
+
+            # Simulate
+            sim_json = self.to_simulator_json(self.last_state)
+            sim = battle_simulator.Simulator.from_json(sim_json)
+            
+            if self.last_action_idx == 75:
+                # End turn simulation is not fully implemented in Rust yet.
+                # Validating it leads to false positive discrepancies due to 
+                # next turn energy reset, status effects, and enemy actions.
+                return
+            
+            # Action mapping: 0-49 cards, 75 end turn
+            if self.last_action_idx < 50:
+                card_idx = self.last_action_idx // 5
+                target_idx = self.last_action_idx % 5
+                # Verify if card exists
+                if card_idx < len(self.last_state.get("hand", [])):
+                    sim.play_card(card_idx, target_idx)
+            else:
+                return # Not a combat action we simulate yet
+
+            # Get simulated outcome
+            sim_outcome = json.loads(sim.get_state_json())
+            
+            # Compare important fields
+            discrepancies = []
+            
+            # Player HP/Block
+            p_real = current_state.get("player", {})
+            p_sim = sim_outcome["player"]
+            if p_real.get("hp") != p_sim["cur_hp"]:
+                discrepancies.append(f"Player HP: real={p_real.get('hp')}, sim={p_sim['cur_hp']}")
+            if p_real.get("block") != p_sim["block"]:
+                discrepancies.append(f"Player Block: real={p_real.get('block')}, sim={p_sim['block']}")
+            if p_real.get("energy") != sim_outcome.get("energy"):
+                discrepancies.append(f"Player Energy: real={p_real.get('energy')}, sim={sim_outcome.get('energy')}")
+            
+            # Enemies HP/Block
+            e_real = current_state.get("enemies", [])
+            e_sim = sim_outcome["enemies"]
+            for i in range(min(len(e_real), len(e_sim))):
+                if e_real[i].get("hp") != e_sim[i]["cur_hp"]:
+                    discrepancies.append(f"Enemy {i} HP: real={e_real[i].get('hp')}, sim={e_sim[i]['cur_hp']}")
+                if e_real[i].get("block") != e_sim[i]["block"]:
+                    discrepancies.append(f"Enemy {i} Block: real={e_real[i].get('block')}, sim={e_sim[i]['block']}")
+
+            if discrepancies:
+                # Filter discrepancies based on randomness rules
+                filtered_discrepancies = []
+                card_id = "UNKNOWN"
+                if self.last_action_idx < 50:
+                    card_idx = self.last_action_idx // 5
+                    hand = self.last_state.get("hand", [])
+                    if card_idx < len(hand):
+                        card_id = hand[card_idx].get("id", "UNKNOWN").upper().split('+')[0].strip()
+                
+                is_random_target = card_id in VALIDATION_SKIP_RANDOM and len(self.last_state.get("enemies", [])) > 1
+                is_draw = card_id in VALIDATION_SKIP_DRAW
+
+                for d in discrepancies:
+                    # Rule 1: Random Target Damage with multiple enemies -> Ignore Enemy HP/Block changes
+                    if is_random_target and ("Enemy" in d):
+                        continue
+                    
+                    # Rule 2: Card Draws -> Ignore HP/Block changes from unpredictable draw triggers (e.g. Fire Breathing/Evolve)
+                    # Note: We still validate Energy as it should be stable for basic draws.
+                    if is_draw and ("HP" in d or "Block" in d):
+                        continue
+                    
+                    filtered_discrepancies.append(d)
+
+                if not filtered_discrepancies:
+                    log(f"[SIMULATOR VALIDATION] SUCCESS (Filtered volatile elements for {card_id})")
+                    self.last_state = None
+                    self.last_action_idx = None
+                    return
+
+                log(f"[SIMULATOR VALIDATION] DISCREPANCY FOUND after action {self.last_action_idx} ({card_id}):")
+                for d in filtered_discrepancies:
+                    log(f"  - {d}")
+                # Log full states for debugging
+                log(f"  Sim State: {json.dumps(sim_outcome)}")
+                # log(f"  Real State: {current_state_json}")
+
+                # Save discrepancy logs
+                try:
+                    import datetime
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    
+                    # 1. State Before
+                    with open(os.path.join(DISCREPANCY_LOG_DIR, f"state_before_{timestamp}.json"), "w") as f:
+                        json.dump(self.last_state, f, indent=2)
+                    
+                    # 2. State After
+                    with open(os.path.join(DISCREPANCY_LOG_DIR, f"state_after_{timestamp}.json"), "w") as f:
+                        json.dump(current_state, f, indent=2)
+                    
+                    # 3. Action
+                    action_info = {"action_idx": self.last_action_idx, "discrepancies": discrepancies}
+                    if self.last_action_idx < 50:
+                        card_idx = self.last_action_idx // 5
+                        target_idx = self.last_action_idx % 5
+                        hand = self.last_state.get("hand", [])
+                        if card_idx < len(hand):
+                            action_info["card"] = hand[card_idx].get("id")
+                            action_info["target"] = target_idx
+                    elif self.last_action_idx == 75:
+                        action_info["action"] = "end_turn"
+                    
+                    with open(os.path.join(DISCREPANCY_LOG_DIR, f"action_{timestamp}.json"), "w") as f:
+                        json.dump(action_info, f, indent=2)
+                    
+                    # 4. Summary Log
+                    summary_log_path = os.path.join(DISCREPANCY_LOG_DIR, f"discrepancy_{timestamp}.log")
+                    with open(summary_log_path, "w") as f:
+                        f.write(f"[SIMULATOR VALIDATION] DISCREPANCY FOUND after action {self.last_action_idx} ({card_id}):\n")
+                        for d in filtered_discrepancies:
+                            f.write(f"  - {d}\n")
+                        f.write(f"\nRelated Files:\n")
+                        f.write(f"  - Action JSON: {os.path.join(DISCREPANCY_LOG_DIR, f'action_{timestamp}.json')}\n")
+                        f.write(f"  - State Before: {os.path.join(DISCREPANCY_LOG_DIR, f'state_before_{timestamp}.json')}\n")
+                        f.write(f"  - State After: {os.path.join(DISCREPANCY_LOG_DIR, f'state_after_{timestamp}.json')}\n")
+                        f.write(f"  - Screenshot: {os.path.join(DISCREPANCY_LOG_DIR, f'screenshot_{timestamp}.png')}\n")
+                    
+                    # 5. Screenshot
+                    global pending_screenshot, screenshot_done_event, _screenshot_claimed
+                    screenshot_path = os.path.join(DISCREPANCY_LOG_DIR, f"screenshot_{timestamp}.png")
+                    pending_screenshot = screenshot_path
+                    _screenshot_claimed = False
+                    screenshot_done_event.clear()
+                    log(f"  [DISCREPANCY] Requesting screenshot: {screenshot_path}")
+                    
+                    # We don't block the main loop here to avoid freezing the game too long,
+                    # but we wait a short while if possible. 
+                    # Actually, since this is in predict_action, it's safer to wait a bit
+                    # so the screenshot is definitely taken before the next state change.
+                    screenshot_done_event.wait(timeout=5.0)
+                    
+                except Exception as log_e:
+                    log(f"  [DISCREPANCY LOG ERROR] {log_e}")
+            else:
+                log(f"[SIMULATOR VALIDATION] SUCCESS after action {self.last_action_idx}")
+
+        except Exception as e:
+            log(f"[SIMULATOR VALIDATION] ERROR during validation: {e}")
+        finally:
+            self.last_state = None
+            self.last_action_idx = None
+
+validator = CombatValidator()
+
+def reload_battle_simulator(v_name=None):
+    """Dynamically reload the battle_simulator module."""
+    global battle_simulator, validator
+    
+    try:
+        if v_name:
+            target_so = os.path.join(BRIDGE_DIR, f"{v_name}.so")
+        else:
+            # Look for the latest battle_simulator_*.so
+            sos = glob.glob(os.path.join(BRIDGE_DIR, "battle_simulator_*.so"))
+            if not sos:
+                log("[RELOAD] No versioned simulator found, trying default battle_simulator.so")
+                target_so = os.path.join(BRIDGE_DIR, "battle_simulator.so")
+            else:
+                sos.sort(key=os.path.getmtime)
+                target_so = sos[-1]
+        
+        if not os.path.exists(target_so):
+            return f"Error: {target_so} not found"
+
+        log(f"[RELOAD] Loading simulator from: {target_so}")
+        
+        # Unique module name to bypass sys.modules cache
+        mod_name = f"battle_simulator_v{int(os.path.getmtime(target_so))}"
+        
+        spec = importlib.util.spec_from_file_location("battle_simulator", target_so)
+        if spec is None:
+            return "Error: Could not create spec"
+            
+        new_mod = importlib.util.module_from_spec(spec)
+        # We also put it into sys.modules as 'battle_simulator' so future 'import battle_simulator' works
+        sys.modules["battle_simulator"] = new_mod
+        spec.loader.exec_module(new_mod)
+        
+        battle_simulator = new_mod
+        validator = CombatValidator() # Re-init validator with new module
+        
+        log(f"[RELOAD] Successfully reloaded battle_simulator as {mod_name}")
+        return "success"
+    except Exception as e:
+        err = f"Error during reload: {e}"
+        log(f"[RELOAD] {err}")
+        traceback.print_exc()
+        return err
+
+
 
 # Now we can safely import ctypes and other C-extensions
 import ctypes
@@ -1873,6 +2170,10 @@ def predict_action(state_json):
 
         state = json.loads(state_json)
         state_type = state.get("type", "unknown")
+        
+        # Simulator Validation (Validate the outcome of the PREVIOUS action)
+        validator.validate(state_json)
+        
         state_dict = encode_state(state)
         
         # Calculate Action Mask
@@ -1968,6 +2269,12 @@ def predict_action(state_json):
             # Stochastic selection (Sampling)
             rng_key, subkey = jax_local.random.split(rng_key)
             action_idx = jax_local.random.categorical(subkey, logits).item()
+            
+        # Store state for next validation if we're in combat
+        # Skip storing if it's the End Turn action (75) to avoid false discrepancies next time
+        if state_type == "combat" and action_idx != 75:
+            validator.last_state = state
+            validator.last_action_idx = action_idx
             
         # Override for Map transition (Floor Start)
         if state_type == "map" and state.get("current_pos") is None:
@@ -2460,6 +2767,33 @@ class CommandHandler(BaseHTTPRequestHandler):
             self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "queued", "command": cmd}).encode())
+            
+        elif parsed_path.path == "/reload_simulator":
+            query_components = parse_qs(parsed_path.query)
+            v = query_components.get("v", [None])[0]
+            
+            res = reload_battle_simulator(v)
+            
+            self.send_response(200 if res == "success" else 500)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": res}).encode())
+            
+        elif parsed_path.path == "/reload_bridge":
+            log("[RELOAD] Self-reloading rnad_bridge...")
+            try:
+                import importlib
+                importlib.reload(sys.modules["rnad_bridge"])
+                res = "success"
+            except Exception as e:
+                res = f"Error: {e}"
+                log(f"[RELOAD] Bridge reload failed: {res}")
+            
+            self.send_response(200 if res == "success" else 500)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": res}).encode())
+            
         else:
             self.send_response(404)
             self.end_headers()

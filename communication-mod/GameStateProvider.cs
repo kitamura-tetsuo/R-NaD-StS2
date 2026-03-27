@@ -577,16 +577,23 @@ public partial class MainFile : Node
                     if (dynamicVars.ContainsKey("CalculatedBlock")) curBlock = (int)dynamicVars["CalculatedBlock"].PreviewValue;
                     else if (dynamicVars.ContainsKey("Block")) curBlock = (int)dynamicVars["Block"].PreviewValue;
 
+                    int bDmg = 0;
+                    int bBlk = 0;
+                    int mNum = 0;
+                    if (dynamicVars.ContainsKey("Damage")) bDmg = (int)dynamicVars["Damage"].BaseValue;
+                    if (dynamicVars.ContainsKey("Block")) bBlk = (int)dynamicVars["Block"].BaseValue;
+                    if (dynamicVars.ContainsKey("MagicNumber")) mNum = (int)dynamicVars["MagicNumber"].BaseValue;
+
                     return new
                     {
                         id = c.Id.Entry,
                         name = c.Title,
                         isPlayable = c.CanPlay(),
                         targetType = c.TargetType.ToString(),
-                        baseDamage = GetPropValue(c, "BaseDamage", 0),
-                        baseBlock = GetPropValue(c, "BaseBlock", 0),
-                        magicNumber = GetPropValue(c, "MagicNumber", 0),
-                        cost = GetPropValue(c, "BaseCost", 0),
+                        baseDamage = bDmg,
+                        baseBlock = bBlk,
+                        magicNumber = mNum,
+                        cost = c.EnergyCost.GetResolved(),
                         upgraded = GetPropValue(c, "IsUpgraded", false) || GetPropValue(c, "TimesUpgraded", 0) > 0,
                         currentDamage = curDamage,
                         currentBlock = curBlock

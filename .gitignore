@@ -18,6 +18,8 @@ mlruns/
 
 R-NaD/trajectories/
 
+battle_simulator/target/
+R-NaD/*.so
 
 tmp/
 StS2_Decompiled/
