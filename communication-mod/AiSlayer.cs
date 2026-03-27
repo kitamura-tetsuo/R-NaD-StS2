@@ -163,7 +163,8 @@ public class AiSlayer
             MainFile.Logger.Info($"[AiSlayer] Game Loop: floor={runState.TotalFloor}, room={roomType}, overlay={NOverlayStack.Instance?.Peek()?.GetType().FullName ?? "none"}");
             await HandleRoomAsync(roomType, ct);
             
-            if (roomType == RoomType.Monster || roomType == RoomType.Elite || roomType == RoomType.Boss)
+            // Wait for rewards after combat or event rooms (which might trigger rewards)
+            if (roomType == RoomType.Monster || roomType == RoomType.Elite || roomType == RoomType.Boss || roomType == RoomType.Event)
             {
                 await WaitForRewardsScreenAsync(ct);
             }
@@ -258,7 +259,7 @@ public class AiSlayer
         }
     }
 
-    private async Task DrainOverlayScreensAsync(CancellationToken ct)
+    internal async Task DrainOverlayScreensAsync(CancellationToken ct)
     {
         while (true)
         {

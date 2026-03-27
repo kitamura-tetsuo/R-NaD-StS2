@@ -26,11 +26,36 @@ public class AiMapScreenHandler : IHandler
 
         // Wait for map screen to be open (not necessarily visible in tree, as animations might delay visibility)
         // OR if the floor already advanced (handling race condition where map was handled prematurely)
-        await WaitHelper.Until(() => {
+        await WaitHelper.Until(delegate {
             int currentFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? -1;
             bool floorAdvanced = initialFloor != -1 && currentFloor > initialFloor;
-            return runNode.GlobalUi.MapScreen.IsOpen || floorAdvanced;
-        }, ct, TimeSpan.FromSeconds(10), "Map screen not open");
+            
+            if (runNode.GlobalUi.MapScreen.IsOpen || floorAdvanced) return true;
+            
+            // If map is NOT open, check if there's an overlay blocking it and drain it
+            if (MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance != null && 
+                MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance.ScreenCount > 0)
+            {
+                MainFile.Logger.Info("[AiSlayer] Overlay detected while waiting for map, draining...");
+                // Note: We can't await here directly in the predicate, but we can return true to break the wait
+                // and then handle it in the loop below.
+                return true; 
+            }
+            
+            return false;
+        }, ct, TimeSpan.FromSeconds(15), "Map screen not open");
+
+        // Extra check: if we broke out of Until because of an overlay, drain it now
+        if (!runNode.GlobalUi.MapScreen.IsOpen)
+        {
+             await MainFile.Instance.GetAiSlayer().DrainOverlayScreensAsync(ct);
+             
+             // After draining, re-check map (it might be open now)
+             if (!runNode.GlobalUi.MapScreen.IsOpen) {
+                  // Final short wait for map
+                  await WaitHelper.Until(() => runNode.GlobalUi.MapScreen.IsOpen, ct, TimeSpan.FromSeconds(5), "Map screen still not open after draining overlays");
+             }
+        }
 
         if (runNode.GlobalUi.MapScreen.IsOpen)
         {

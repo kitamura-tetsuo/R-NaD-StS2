@@ -273,5 +273,31 @@ class TestStateEncoding(unittest.TestCase):
         self.assertTrue(mask_map[1])
         self.assertFalse(mask_map[2])
 
+    def test_selection_masking(self):
+        """Test that already selected cards are masked out."""
+        # Grid selection
+        state_grid = {
+            "type": "grid_selection",
+            "cards": [
+                {"id": "BASH", "selected": True},
+                {"id": "STRIKE", "selected": False}
+            ]
+        }
+        mask_grid = rnad_bridge.get_action_mask(state_grid)
+        self.assertFalse(mask_grid[0]) # Card 0 is selected
+        self.assertTrue(mask_grid[1])  # Card 1 is not selected
+        
+        # Hand selection
+        state_hand = {
+            "type": "hand_selection",
+            "cards": [
+                {"name": "Bash", "selected": False},
+                {"name": "Strike", "selected": True}
+            ]
+        }
+        mask_hand = rnad_bridge.get_action_mask(state_hand)
+        self.assertTrue(mask_hand[0])  # Card 0 is not selected
+        self.assertFalse(mask_hand[1]) # Card 1 is selected
+
 if __name__ == "__main__":
     unittest.main()

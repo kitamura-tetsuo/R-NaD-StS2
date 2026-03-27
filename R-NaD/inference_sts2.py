@@ -15,8 +15,8 @@ def cleanup_processes():
     except Exception:
         pass
 
-def play_game(seed=None):
-    print(f"=== Starting R-NaD Inference (Headed) Seed={seed} ===")
+def play_game(seed=None, route=False):
+    print(f"=== Starting R-NaD Inference (Headed) Seed={seed} Route={route} ===")
     cleanup_processes()
     
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
@@ -35,6 +35,9 @@ def play_game(seed=None):
     # Enable Inference Mode (Greedy selection, etc.)
     env = os.environ.copy()
     env["RNAD_INFERENCE_MODE"] = "true"
+    if route:
+        env["RNAD_ROUTE"] = "true"
+        print("[Inference] Setting RNAD_ROUTE environment variable to: true")
     
     # We use launch.sh to ensure environment is correct
     process = subprocess.Popen(
@@ -145,9 +148,10 @@ def play_game(seed=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=str, default=None, help="Fixed seed for reproducibility")
+    parser.add_argument("--route", action="store_true", help="Always choose the map room with the smallest index")
     args = parser.parse_args()
     
     if args.seed is None:
         args.seed = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
     
-    play_game(seed=args.seed)
+    play_game(seed=args.seed, route=args.route)

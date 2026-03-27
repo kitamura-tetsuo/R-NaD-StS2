@@ -296,7 +296,9 @@ if route_mode:
 CARD_VOCAB = {
     "UNKNOWN": 0,
     "STRIKE_IRONCLAD": 1,
+    "STRIKE": 1, # Alias for base Strike
     "DEFEND_IRONCLAD": 2,
+    "DEFEND": 2, # Alias for base Defend
     "BASH": 3,
     "ANGER": 4,
     "BODY_SLAM": 5,
@@ -498,7 +500,17 @@ def get_monster_idx(monster_id):
     if not monster_id:
         assert False, "monster_id is missing or empty after dict extraction"
     mid = str(monster_id).upper().replace(" ", "_")
-    assert mid in MONSTER_VOCAB, f"Unknown monster_id: {monster_id} (mapped to {mid})"
+    
+    if mid in MONSTER_VOCAB:
+        return MONSTER_VOCAB[mid]
+        
+    # Substring search
+    for k in MONSTER_VOCAB.keys():
+        if mid in k or k in mid:
+            return MONSTER_VOCAB[k]
+            
+    vocab_sample = list(MONSTER_VOCAB.keys())[:20]
+    assert mid in MONSTER_VOCAB, f"Unknown monster_id: {monster_id} (mapped to {mid}). Vocab size: {len(MONSTER_VOCAB)}. Sample keys: {vocab_sample}"
     return MONSTER_VOCAB[mid]
 
 def get_boss_idx(boss_id):
@@ -521,8 +533,32 @@ def get_card_idx(card_id):
     if not card_id:
         assert False, "card_id is missing or empty after dict extraction"
     # Clean up (e.g., remove name suffixes if any) and normalize spaces to underscores
-    cid = str(card_id).split('+')[0].strip().upper().replace(" ", "_")
-    assert cid in CARD_VOCAB, f"Unknown card_id: {card_id} (mapped to {cid})"
+    cid = str(card_id).split('+')[0].strip().upper().replace(" ", "_").replace("-", "_")
+    # Remove punctuation for matching with vocab
+    for char in "!?.(),":
+        cid = cid.replace(char, "")
+    
+    if cid in CARD_VOCAB:
+        return CARD_VOCAB[cid]
+        
+    # Robust fallbacks for base cards if the exact generic key is missing
+    if cid == "STRIKE":
+        for k in ["STRIKE_IRONCLAD", "STRIKE_SILENT", "STRIKE_DEFECT", "STRIKE_REGENT", "STRIKE_NECROBINDER"]:
+            if k in CARD_VOCAB:
+                return CARD_VOCAB[k]
+    elif cid == "DEFEND":
+        for k in ["DEFEND_IRONCLAD", "DEFEND_SILENT", "DEFEND_DEFECT", "DEFEND_REGENT", "DEFEND_NECROBINDER"]:
+            if k in CARD_VOCAB:
+                return CARD_VOCAB[k]
+    
+    # Substring search as a last resort for fuzzy matches
+    for k in CARD_VOCAB.keys():
+        if cid in k:
+            return CARD_VOCAB[k]
+
+    # Provide better diagnostics on failure
+    vocab_sample = list(CARD_VOCAB.keys())[:20]
+    assert cid in CARD_VOCAB, f"Unknown card_id: {card_id} (mapped to {cid}). Vocab size: {len(CARD_VOCAB)}. Sample keys: {vocab_sample}"
     return CARD_VOCAB[cid]
 
 def get_relic_idx(relic_id):
@@ -1421,7 +1457,7 @@ def encode_state(state):
                 reward = rewards[i]
                 base_idx = i * 4
                 event_vec[base_idx] = 1.0
-                rt_map = {"GoldReward": 1, "Gold": 1, "Card": 2, "CardReward": 2, "Relic": 3, "PotionReward": 4, "Potion": 4, "Curse": 5}
+                rt_map = {"GoldReward": 1, "Gold": 1, "Card": 2, "CardReward": 2, "Relic": 3, "RelicReward": 3, "PotionReward": 4, "Potion": 4, "Curse": 5}
                 reward_type = reward.get("type")
                 assert reward_type in rt_map, f"reward type: {reward_type} not in rt_map"
                 event_vec[base_idx + 1] = rt_map[reward_type] / 10.0
@@ -1604,8 +1640,8 @@ def get_action_mask(state, masked_reward_indices=None):
         else:
             log("Python-Bridge: actions_disabled detected in combat. Masking potions.")
         
-        # 75: End Turn (Only if enemies are present)
-        if enemies:
+        # 75: End Turn (Only if enemies are present and actions are not disabled)
+        if not actions_disabled and enemies:
             mask[75] = True
         
         # 86: Proceed (Victory Bag)
@@ -1663,9 +1699,11 @@ def get_action_mask(state, masked_reward_indices=None):
             mask[90] = True  # confirm_selection
         else:
             for i in range(min(len(cards), 20)):
-                mask[i] = True
-            # can_skip allows skipping (index -1 maps to action 90 for grid)
-            if state.get("can_skip"):
+                # Mask out cards that are already selected to avoid infinite toggle loops
+                if not cards[i].get("selected", False):
+                    mask[i] = True
+            # can_skip or can_proceed allows skipping/confirming (index -1 maps to action 90 for grid)
+            if state.get("can_skip") or state.get("can_proceed"):
                 mask[90] = True  # skip / confirm
         
     elif state_type == "shop":
@@ -1710,10 +1748,17 @@ def get_action_mask(state, masked_reward_indices=None):
     mask[99] = False
     
     if not np.any(mask):
-        # If no actions are possible, we should ideally not be here due to C# busy check.
-        # But if we are, we must ensure the model doesn't crash.
-        # Since we want to AVOID wait, let's log this situation.
-        log(f"WARNING: No valid actions in mask for state {state_type}. Current mask: {mask}")
+        # If no actions are possible, we MUST allow WAIT to let the game progress (e.g., during animations)
+        # and prevent the AI from picking a random (masked) action that might lead to a crash or stall.
+        mask[99] = True
+        summary = {
+            "floor": state.get("floor"),
+            "hp": state.get("player", {}).get("hp") if isinstance(state.get("player"), dict) else None,
+            "hand_count": len(state.get("hand", [])) if isinstance(state.get("hand"), list) else 0,
+            "enemy_count": len(state.get("enemies", [])) if isinstance(state.get("enemies"), list) else 0,
+            "can_proceed": state.get("can_proceed")
+        }
+        log(f"WARNING: No valid actions in mask for state {state_type}. Enabling WAIT (99). State Summary: {json.dumps(summary)}")
         
     return mask
 
@@ -1924,6 +1969,13 @@ def predict_action(state_json):
             rng_key, subkey = jax_local.random.split(rng_key)
             action_idx = jax_local.random.categorical(subkey, logits).item()
             
+        # Override for Map transition (Floor Start)
+        if state_type == "map" and state.get("current_pos") is None:
+            next_nodes = state.get("next_nodes", [])
+            if next_nodes:
+                log(f"[Python] Map transition detected (current_pos is None). Auto-selecting first node (index 0).")
+                action_idx = 0
+            
         log_prob = jax_local.nn.log_softmax(logits)[0, 0, action_idx].item()
         
         # ▼ [DEBUG LOGGING]
@@ -1946,6 +1998,22 @@ def predict_action(state_json):
             log_decision(f"State Summary: {json.dumps(state_summary)}")
             log_decision(f"Action Mask (first 20): {mask_list[:20]} ...")
             log_decision(f"Selected Action Index: {action_idx}")
+            
+            # Identify action for logging
+            ident_action = "wait"
+            if state_type == "combat":
+                if action_idx < 50:
+                    card_idx = action_idx // 5
+                    if card_idx < len(state.get("hand", [])):
+                        ident_action = f"play_card:{state['hand'][card_idx].get('id')}"
+                elif 50 <= action_idx < 75:
+                    potion_idx = (action_idx - 50) // 5
+                    if potion_idx < len(state.get("potions", [])):
+                        p = state['potions'][potion_idx]
+                        ident_action = f"use_potion:{p.get('id')}({p.get('name')})"
+                elif action_idx == 75: ident_action = "end_turn"
+            
+            log_decision(f"Selected Action ID: {ident_action}")
             
             # Detailed probabilities log
             for i in range(0, 100, 10):

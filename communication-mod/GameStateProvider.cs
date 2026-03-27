@@ -304,16 +304,23 @@ public partial class MainFile : Node
 
             if (grid != null)
             {
+                var selectedCardsField = gridSelection.GetType().GetField("_selectedCards", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var selectedCards = selectedCardsField?.GetValue(gridSelection) as IEnumerable<MegaCrit.Sts2.Core.Models.CardModel>;
+                var highlightedCardsField = typeof(MegaCrit.Sts2.Core.Nodes.Cards.NCardGrid).GetField("_highlightedCards", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var highlightedCards = highlightedCardsField?.GetValue(grid) as IEnumerable<MegaCrit.Sts2.Core.Models.CardModel>;
+
                 var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(grid);
                 for (int i = 0; i < holders.Count; i++)
                 {
                     var model = holders[i].CardModel;
+                    bool isSelected = (selectedCards != null && selectedCards.Contains(model)) || (highlightedCards != null && highlightedCards.Contains(model));
                     cards.Add(new { 
                         index = i, 
                         name = model?.Title ?? "Unknown",
                         id = model?.Id.Entry ?? "unknown",
                         upgraded = model != null && (GetPropValue(model, "IsUpgraded", false) || GetPropValue(model, "TimesUpgraded", 0) > 0),
-                        cost = model != null ? GetPropValue(model, "BaseCost", 0) : 0
+                        cost = model != null ? GetPropValue(model, "BaseCost", 0) : 0,
+                        selected = isSelected
                     });
                 }
             }
@@ -430,6 +437,9 @@ public partial class MainFile : Node
 
                 if (isSelectionMode || handNode.IsInCardSelection)
                 {
+                    var selectedCardsField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectedCards", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    var selectedCards = selectedCardsField?.GetValue(handNode) as IEnumerable<MegaCrit.Sts2.Core.Models.CardModel>;
+
                     var cards = new List<object>();
                     var activeHolders = handNode.ActiveHolders;
                     for (int i = 0; i < activeHolders.Count; i++)
@@ -437,7 +447,12 @@ public partial class MainFile : Node
                         var holder = activeHolders[i];
                         if (holder.CardNode != null)
                         {
-                            cards.Add(new { index = i, name = holder.CardNode.Model?.Title ?? "Unknown" });
+                            var model = holder.CardNode.Model;
+                            cards.Add(new { 
+                                index = i, 
+                                name = model?.Title ?? "Unknown",
+                                selected = selectedCards != null && selectedCards.Contains(model)
+                            });
                         }
                     }
 
@@ -498,7 +513,41 @@ public partial class MainFile : Node
             // if (cm.PlayerActionsDisabled) return "{\"type\":\"combat_waiting\"}";
 
             var combatNode = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
+            
+            // Check for proceed button or dialogue hitboxes that block combat
             bool canProceed = combatNode?.ProceedButton?.IsEnabled ?? false;
+            if (!canProceed)
+            {
+                // 1. Check for Ancient Dialogue Hitbox
+                var ancientHitbox = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NAncientDialogueHitbox>(GetTree().Root);
+                if (ancientHitbox != null && ancientHitbox.IsVisibleInTree() && ancientHitbox.IsEnabled)
+                {
+                    Logger.Info("[AutoAI] Detected active AncientDialogueHitbox in CombatRoom. Setting can_proceed=true.");
+                    canProceed = true;
+                }
+
+                // 2. Check for Event Option Buttons (e.g. "FIGHT!" in a combat event)
+                if (!canProceed)
+                {
+                    var eventOption = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(GetTree().Root);
+                    if (eventOption != null && eventOption.IsVisibleInTree() && eventOption.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Detected active EventOptionButton in CombatRoom. Setting can_proceed=true.");
+                        canProceed = true;
+                    }
+                }
+
+                // 3. Check for generic NDivinationButton (e.g. Wheel of Change)
+                if (!canProceed)
+                {
+                    var divButton = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NDivinationButton>(GetTree().Root);
+                    if (divButton != null && divButton.IsVisibleInTree() && divButton.IsEnabled)
+                    {
+                        Logger.Info("[AutoAI] Detected active DivinationButton in CombatRoom. Setting can_proceed=true.");
+                        canProceed = true;
+                    }
+                }
+            }
 
             var combatData = new
             {
@@ -943,12 +992,17 @@ public partial class MainFile : Node
         var nextNodes = new List<object>();
         if (!currentPos.HasValue)
         {
-            var firstRow = runState.Map.GetPointsInRow(0);
-            if (firstRow != null)
+            // Search for the first non-empty row (up to row 5) for starting nodes
+            for (int r = 0; r <= 5; r++)
             {
-                foreach (var p in firstRow)
+                var rowNodes = runState.Map.GetPointsInRow(r);
+                if (rowNodes != null && rowNodes.Any())
                 {
-                    nextNodes.Add(new { row = p.coord.row, col = p.coord.col });
+                    foreach (var p in rowNodes)
+                    {
+                        nextNodes.Add(new { row = p.coord.row, col = p.coord.col });
+                    }
+                    break;
                 }
             }
         }

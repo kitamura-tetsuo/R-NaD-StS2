@@ -3,6 +3,8 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 
 namespace communication_mod;
 
@@ -230,10 +232,17 @@ public partial class MainFile : Node
                     }
                     Logger.Info($"[AutoAI] Potion targeted enemy index {targetIdx}: {target?.Name ?? "None"}");
                 }
-                else if (targetType.Contains("Player") || targetType.Contains("Ally"))
+                else if (targetType.Contains("Player") || targetType.Contains("Ally") || targetType == "Self")
                 {
                     target = player.Creature;
                     Logger.Info($"[AutoAI] Potion targeted player: {target?.Name ?? "None"}");
+                }
+                
+                // Fallback for single-target potions that failed to resolve a target
+                if (target == null && potion.TargetType.IsSingleTarget())
+                {
+                    target = player.Creature;
+                    Logger.Warn($"[AutoAI] Potion {potion.Title.GetRawText()} is IsSingleTarget but target was null. Falling back to player.");
                 }
                 
                 Logger.Info($"[AutoAI] Using potion: {potion.Title.GetRawText()} (TargetType: {targetType}, ResolvedTarget: {target?.Name ?? "None"})");
@@ -901,6 +910,35 @@ public partial class MainFile : Node
             {
                 Logger.Info("[AutoAI] Clicking Combat proceed button (Victory Bag).");
                 combatRoomNode.ProceedButton.Call("ForceClick");
+            }
+            else
+            {
+                // 1. Check for Ancient Dialogue Hitbox
+                var ancientHitbox = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NAncientDialogueHitbox>(GetTree().Root);
+                if (ancientHitbox != null && ancientHitbox.IsVisibleInTree() && ancientHitbox.IsEnabled)
+                {
+                    Logger.Info("[AutoAI] Clicking AncientDialogueHitbox in CombatRoom.");
+                    ancientHitbox.Call("ForceClick");
+                    return;
+                }
+
+                // 2. Check for Event Option Buttons
+                var eventOption = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(GetTree().Root);
+                if (eventOption != null && eventOption.IsVisibleInTree() && eventOption.IsEnabled)
+                {
+                    Logger.Info("[AutoAI] Clicking EventOptionButton in CombatRoom.");
+                    eventOption.Call("ForceClick");
+                    return;
+                }
+
+                // 3. Check for Divination Button
+                var divButton = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NDivinationButton>(GetTree().Root);
+                if (divButton != null && divButton.IsVisibleInTree() && divButton.IsEnabled)
+                {
+                    Logger.Info("[AutoAI] Clicking DivinationButton in CombatRoom.");
+                    divButton.Call("ForceClick");
+                    return;
+                }
             }
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.EventRoom)

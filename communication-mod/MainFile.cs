@@ -34,6 +34,7 @@ public partial class MainFile : Node
     private static long _perfLogTimer = 0;
     private static System.Diagnostics.Stopwatch _frameStopwatch = new();
     private AiSlayer _aiSlayer;
+    public AiSlayer GetAiSlayer() => _aiSlayer;
     private long _lastActionTime = 0;
     private string _defaultSeed = "";
     private long _lastPollTime = 0;
