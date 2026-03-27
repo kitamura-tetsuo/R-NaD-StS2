@@ -3,7 +3,7 @@ use crate::vocabulary::Vocabulary;
 
 pub const GLOBAL_SIZE: usize = 512;
 pub const COMBAT_SIZE: usize = 384;
-pub const BOW_SIZE: usize = 600;
+pub const BOW_SIZE: usize = 611;
 
 pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32> {
     let mut tensor = vec![0.0; GLOBAL_SIZE + COMBAT_SIZE + BOW_SIZE * 4 + 2];

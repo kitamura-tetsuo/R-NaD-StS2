@@ -50,7 +50,8 @@ public class AiSlayer
         _mapHandler = new AiMapScreenHandler();
         _screenHandlers = new Dictionary<Type, IScreenHandler>
         {
-            [typeof(NGameOverScreen)] = new AiGameOverScreenHandler()
+            [typeof(NGameOverScreen)] = new AiGameOverScreenHandler(),
+            [typeof(MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen)] = new AiRewardsScreenHandler()
         };
     }
 

@@ -54,8 +54,25 @@ impl GameState {
             damage *= multiplier;
         }
 
+        // Per-hit damage capping (Slippery)
+        let slippery = target.get_power_amount(&PowerIdHelper::slippery());
+        if slippery > 0 {
+            damage = 1.0;
+        }
+
         // Apply floor to damage
         damage.floor() as i32
+    }
+
+    pub fn perform_aoe_damage(&mut self, base_damage: i32) {
+        for t_idx in 0..self.enemies.len() {
+            if let Some(target) = self.enemies.get(t_idx) {
+                let dmg = self.calculate_damage(&self.player, target, base_damage);
+                if let Some(mutable_target) = self.enemies.get_mut(t_idx) {
+                    mutable_target.apply_damage(dmg);
+                }
+            }
+        }
     }
 
     pub fn play_card(&mut self, card_idx: usize, target_idx: Option<usize>) {
@@ -151,6 +168,46 @@ impl GameState {
                     }
                 }
             }
+        } else if card.id == "THUNDERCLAP" {
+            let vul_amount = if card.magic_number > 0 { card.magic_number } else { 1 };
+            for t_idx in 0..self.enemies.len() {
+                if let Some(target) = self.enemies.get(t_idx) {
+                    let dmg = self.calculate_damage(&self.player, target, card.base_damage);
+                    if let Some(mutable_target) = self.enemies.get_mut(t_idx) {
+                        mutable_target.apply_damage(dmg);
+                        mutable_target.add_power(PowerIdHelper::vulnerable(), vul_amount);
+                    }
+                }
+            }
+        } else if card.id == "CLEAVE" {
+            self.perform_aoe_damage(card.base_damage);
+        } else if card.id == "ANGER" {
+            if let Some(t_idx) = target_idx {
+                if let Some(target) = self.enemies.get(t_idx) {
+                    let dmg = self.calculate_damage(&self.player, target, card.base_damage);
+                    if let Some(mutable_target) = self.enemies.get_mut(t_idx) {
+                        mutable_target.apply_damage(dmg);
+                    }
+                    // Anger effect: Add a copy to discard pile.
+                    // The original card will be pushed to discard at the end of this function.
+                    self.discard_pile.push(card.clone());
+                }
+            }
+        } else if card.id == "BLOODLETTING" {
+            self.player.lose_hp(3);
+            self.energy += if card.magic_number > 0 { card.magic_number } else if card.is_upgraded { 3 } else { 2 };
+        } else if card.id == "BODY_SLAM" {
+            if let Some(t_idx) = target_idx {
+                if let Some(target) = self.enemies.get(t_idx) {
+                    let dmg = self.calculate_damage(&self.player, target, self.player.block);
+                    if let Some(mutable_target) = self.enemies.get_mut(t_idx) {
+                        mutable_target.apply_damage(dmg);
+                    }
+                }
+            }
+        } else if card.id == "BREAKTHROUGH" {
+            self.player.lose_hp(1);
+            self.perform_aoe_damage(card.base_damage);
         } else if card.is_defend() {
             let mut block_amount = (card.base_block + self.player.get_power_amount(&PowerIdHelper::dexterity())).max(0) as f32;
             if self.player.get_power_amount(&PowerIdHelper::frail()) > 0 {
@@ -159,7 +216,9 @@ impl GameState {
             self.player.add_block(block_amount.floor() as i32);
         } else {
             // Default handler for simple cards (one-hit damage or block)
-            if let Some(t_idx) = target_idx {
+            if matches!(card.target, crate::card::TargetType::All) {
+                self.perform_aoe_damage(card.base_damage);
+            } else if let Some(t_idx) = target_idx {
                 if let Some(target) = self.enemies.get(t_idx) {
                     if card.base_damage > 0 {
                         let dmg = self.calculate_damage(&self.player, target, card.base_damage);

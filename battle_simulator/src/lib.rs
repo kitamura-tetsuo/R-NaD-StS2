@@ -110,6 +110,8 @@ impl Simulator {
             TargetType::Single
         } else if id.contains("DEFEND") {
             TargetType::SelfTarget
+        } else if id == "THUNDERCLAP" || id == "CLEAVE" {
+            TargetType::All
         } else {
             TargetType::None
         };

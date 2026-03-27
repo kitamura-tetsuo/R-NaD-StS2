@@ -378,12 +378,36 @@ public partial class MainFile : Node
         var screen = overlayStack?.Peek() as MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardRewardSelectionScreen;
         if (screen != null)
         {
-            var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(screen);
-            if (index >= 0 && index < holders.Count)
+            if (index == -1)
             {
-                var holder = holders[index];
-                Logger.Info($"[AutoAI] Selecting card reward index {index}: {holder.CardModel?.Title}");
-                screen.Call("SelectCard", holder);
+                var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardRewardAlternativeButton>(screen);
+                if (buttons.Count > 0)
+                {
+                    var btn = buttons[0];
+                    Logger.Info($"[AutoAI] HandleSelectRewardCard: index=-1 detected. Clicking alternative button index 0: {btn.Name}");
+                    btn.Call("ForceClick");
+
+                    var method = screen.GetType().GetMethod("OnAlternateRewardSelected", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (method != null)
+                    {
+                        Logger.Info("[AutoAI] HandleSelectRewardCard fallback: Calling OnAlternateRewardSelected directly.");
+                        method.Invoke(screen, new object[] { 2 });
+                    }
+                }
+                else
+                {
+                    Logger.Warn("[AutoAI] HandleSelectRewardCard: index=-1 detected but no alternative buttons found.");
+                }
+            }
+            else
+            {
+                var holders = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Cards.Holders.NCardHolder>(screen);
+                if (index >= 0 && index < holders.Count)
+                {
+                    var holder = holders[index];
+                    Logger.Info($"[AutoAI] Selecting card reward index {index}: {holder.CardModel?.Title}");
+                    screen.Call("SelectCard", holder);
+                }
             }
         }
     }

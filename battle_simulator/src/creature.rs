@@ -11,6 +11,7 @@ impl PowerIdHelper {
     pub fn weak() -> PowerId { "WEAK_POWER".to_string() }
     pub fn frail() -> PowerId { "FRAIL_POWER".to_string() }
     pub fn shrink() -> PowerId { "SHRINK_POWER".to_string() }
+    pub fn slippery() -> PowerId { "SLIPPERY_POWER".to_string() }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +63,13 @@ impl Creature {
 
     pub fn apply_damage(&mut self, amount: i32) -> i32 {
         let mut remaining_damage = amount;
+
+        // Decrement SLIPPERY_POWER if per-hit caps were applied.
+        let slippery = self.get_power_amount(&PowerIdHelper::slippery());
+        if slippery > 0 {
+            self.add_power(PowerIdHelper::slippery(), -1);
+        }
+
         if self.block > 0 {
             let blocked = self.block.min(remaining_damage);
             self.block -= blocked;
@@ -77,5 +85,9 @@ impl Creature {
 
     pub fn is_alive(&self) -> bool {
         self.cur_hp > 0
+    }
+
+    pub fn lose_hp(&mut self, amount: i32) {
+        self.cur_hp = (self.cur_hp - amount).max(0);
     }
 }

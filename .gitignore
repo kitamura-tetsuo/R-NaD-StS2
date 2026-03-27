@@ -7,7 +7,6 @@ R-NaD/__pycache__/
 
 **/__pycache__/
 R-NaD/checkpoints/
-bin/
 R-NaD/tmp_venv/
 R-NaD/build/
 R-NaD/libpython_fixer.cpython-312-x86_64-linux-gnu.so
@@ -20,6 +19,7 @@ R-NaD/trajectories/
 
 battle_simulator/target/
 R-NaD/*.so
+bin/libai_bridge.so
 
 tmp/
 StS2_Decompiled/

@@ -544,12 +544,12 @@ def main():
                     unroll_length = status_data.get("unroll_length", 0)
                     batch_size = status_data.get("batch_size", 0)
                     
-                    # 20s trajectory progress stall detection
+                    # 60s trajectory progress stall detection
                     if traj_size != last_traj_size:
                         last_traj_size = traj_size
                         last_traj_progress_time = time.time()
                         
-                    if time.time() - last_traj_progress_time > 20:
+                    if time.time() - last_traj_progress_time > 60:
                         logging.warning(f"Stall detected! Trajectory size ({traj_size}) hasn't changed for {time.time() - last_traj_progress_time:.1f}s.")
                         take_screenshot(f"stall_traj_size_{traj_size}")
                         process, checkpoint = perform_restart(process, checkpoint, args)

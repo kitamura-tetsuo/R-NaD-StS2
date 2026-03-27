@@ -1,0 +1,10 @@
+[SIMULATOR VALIDATION] DISCREPANCY FOUND after action 5 (BLOODLETTING):
+
+  - Player HP: real=48, sim=51
+  - Player Energy: real=2, sim=0
+
+Related Files:
+  - Action JSON: /home/ubuntu/src/R-NaD-StS2/battle_simulator/discrepancy_logs/action_20260327_180814_959220.json
+  - State Before: /home/ubuntu/src/R-NaD-StS2/battle_simulator/discrepancy_logs/state_before_20260327_180814_959220.json
+  - State After: /home/ubuntu/src/R-NaD-StS2/battle_simulator/discrepancy_logs/state_after_20260327_180814_959220.json
+  - Screenshot: /home/ubuntu/src/R-NaD-StS2/battle_simulator/discrepancy_logs/screenshot_20260327_180814_959220.png

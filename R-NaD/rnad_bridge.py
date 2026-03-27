@@ -676,7 +676,7 @@ CARD_VOCAB = {
     "POMMEL_STRIKE": 13,
     "SHRUG_IT_OFF": 14,
     "SWORD_BOOMERANG": 15,
-    "THUNDER_CLAP": 16,
+    "THUNDERCLAP": 16,
     "TRUE_GRIT": 17,
     "TWIN_STRIKE": 18,
     "WARCRY": 19,
@@ -684,6 +684,7 @@ CARD_VOCAB = {
     "ARMAMENTS": 21,
     "BLOOD_FOR_BLOOD": 22,
     "BLOOD_LETTING": 23,
+    "BLOODLETTING": 23, # Alias for game ID
     "BURNING_BARRIER": 24, # StS2 specific?
     "CARNAGE": 25,
     "COMBUST": 26,
@@ -737,7 +738,8 @@ CARD_VOCAB = {
     "VOID": 74,
     "BURN": 75,
     "WOUND": 76,
-    "ASCENDERS_BANE": 77
+    "ASCENDERS_BANE": 77,
+    "BREAKTHROUGH": 78
 }
 
 RELIC_VOCAB = {
@@ -2323,44 +2325,49 @@ def predict_action(state_json):
         
         # Probs are calculated from logits which are already masked in the network
         probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
-        
-        # --- Multiple Move Mode Search (Prioritize Kill-all procedures) ---
+        # --- Search Features ---
+        # Lethal Search: Harness to ensure we don't miss a deterministic kill-all sequence.
+        # Multiple Move: Full tree search with value-head evaluation for best next state.
+        lethal_search_mode = os.environ.get("RNAD_LETHAL_SEARCH", "true") == "true"
+        multiple_move_mode = os.environ.get("RNAD_MULTIPLE_MOVE", "false") == "true"
         search_action_idx = None
-        multiple_move_mode = os.environ.get("RNAD_MULTIPLE_MOVE") == "true"
-        if multiple_move_mode and state_type == "combat" and battle_simulator is not None:
-            log("[Python] Multiple Move Mode Search: START")
+
+        if (lethal_search_mode or multiple_move_mode) and state_type == "combat" and battle_simulator is not None:
+            log(f"[Python] Combat Search: START (lethal={lethal_search_mode}, multi={multiple_move_mode})")
             try:
                 sim_json = validator.to_simulator_json(state)
                 sim = battle_simulator.Simulator.from_json(sim_json)
                 sim_manager.init_simulator(sim)
                 num_res = sim.enumerate_final_states()
+                log(f"[Python] Combat Search: Enumerate states finished. Found {num_res} raw states.")
                 if num_res > 0:
                     all_results = sim_manager.read_results()
                     # Filter for deterministic sequences (those that end with End Turn action 75)
-                    # Stochastic sequences stop at the point of uncertainty and do not include 75 in search.
                     results = [r for r in all_results if r["actions"] and r["actions"][-1] == 75]
-                    log(f"[Python] Multiple Move Mode Search: {len(results)} deterministic sequences out of {len(all_results)} total.")
-
-                    # 1. Look for Kill-all sequence (deterministic victory)
+                    if len(results) == 0:
+                        log(f"[Python] Combat Search: No deterministic sequences found (raw={num_res}).")
+                    
+                    # 1. Lethal Search (Always prioritize kill-all if enabled)
                     ka_seqs = []
                     for res in results:
                         is_ka = True
                         for prob, tens in res["outcomes"]:
-                            # The simulator's encoder shifts alive enemies to the front.
-                            # Index 622 is state[512 + 110] (Enemy 0 Alive Flag).
-                            # If no enemies are alive, tens[622] will be 0.0.
+                            # tens[622] is Enemy 0 Alive flag (0.0 means all dead in Rust simulator's compact view)
                             if tens[622] > 0.5:
                                 is_ka = False
                                 break
                         if is_ka: ka_seqs.append(res)
                     
-                    if ka_seqs:
+                    if ka_seqs and lethal_search_mode:
                         # Prioritize Kill-all by player HP (tensor[2])
                         best_ka = max(ka_seqs, key=lambda r: sum(p * t[2] for p, t in r["outcomes"]))
                         search_action_idx = best_ka["actions"][0]
-                        log(f"[Python] Search: KILL-ALL sequence FOUND! Action={search_action_idx}")
-                    elif learner and learner.params:
-                        # 2. Re-evaluate best sequence via value head (Batched)
+                        log(f"[Python] Lethal Search: KILL-ALL sequence FOUND! ({len(ka_seqs)} paths). Selecting Action={search_action_idx}")
+                    
+                    elif multiple_move_mode and learner and learner.params:
+                        if len(results) > 0:
+                            log(f"[Python] Multiple Move: No kill-all sequence found in {len(results)} deterministic paths. Evaluating via value-head.")
+                        # 2. Multiple Move (Re-evaluate best sequence via value head)
                         eval_res = results[:32] if len(results) > 32 else results
                         outcomes_to_eval = []
                         for ridx, r in enumerate(eval_res):
@@ -2369,15 +2376,18 @@ def predict_action(state_json):
                         
                         if outcomes_to_eval:
                             t_batch = np.stack([o[3] for o in outcomes_to_eval])
+                            # BOW features start at offset 896. Each pile has size VOCAB_SIZE (611).
+                            b_off = 896
+                            v_sz = VOCAB_SIZE
                             obs_batch = {
                                 "global": jnp.array(t_batch[:, :512])[:, None, :],
-                                "combat": jnp.array(t_batch[:, 512:896])[:, None, :],
-                                "draw_bow": jnp.array(t_batch[:, 896:1496])[:, None, :],
-                                "discard_bow": jnp.array(t_batch[:, 1496:2096])[:, None, :],
-                                "exhaust_bow": jnp.array(t_batch[:, 2096:2696])[:, None, :],
-                                "master_bow": jnp.array(t_batch[:, 2696:3296])[:, None, :],
-                                "state_type": jnp.array(t_batch[:, 3296], dtype=jnp.int32)[:, None],
-                                "head_type": jnp.array(t_batch[:, 3297], dtype=jnp.int32)[:, None],
+                                "combat": jnp.array(t_batch[:, 512:b_off])[:, None, :],
+                                "draw_bow": jnp.array(t_batch[:, b_off : b_off + v_sz])[:, None, :],
+                                "discard_bow": jnp.array(t_batch[:, b_off + v_sz : b_off + 2*v_sz])[:, None, :],
+                                "exhaust_bow": jnp.array(t_batch[:, b_off + 2*v_sz : b_off + 3*v_sz])[:, None, :],
+                                "master_bow": jnp.array(t_batch[:, b_off + 3*v_sz : b_off + 4*v_sz])[:, None, :],
+                                "state_type": jnp.array(t_batch[:, b_off + 4*v_sz], dtype=jnp.int32)[:, None],
+                                "head_type": jnp.array(t_batch[:, b_off + 4*v_sz + 1], dtype=jnp.int32)[:, None],
                             }
                             m_batch = jnp.ones((len(t_batch), 1, 100))
                             s_key, predict_key = jax_local.random.split(predict_key)
@@ -2390,6 +2400,11 @@ def predict_action(state_json):
                             best_idx = np.argmax(r_vals)
                             search_action_idx = eval_res[best_idx]["actions"][0]
                             log(f"[Python] Search: Best-Value sequence identified. Action={search_action_idx} (EV={r_vals[best_idx]:.4f})")
+                
+                if search_action_idx is None:
+                    log(f"[Python] Combat Search: No optimal sequence identified by search. Falling back to policy.")
+                
+                log(f"[Python] Combat Search: COMPLETED.")
             except Exception as e:
                 log(f"[Python] Multiple Move Search ERROR: {e}")
                 traceback.print_exc()

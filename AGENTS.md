@@ -2,6 +2,8 @@ write comments in english.
 
 Read docs/architecture.md
 
+Read docs/battle_simulator.md when you edit battle_simulator.
+
 When reading logs, please limit the amount read to 100 lines or less.
 
 ## Screenshot API
