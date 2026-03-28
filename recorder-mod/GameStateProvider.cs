@@ -5,7 +5,7 @@ using System.Reflection;
 using System.Text.Json;
 using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 
-namespace communication_mod;
+namespace recorder_mod;
 
 public partial class MainFile : Node
 {
@@ -478,10 +478,11 @@ public partial class MainFile : Node
             bool combatBusy = cm != null && cm.IsInProgress && !cm.IsPlayPhase;
             if (combatBusy || queueProcessing) 
             {
+                // For AI, we want to wait. For Recording, we want to capture the state that triggered the action.
+                // However, some actions might be internal. For now, let's log but NOT return null if it's an action trigger.
                 if (queueProcessing) {
-                    Logger.Info("[AutoAI] combat_waiting: ActionQueue is not empty. Waiting for execution.");
+                    Logger.Info("[Recorder] ActionQueue is not empty, but capturing state anyway for recording.");
                 }
-                return null;
             }
 
             var pState = player?.PlayerCombatState;

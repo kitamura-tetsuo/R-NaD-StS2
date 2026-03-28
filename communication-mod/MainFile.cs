@@ -16,6 +16,7 @@ using MegaCrit.Sts2.Core.Settings;
 using MegaCrit.Sts2.Core.Runs;
 using System;
 using System.Threading;
+using System.Linq;
 using MegaCrit.Sts2.Core.AutoSlay.Helpers;
 
 namespace communication_mod;
@@ -191,7 +192,7 @@ public partial class MainFile : Node
 
     private static MainFile? _instance;
 
-    private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()
+    public static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()
     {
         IncludeFields = true,
         PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
@@ -204,12 +205,12 @@ public partial class MainFile : Node
         string[] args = OS.GetCmdlineArgs();
         Logger.Info($"[AutoAI] Command line args: {string.Join(", ", args)}");
 
-        bool gym = false;
-        bool noSpeedup = false;
+        bool gym = args.Contains("--gym") || args.Contains("gym");
+        bool noSpeedup = args.Contains("--no-speedup");
+        bool collect = false;
         string defaultSeed = "";
         for (int i = 0; i < args.Length; i++) {
-            if (args[i] == "--gym" || args[i] == "gym") gym = true;
-            if (args[i] == "--no-speedup") noSpeedup = true;
+            if (args[i] == "--collect") collect = true;
             if (args[i] == "--seed" && i + 1 < args.Length) defaultSeed = args[i + 1];
         }
 
@@ -235,6 +236,23 @@ public partial class MainFile : Node
         Instance._noSpeedup = noSpeedup;
         Instance._defaultSeed = defaultSeed;
         Logger.Info($"[AutoAI] Initialized with defaultSeed: '{defaultSeed}'");
+        
+        // Debug file saving
+        try {
+            string debugInfo = $"Initialized at {DateTime.Now}\n" +
+                               $"Seed: {defaultSeed}\n" +
+                               $"UserDataDir: {OS.GetUserDataDir()}\n" +
+                               $"ExecPath: {OS.GetExecutablePath()}\n";
+            File.WriteAllText("/tmp/sts2_mod_debug.txt", debugInfo);
+            
+            string userDebugPath = Path.Combine(OS.GetUserDataDir(), "mod_debug.txt");
+            if (!Directory.Exists(OS.GetUserDataDir())) Directory.CreateDirectory(OS.GetUserDataDir());
+            File.WriteAllText(userDebugPath, debugInfo);
+            Logger.Info($"[AutoAI] Debug file saved to {userDebugPath} and /tmp/sts2_mod_debug.txt");
+        } catch (Exception e) {
+            Logger.Error($"[AutoAI] Failed to save debug file: {e.Message}");
+        }
+
         Instance._aiSlayer = new AiSlayer();
         Instance?.CallDeferred(nameof(SafeSetup));
     }
@@ -322,12 +340,12 @@ public partial class MainFile : Node
             var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
             if (rm == null) return;
             
+
             _bridgeInitialized = true;
             Logger.Info("[AutoAI] Bridge initialized - beginning polling.");
         }
 
         // Even if AiSlayer is running its own loop, we poll StepAI periodically
-        // to handle background commands (like start_game) and keep the server alive/responsive.
         long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
         if (currentTime - _lastPollTime > 500) // Poll every 500ms
         {

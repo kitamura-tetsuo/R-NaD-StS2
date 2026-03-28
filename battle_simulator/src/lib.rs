@@ -27,10 +27,10 @@ pub struct Simulator {
 #[pymethods]
 impl Simulator {
     #[new]
-    pub fn new(player_hp: i32, player_max_hp: i32, energy: i32) -> Self {
+    pub fn new(player_hp: i32, player_max_hp: i32, energy: i32, stars: i32) -> Self {
         let player = Creature::new("Player".to_string(), player_max_hp);
         let mut sim = Self {
-            state: GameState::new(player, Vec::new(), energy),
+            state: GameState::new(player, Vec::new(), energy, stars),
             vocab: Vocabulary::default(),
             shm: None,
         };
@@ -106,11 +106,11 @@ impl Simulator {
     }
 
     pub fn add_card_to_hand(&mut self, id: String, cost: i32, damage: i32, block: i32, magic: i32) {
-        let target = if id.contains("STRIKE") || id == "BASH" {
+        let target = if id.contains("STRIKE") || id == "BASH" || id == "IRON_WAVE" {
             TargetType::Single
         } else if id.contains("DEFEND") {
             TargetType::SelfTarget
-        } else if id == "THUNDERCLAP" || id == "CLEAVE" {
+        } else if id == "THUNDERCLAP" || id == "CLEAVE" || id == "WHIRLWIND" {
             TargetType::All
         } else {
             TargetType::None

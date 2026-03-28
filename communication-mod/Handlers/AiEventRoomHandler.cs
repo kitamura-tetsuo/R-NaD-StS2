@@ -45,33 +45,14 @@ public class AiEventRoomHandler : IRoomHandler
         {
             ct.ThrowIfCancellationRequested();
             
-            if (!GodotObject.IsInstanceValid(eventRoom) || !eventRoom.IsInsideTree())
+            // Check if combat was triggered or if map opened
+            if (CombatManager.Instance.IsInProgress)
             {
-                // Check if combat was triggered
-                if (CombatManager.Instance.IsInProgress)
-                {
-                    MainFile.Logger.Info("[AiSlayer] Event triggered combat, delegating to AI step");
-                    // We just keep stepping AI until combat is done
-                    while (CombatManager.Instance.IsInProgress)
-                    {
-                        await MainFile.Instance.StepAI(MainFile.Instance.ExecuteCombatAction);
-                        await Task.Delay(200, ct);
-                    }
-                    
-                    // Check if event resumes
-                    Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
-                    Node nodeOrNull = root.GetNodeOrNull(_roomPath);
-                    if (nodeOrNull == null) break;
-                    
-                    eventRoom = nodeOrNull;
-                    await Task.Delay(500, ct);
-                    if (!UiHelper.FindAll<NEventOptionButton>(eventRoom).Any(o => o.Option != null && !o.Option.IsLocked && o.IsEnabled)) break;
-                    
-                    iterations++;
-                    continue;
-                }
+                MainFile.Logger.Info("[AiSlayer] Event triggered combat, exiting event handler.");
                 break;
             }
+
+            if (!GodotObject.IsInstanceValid(eventRoom) || !eventRoom.IsInsideTree()) break;
 
             // Check if event is finished and we should proceed
             var runState = RunManager.Instance.DebugOnlyGetState();
@@ -169,6 +150,7 @@ public class AiEventRoomHandler : IRoomHandler
                     }
                 }
 
+                if (CombatManager.Instance.IsInProgress) return true;
                 if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) return true;
                 if (NMapScreen.Instance != null && NMapScreen.Instance.IsOpen)
                 {

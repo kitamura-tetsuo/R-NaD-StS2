@@ -162,7 +162,7 @@ class CombatValidator:
                 "cur_hp": c.get("hp", 100),
                 "block": c.get("block", 0),
                 "powers": convert_powers(c.get("powers", [])),
-                "intent": None # Simplified
+                "intents": c.get("intents", [])
             }
 
         def convert_card(c):
@@ -198,6 +198,7 @@ class CombatValidator:
             "discard_pile": [convert_card({"id": id}) for id in cs_state.get("discardPile", [])],
             "exhaust_pile": [convert_card({"id": id}) for id in cs_state.get("exhaustPile", [])],
             "energy": player_data.get("energy", 0),
+            "stars": player_data.get("stars", 0),
             "floor": cs_state.get("floor", 1)
         }
         return json.dumps(sim_state)
@@ -563,6 +564,12 @@ class RewardTracker:
         self.session_cumulative_reward: float = 0.0
         self.episode_end_recorded: bool = False
         self.combat_initialized: bool = False
+        self.last_state_type: str | None = None
+        self.last_upgraded_count: int = -1
+        self.last_total_cards: int = -1
+        self.last_potion_count: int = -1
+        self.was_elite: bool = False
+        self.was_boss: bool = False
 
     def reset_for_new_run(self):
         """Reset state when returning to main menu or starting a fresh run."""
@@ -575,6 +582,12 @@ class RewardTracker:
         self.session_cumulative_reward = 0.0
         self.episode_end_recorded = False
         self.combat_initialized = False
+        self.last_state_type = None
+        self.last_upgraded_count = -1
+        self.last_total_cards = -1
+        self.last_potion_count = -1
+        self.was_elite = False
+        self.was_boss = False
         log("RewardTracker: Full reset for new run.")
 
     def reset_for_next_episode(self):
@@ -1751,9 +1764,30 @@ def encode_state(state):
             for j in range(min(len(intents), 2)):
                 intent = intents[j]
                 intent_idx = base_idx + 6 + j * 4
-                it_map = {"Attack": 1, "Defense": 2, "Defend": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, "StrongDebuff": 6, "DebuffStrong": 6, "Stun": 7, "StatusCard": 8, "Summon": 9}
-                it_type = intent.get("type")
-                assert it_type in it_map, f"intent type: {it_type} not in it_map"
+                it_map = {
+                    "Attack": 1, 
+                    "Defense": 2, 
+                    "Defend": 2, 
+                    "AttackDefense": 3, 
+                    "Buff": 4, 
+                    "Debuff": 5, 
+                    "StrongDebuff": 6, 
+                    "DebuffStrong": 6, 
+                    "Stun": 7, 
+                    "StatusCard": 8, 
+                    "Summon": 9,
+                    "CardDebuff": 10,
+                    "Heal": 11,
+                    "Escape": 12,
+                    "Hidden": 13,
+                    "Sleep": 14,
+                    "DeathBlow": 15,
+                    "Unknown": 0
+                }
+                it_type = intent.get("type", "Unknown")
+                if it_type not in it_map:
+                    log(f"[Python] Warning: intent type: {it_type} not in it_map, falling back to Unknown")
+                    it_type = "Unknown"
                 combat_vec[intent_idx] = it_map[it_type] / 10.0
                 combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
                 combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
@@ -1905,17 +1939,14 @@ def compute_intermediate_reward(state, state_type, action_idx):
 
     # Floor progression reward
     if current_floor > reward_tracker.last_processed_floor:
-        # Give reward only when moving forward (not initial 0)
-        if reward_tracker.last_processed_floor != -1:
-            intermediate_reward += 0.1
-            log(f"Intermediate reward for floor {current_floor}: +0.1")
+        # Floor progression reward removed per user request
         
         # Update trackers when floor changes
         reward_tracker.last_processed_floor = current_floor
         reward_tracker.last_player_hp = current_hp
         reward_tracker.last_total_enemy_hp = current_enemy_hp
         reward_tracker.combat_initialized = False # Reset combat init on floor change
-        return intermediate_reward # Return early for floor change to avoid double counting deltas
+        # return intermediate_reward # Allow further processing for other rewards on floor change
 
     # Combat delta reward (Dense Reward)
     if state_type == "combat":
@@ -1932,12 +1963,19 @@ def compute_intermediate_reward(state, state_type, action_idx):
         damage_dealt = max(0.0, float(last_enemy_hp - current_enemy_hp))
         damage_taken = max(0.0, float(last_hp - current_hp))
         
-        # Reward for damage dealt (0.002) and penalty for damage taken (-0.005)
-        combat_reward = (damage_dealt * 0.002) - (damage_taken * 0.005)
+        # Reward for damage dealt (0.002) and PENALTY for damage taken (-0.015, tripled per request)
+        combat_reward = (damage_dealt * 0.002) - (damage_taken * 0.015)
         
         if abs(combat_reward) > 1e-6:
             intermediate_reward += combat_reward
         
+        # Track if it was an elite or boss room
+        room_type = state.get("room_type", "")
+        if room_type == "Elite":
+            reward_tracker.was_elite = True
+        elif room_type == "Boss":
+            reward_tracker.was_boss = True
+
         # Update trackers for next step
         reward_tracker.last_player_hp = current_hp
         reward_tracker.last_total_enemy_hp = current_enemy_hp
@@ -1947,6 +1985,64 @@ def compute_intermediate_reward(state, state_type, action_idx):
     if current_energy > 0:
         energy_reward = current_energy * 1e-8
         intermediate_reward += energy_reward
+
+    # Battle Clear Reward
+    if reward_tracker.last_state_type == "combat" and (state_type == "rewards" or state_type == "map"):
+        intermediate_reward += 0.1 # Battle clear base
+        log("Reward for battle clear: +0.1")
+        if reward_tracker.was_elite:
+            intermediate_reward += 0.1
+            log("Extra reward for ELITE defeat: +0.1")
+        if reward_tracker.was_boss:
+            intermediate_reward += 0.5
+            log("Extra reward for BOSS defeat: +0.5")
+        reward_tracker.was_elite = False
+        reward_tracker.was_boss = False
+
+    # Card / Potion Acquisition Reward (+0.01)
+    # Potions Count
+    potions = state.get("potions", [])
+    current_potion_count = sum(1 for p in potions if p.get("id") != "empty")
+    if reward_tracker.last_potion_count != -1 and current_potion_count > reward_tracker.last_potion_count:
+        if state_type in ["rewards", "shop", "treasure"]: # After battle reward, shop buy, or treasure
+            intermediate_reward += 0.01
+            log(f"Reward for potion acquisition: +0.01")
+    reward_tracker.last_potion_count = current_potion_count
+
+    # Card Acquisition Count (Using piles in combat or reward list in selection)
+    total_cards = -1
+    if state_type == "combat":
+        # Sum piles as proxy for deck size
+        total_cards = (len(state.get("drawPile", [])) + 
+                       len(state.get("discardPile", [])) + 
+                       len(state.get("exhaustPile", [])) + 
+                       len(state.get("hand", [])))
+    elif state_type == "grid_selection" or state_type == "card_reward":
+        total_cards = len(state.get("cards", []))
+
+    # Reward for card acquisition (only if total_cards is valid and was valid before)
+    if reward_tracker.last_total_cards != -1 and total_cards > reward_tracker.last_total_cards:
+        # Note: In grid_selection, total_cards might fluctuate based on screen. 
+        # But if it increases, it's likely an acquisition (e.g. from RewardCard)
+        # We only give this if we are not in combat or if it's a permanent addition.
+        # Actually, let's keep it simple: if it increases, reward it.
+        if state_type != "combat" or reward_tracker.last_state_type == "combat": # Transition or outside
+            intermediate_reward += 0.01
+            log(f"Reward for card acquisition: +0.01")
+    reward_tracker.last_total_cards = total_cards
+
+    # Card Upgrade Reward (+0.01)
+    if state_type == "grid_selection" and state.get("subtype") == "NDeckUpgradeSelectScreen":
+        cards = state.get("cards", [])
+        upgraded_count = sum(1 for c in cards if c.get("upgraded"))
+        if reward_tracker.last_upgraded_count != -1 and upgraded_count > reward_tracker.last_upgraded_count:
+            intermediate_reward += 0.01
+            log("Reward for card upgrade: +0.01")
+        reward_tracker.last_upgraded_count = upgraded_count
+    else:
+        reward_tracker.last_upgraded_count = -1
+
+    reward_tracker.last_state_type = state_type
         
     return intermediate_reward
 

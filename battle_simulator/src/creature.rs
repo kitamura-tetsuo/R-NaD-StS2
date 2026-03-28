@@ -20,7 +20,13 @@ pub struct Power {
     pub amount: i32,
 }
 
-pub type Intent = String;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Intent {
+    #[serde(rename = "type")]
+    pub intent_type: String,
+    pub damage: i32,
+    pub repeats: i32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Creature {
@@ -29,10 +35,13 @@ pub struct Creature {
     pub cur_hp: i32,
     pub block: i32,
     pub powers: Vec<Power>,
-    pub intent: Option<Intent>,
+    pub intents: Vec<Intent>,
 }
 
 impl Creature {
+    pub fn is_attacking(&self) -> bool {
+        self.intents.iter().any(|i| i.intent_type == "Attack")
+    }
     pub fn new(id: String, max_hp: i32) -> Self {
         Self {
             id,
@@ -40,7 +49,7 @@ impl Creature {
             cur_hp: max_hp,
             block: 0,
             powers: Vec::new(),
-            intent: None,
+            intents: Vec::new(),
         }
     }
 

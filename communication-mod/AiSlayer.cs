@@ -299,10 +299,21 @@ public class AiSlayer
 
     private async Task WaitForRewardsScreenAsync(CancellationToken ct)
     {
+        MainFile.Logger.Info("[AiSlayer] Waiting for rewards screen, map, or Game Over...");
         await WaitHelper.Until(() => 
             NOverlayStack.Instance?.Peek() is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen || 
             NOverlayStack.Instance?.Peek() is NGameOverScreen ||
-            (MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false), 
-            ct, TimeSpan.FromSeconds(20), "Rewards screen or Game Over did not appear");
+            (MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false) ||
+            MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress, 
+            ct, TimeSpan.FromSeconds(25), "Rewards screen or Game Over did not appear");
+
+        if (MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress)
+        {
+            MainFile.Logger.Info("[AiSlayer] Combat detected while waiting for rewards. Handling combat room...");
+            await HandleRoomAsync(RoomType.Monster, ct);
+            
+            // Re-wait for rewards after combat is finished
+            await WaitForRewardsScreenAsync(ct);
+        }
     }
 }

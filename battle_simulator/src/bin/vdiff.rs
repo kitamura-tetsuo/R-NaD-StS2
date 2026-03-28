@@ -32,6 +32,7 @@ struct CsPlayer {
     max_hp: i32,
     block: i32,
     energy: i32,
+    stars: i32,
     powers: Vec<CsPower>,
 }
 
@@ -165,6 +166,7 @@ fn convert_to_internal(cs: CsState) -> GameState {
         discard_pile,
         exhaust_pile,
         energy: cs.player.energy,
+        stars: cs.player.stars,
         floor: cs.floor,
     }
 }

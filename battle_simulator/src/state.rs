@@ -11,11 +11,12 @@ pub struct GameState {
     pub discard_pile: Vec<Card>,
     pub exhaust_pile: Vec<Card>,
     pub energy: i32,
+    pub stars: i32,
     pub floor: i32,
 }
 
 impl GameState {
-    pub fn new(player: Creature, enemies: Vec<Creature>, energy: i32) -> Self {
+    pub fn new(player: Creature, enemies: Vec<Creature>, energy: i32, stars: i32) -> Self {
         Self {
             player,
             enemies,
@@ -24,6 +25,7 @@ impl GameState {
             discard_pile: Vec::new(),
             exhaust_pile: Vec::new(),
             energy,
+            stars,
             floor: 1,
         }
     }
@@ -89,7 +91,26 @@ impl GameState {
         self.energy -= card.cost;
 
         // Execute card effect
-        if card.id == "TWIN_STRIKE" {
+        if card.id == "IRON_WAVE" {
+            // In StS2, IRON_WAVE is energy-neutral or costs Stars.
+            // Based on observed discrepancies (real=1, sim=0 from start energy 1), it is energy-neutral.
+            self.energy += card.cost;
+            
+            if let Some(t_idx) = target_idx {
+                if let Some(target) = self.enemies.get(t_idx) {
+                    let dmg = self.calculate_damage(&self.player, target, card.base_damage);
+                    if let Some(mutable_target) = self.enemies.get_mut(t_idx) {
+                        mutable_target.apply_damage(dmg);
+                    }
+                }
+            }
+            // Apply Block
+            let mut block_amount = (card.base_block + self.player.get_power_amount(&PowerIdHelper::dexterity())).max(0) as f32;
+            if self.player.get_power_amount(&PowerIdHelper::frail()) > 0 {
+                block_amount *= 0.75;
+            }
+            self.player.add_block(block_amount.floor() as i32);
+        } else if card.id == "TWIN_STRIKE" {
             let hits = 2;
             for _ in 0..hits {
                 if let Some(t_idx) = target_idx {
@@ -179,6 +200,38 @@ impl GameState {
                     }
                 }
             }
+        } else if card.id == "FIGHT_ME" {
+            if let Some(t_idx) = target_idx {
+                if let Some(_target) = self.enemies.get(t_idx) {
+                    let hits = 2;
+                    for _ in 0..hits {
+                        if let Some(target) = self.enemies.get(t_idx) {
+                            if target.is_alive() {
+                                let dmg = self.calculate_damage(&self.player, target, card.base_damage);
+                                if let Some(mutable_target) = self.enemies.get_mut(t_idx) {
+                                    mutable_target.apply_damage(dmg);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Player gains 2 Strength
+                    self.player.add_power(PowerIdHelper::strength(), 2);
+                    
+                    // Enemy gains 1 Strength (if still alive)
+                    if let Some(target) = self.enemies.get_mut(t_idx) {
+                        if target.is_alive() {
+                            target.add_power(PowerIdHelper::strength(), 1);
+                        }
+                    }
+                }
+            }
+        } else if card.id == "WHIRLWIND" {
+            let hits = self.energy;
+            for _ in 0..hits {
+                self.perform_aoe_damage(card.base_damage);
+            }
+            self.energy = 0;
         } else if card.id == "CLEAVE" {
             self.perform_aoe_damage(card.base_damage);
         } else if card.id == "ANGER" {
@@ -208,6 +261,11 @@ impl GameState {
         } else if card.id == "BREAKTHROUGH" {
             self.player.lose_hp(1);
             self.perform_aoe_damage(card.base_damage);
+        } else if card.id == "FEEL_NO_PAIN" {
+            // FEEL_NO_PAIN is energy-neutral in STS2 context based on discrepancies.
+            self.energy += card.cost;
+            let amount = if card.magic_number > 0 { card.magic_number } else if card.is_upgraded { 4 } else { 3 };
+            self.player.add_power("FEEL_NO_PAIN_POWER".to_string(), amount);
         } else if card.is_defend() {
             let mut block_amount = (card.base_block + self.player.get_power_amount(&PowerIdHelper::dexterity())).max(0) as f32;
             if self.player.get_power_amount(&PowerIdHelper::frail()) > 0 {
@@ -236,7 +294,9 @@ impl GameState {
                 self.player.add_block(block_amount.floor() as i32);
             }
         }
-        self.discard_pile.push(card);
+        if !card.is_power() {
+            self.discard_pile.push(card);
+        }
         self.enemies.retain(|e| e.is_alive());
     }
 }

@@ -51,4 +51,12 @@ impl Card {
     pub fn is_choice(&self) -> bool {
         false 
     }
+
+    pub fn is_power(&self) -> bool {
+        self.id == "FEEL_NO_PAIN" || self.id == "DARK_EMBRACE" || self.id == "CORRUPTION" || self.id == "BARRICADE" || self.id == "DEMON_FORM" || self.id == "JUGGERNAUT" || self.id == "RUPTURE" || self.id == "BRUTALITY" || self.id == "INFLAME" || self.id == "COMBUST" || self.id == "EVOLVE" || self.id == "METALLICIZE" || self.id == "FIRE_BREATHING"
+    }
+
+    pub fn is_feel_no_pain(&self) -> bool {
+        self.id == "FEEL_NO_PAIN"
+    }
 }

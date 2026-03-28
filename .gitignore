@@ -20,6 +20,8 @@ R-NaD/trajectories/
 battle_simulator/target/
 R-NaD/*.so
 bin/libai_bridge.so
+recorder-mod/.godot/
+
 
 tmp/
 StS2_Decompiled/
