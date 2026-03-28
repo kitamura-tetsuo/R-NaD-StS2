@@ -70,11 +70,96 @@ namespace recorder_mod
                         SubscribeToExecutorReflection(rmInstance);
                     }
                 }
+                
+                // Install explicit event patch
+                InstallEventPatch();
+
             } catch (Exception e) {
                 MainFile.Logger.Error($"[RecorderData] Reflection Error: {e.Message}\n{e.StackTrace}");
             }
 
             MainFile.Logger.Info("[RecorderData] DataCollector initialized.");
+        }
+
+        private static void InstallEventPatch()
+        {
+            try {
+                var harmony = new Harmony("com.kitamura-tetsuo.recorder-mod.events");
+                Type? syncType = null;
+                foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies()) {
+                    if (assembly.FullName.Contains("sts2")) {
+                        syncType = assembly.GetType("MegaCrit.Sts2.Core.Multiplayer.Game.EventSynchronizer");
+                        if (syncType != null) break;
+                    }
+                }
+
+                if (syncType != null) {
+                    var original = syncType.GetMethod("ChooseLocalOption", BindingFlags.Instance | BindingFlags.Public);
+                    var prefix = typeof(DataCollector).GetMethod(nameof(OnEventOptionChosenReflection), BindingFlags.Static | BindingFlags.NonPublic);
+                    
+                    if (original != null && prefix != null) {
+                        harmony.Patch(original, prefix: new HarmonyMethod(prefix));
+                        MainFile.Logger.Info("[RecorderData] Successfully patched EventSynchronizer.ChooseLocalOption via Reflection.");
+                    }
+                }
+            }
+            catch (Exception ex) {
+                MainFile.Logger.Error($"[RecorderData] Failed to patch EventSynchronizer: {ex.Message}");
+            }
+        }
+
+        private static void OnEventOptionChosenReflection(object __instance, int index)
+        {
+            if (!MainFile.Instance.CollectionMode || Instance == null) return;
+            try {
+                var getLocalEventMethod = __instance.GetType().GetMethod("GetLocalEvent", BindingFlags.Instance | BindingFlags.Public);
+                var localEvent = getLocalEventMethod?.Invoke(__instance, null);
+                if (localEvent == null) return;
+
+                string actionType = "EventChoice";
+                string actionId = index.ToString();
+
+                string stateJson = MainFile.Instance.GetJsonState();
+                if (stateJson == null) return;
+
+                var logEntry = new Dictionary<string, object>
+                {
+                    ["timestamp"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                    ["action"] = $"Event Choice {index}",
+                    ["action_type"] = actionType,
+                    ["action_id"] = actionId,
+                    ["state"] = JsonDocument.Parse(stateJson).RootElement
+                };
+
+                // Add specifics
+                var optionsProp = localEvent.GetType().GetProperty("CurrentOptions", BindingFlags.Instance | BindingFlags.Public);
+                var optionsList = optionsProp?.GetValue(localEvent) as System.Collections.IList;
+                if (optionsList != null && index >= 0 && index < optionsList.Count)
+                {
+                    var opt = optionsList[index];
+                    
+                    var textKeyProp = opt?.GetType().GetProperty("TextKey", BindingFlags.Instance | BindingFlags.Public);
+                    var textKeyObj = textKeyProp?.GetValue(opt);
+                    var keyProp = textKeyObj?.GetType().GetProperty("Key", BindingFlags.Instance | BindingFlags.Public);
+                    string? keyStr = keyProp?.GetValue(textKeyObj) as string;
+
+                    var idProp = localEvent.GetType().GetProperty("Id", BindingFlags.Instance | BindingFlags.Public);
+                    var idObj = idProp?.GetValue(localEvent);
+                    var entryProp = idObj?.GetType().GetProperty("Entry", BindingFlags.Instance | BindingFlags.Public);
+                    string? entryStr = entryProp?.GetValue(idObj) as string;
+
+                    if (entryStr != null) logEntry["event_name"] = entryStr;
+                    if (keyStr != null) logEntry["choice_text_key"] = keyStr;
+                }
+
+                string line = JsonSerializer.Serialize(logEntry, MainFile.JsonOptions);
+                string path = Instance.GetLogPath();
+                File.AppendAllText(path, line + "\n");
+                MainFile.Logger.Info($"[RecorderData] Logged event choice via Reflection: {index}");
+            }
+            catch (Exception e) {
+                MainFile.Logger.Error($"[RecorderData] Event Logging Reflection Error: {e.Message}");
+            }
         }
 
         private void SubscribeToExecutorReflection(object rmInstance)
@@ -163,7 +248,7 @@ namespace recorder_mod
             }
         }
 
-        private string GetLogPath()
+        public string GetLogPath()
         {
             if (_logFilePath != null) return _logFilePath;
             
