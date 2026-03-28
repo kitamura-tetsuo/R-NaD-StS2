@@ -1,0 +1,3 @@
+[submodule "StS2_Decompiled"]
+	path = StS2_Decompiled
+	url = git@github.com:kitamura-tetsuo/StS2_Decompiled.git

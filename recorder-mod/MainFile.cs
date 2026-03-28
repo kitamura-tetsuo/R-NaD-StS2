@@ -37,6 +37,7 @@ namespace recorder_mod
         private DataCollector? _dataCollector;
         private Harmony? _harmony;
         private bool _isInitialized = false;
+        private bool _isStartingRun = false;
         private long _lastPollTime = 0;
 
         public static readonly JsonSerializerOptions JsonOptions = new()
@@ -89,7 +90,7 @@ namespace recorder_mod
             Logger.Info("[Recorder] MainFile.Initialize called");
             string[] args = OS.GetCmdlineArgs();
             bool collect = args.Contains("--collect");
-            string defaultSeed = "";
+            string defaultSeed = "1";
             for (int i = 0; i < args.Length - 1; i++)
             {
                 if (args[i] == "--seed")
@@ -128,13 +129,11 @@ namespace recorder_mod
 
         public override void _Process(double delta)
         {
-            if (!CollectionMode) return;
-            if (_dataCollector != null) {
+            if (CollectionMode && _dataCollector != null) {
                 if (!_dataCollector.IsInitialized) {
                     _dataCollector.Initialize();
                 }
                 _dataCollector.Update();
-                return;
             }
 
             var rm = RunManager.Instance;
@@ -142,22 +141,25 @@ namespace recorder_mod
 
             // Wait for MainMenu or RunInProgress
             if (rm.IsInProgress) {
-                _isInitialized = true;
-                _dataCollector?.Initialize();
-                Logger.Info("[Recorder] Detected active run. Data collection active.");
-            } else {
-                Node rootNode = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
-                bool hasMenu = rootNode.GetNodeOrNull("Game/RootSceneContainer/MainMenu") != null;
-                if (hasMenu) {
+                _isStartingRun = false;
+                if (!_isInitialized) {
                     _isInitialized = true;
-                    _dataCollector?.Initialize();
-                    Logger.Info("[Recorder] MainMenu detected. Starting seeded run...");
-                    StartSts2Run(_defaultSeed);
-                } else {
-                    long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                    if (now - _lastPollTime > 5000) {
-                        Logger.Info("[Recorder] Waiting for MainMenu or Run state...");
-                        _lastPollTime = now;
+                    Logger.Info("[Recorder] Detected active run.");
+                }
+            } else {
+                if (!_isStartingRun) {
+                    Node rootNode = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
+                    bool hasMenu = rootNode.GetNodeOrNull("Game/RootSceneContainer/MainMenu") != null;
+                    if (hasMenu) {
+                        _isStartingRun = true;
+                        Logger.Info($"[Recorder] MainMenu detected. Starting seeded run with seed '{_defaultSeed}'...");
+                        StartSts2Run(_defaultSeed);
+                    } else {
+                        long now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                        if (now - _lastPollTime > 5000) {
+                            Logger.Info("[Recorder] Waiting for MainMenu or Run state...");
+                            _lastPollTime = now;
+                        }
                     }
                 }
             }
