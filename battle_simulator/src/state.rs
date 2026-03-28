@@ -249,6 +249,16 @@ impl GameState {
         } else if card.id == "BLOODLETTING" {
             self.player.lose_hp(3);
             self.energy += if card.magic_number > 0 { card.magic_number } else if card.is_upgraded { 3 } else { 2 };
+        } else if card.id == "HEMOKINESIS" {
+            self.player.lose_hp(2);
+            if let Some(t_idx) = target_idx {
+                if let Some(target) = self.enemies.get(t_idx) {
+                    let dmg = self.calculate_damage(&self.player, target, card.base_damage);
+                    if let Some(mutable_target) = self.enemies.get_mut(t_idx) {
+                        mutable_target.apply_damage(dmg);
+                    }
+                }
+            }
         } else if card.id == "BODY_SLAM" {
             if let Some(t_idx) = target_idx {
                 if let Some(target) = self.enemies.get(t_idx) {

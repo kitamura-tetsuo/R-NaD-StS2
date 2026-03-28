@@ -27,7 +27,7 @@ def cleanup_processes():
     except Exception:
         pass
 
-def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headless=False):
+def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headless=False, offline=False, mask_card_skip=False):
     logging.info("Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
     cmd = ["./SlayTheSpire2", "--gym"]
@@ -37,6 +37,8 @@ def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headl
         cmd.append("--no-speedup")
     if headless:
         cmd.append("--headless")
+    if offline:
+        cmd.append("--offline")
     # cmd = ["./SlayTheSpire2", "--verbose", "--gym"]
     env = os.environ.copy()
     keys_to_remove = [k for k in env if k.startswith("PYTHON") or k.startswith("VIRTUAL_ENV") or k.startswith("LD_") or k.startswith("CONDA_")]
@@ -60,6 +62,14 @@ def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headl
     if route:
         env["RNAD_ROUTE"] = "true"
         logging.info("Setting RNAD_ROUTE environment variable to: true")
+
+    if offline:
+        env["RNAD_OFFLINE"] = "true"
+        logging.info("Setting RNAD_OFFLINE environment variable to: true")
+
+    if mask_card_skip:
+        env["RNAD_MASK_CARD_SKIP"] = "true"
+        logging.info("Setting RNAD_MASK_CARD_SKIP environment variable to: true")
 
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     if not os.path.exists(log_dir):
@@ -355,7 +365,7 @@ def perform_restart(process, current_checkpoint, args):
     cleanup_processes()
     
     # 3. Relaunch the game
-    new_process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless)
+    new_process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless, offline=False, mask_card_skip=args.mask_card_skip)
     
     # 4. Wait for server and re-initialize
     if not wait_for_server("http://127.0.0.1:8081/status", timeout=300):
@@ -404,6 +414,8 @@ def main():
     parser.add_argument("--no-speedup", action="store_true", help="Disable game acceleration (Instant mode, preload disabling)")
     parser.add_argument("--route", action="store_true", help="Always choose the map room with the smallest index")
     parser.add_argument("--headless", action="store_true", help="Run the game in headless mode")
+    parser.add_argument("--offline", action="store_true", help="Enable offline training from trajectories/replays on first launch")
+    parser.add_argument("--mask-card-skip", action="store_true", help="Mask Skip in post-combat card rewards")
     args = parser.parse_args()
     
     
@@ -436,7 +448,7 @@ def main():
             else:
                 logging.info("No MLflow run found, starting fresh.")
 
-    process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless)
+    process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless, offline=args.offline, mask_card_skip=args.mask_card_skip)
 
     try:
         # Wait for game to initialize by checking status endpoint
@@ -459,23 +471,28 @@ def main():
 
         # Start first run
         try:
-            # Check for offline training at step 0
+            # Check for offline training
             resp = requests.get("http://127.0.0.1:8081/status", timeout=5)
             if resp.status_code == 200:
                 status_data = resp.json()
                 step_count = status_data.get("step_count", 0)
-                if step_count == 0:
-                    traj_dir = "/home/ubuntu/src/R-NaD-StS2/R-NaD/trajectories"
-                    if os.path.exists(traj_dir) and any(f.endswith(".json") for f in os.listdir(traj_dir) if f.startswith("traj_")):
-                        logging.info("Step 0 detected and trajectories found. Triggering offline training...")
-                        off_resp = requests.get("http://127.0.0.1:8081/offline_train", timeout=5)
-                        if off_resp.status_code == 200:
-                            # Wait for offline training to actually start and finish
-                            time.sleep(2)
-                            wait_for_update_to_finish(max_failures=300) # Long timeout for offline training
-                            logging.info("Offline training complete.")
-                        else:
-                            logging.error(f"Failed to start offline training: {off_resp.status_code} {off_resp.text}")
+                
+                traj_dir = "/home/ubuntu/src/R-NaD-StS2/R-NaD/trajectories"
+                replay_dir = "/mnt/nas/StS2/replay"
+                
+                has_traj = os.path.exists(traj_dir) and any(f.endswith(".json") for f in os.listdir(traj_dir) if f.startswith("traj_"))
+                has_replay = os.path.exists(replay_dir) and any(f.endswith(".jsonl") for f in os.listdir(replay_dir) if f.startswith("human_play_"))
+                
+                if args.offline and (has_traj or has_replay):
+                    logging.info(f"Step {step_count} detected and data found. Triggering offline training...")
+                    off_resp = requests.get("http://127.0.0.1:8081/offline_train", timeout=5)
+                    if off_resp.status_code == 200:
+                        # Wait for offline training to actually start and finish
+                        time.sleep(2)
+                        wait_for_update_to_finish(max_failures=300) # Long timeout for offline training
+                        logging.info("Offline training complete.")
+                    else:
+                        logging.error(f"Failed to start offline training: {off_resp.status_code} {off_resp.text}")
             
             wait_for_update_to_finish(max_failures=10)
         except BridgeConnectionError:

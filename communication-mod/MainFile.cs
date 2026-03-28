@@ -207,12 +207,15 @@ public partial class MainFile : Node
 
         bool gym = args.Contains("--gym") || args.Contains("gym");
         bool noSpeedup = args.Contains("--no-speedup");
+        bool offline = args.Contains("--offline") || System.Environment.GetEnvironmentVariable("RNAD_OFFLINE") == "true";
         bool collect = false;
         string defaultSeed = "";
         for (int i = 0; i < args.Length; i++) {
             if (args[i] == "--collect") collect = true;
             if (args[i] == "--seed" && i + 1 < args.Length) defaultSeed = args[i + 1];
         }
+
+        Logger.Info($"[AutoAI] Flags: gym={gym}, noSpeedup={noSpeedup}, offline={offline}, collect={collect} (RN_OFF={System.Environment.GetEnvironmentVariable("RNAD_OFFLINE")})");
 
         if (gym && !noSpeedup)
         {

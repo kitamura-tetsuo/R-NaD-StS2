@@ -18,6 +18,8 @@ mlruns/
 R-NaD/trajectories/
 
 battle_simulator/target/
+battle_simulator/discrepancy_logs/
+
 R-NaD/*.so
 bin/libai_bridge.so
 recorder-mod/.godot/

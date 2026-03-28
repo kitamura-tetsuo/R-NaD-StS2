@@ -505,6 +505,13 @@ log(f"[Python] Debug: RNAD_RUN_ID={os.environ.get('RNAD_RUN_ID')}")
 log(f"[Python] Debug: RNAD_CHECKPOINT={os.environ.get('RNAD_CHECKPOINT')}")
 log(f"[Python] Debug: RNAD_SEED={os.environ.get('RNAD_SEED')}")
 log(f"[Python] Debug: RNAD_ROUTE={os.environ.get('RNAD_ROUTE')}")
+mask_card_skip = os.environ.get("RNAD_MASK_CARD_SKIP") == "true"
+if mask_card_skip:
+    log("Initialized mask_card_skip from environment: true")
+
+offline_enabled = "--offline" in sys.argv or os.environ.get("RNAD_OFFLINE") == "true"
+if offline_enabled:
+    log("Offline training mode enabled.")
 
 # Placeholders for deferred imports
 jax = None
@@ -1158,94 +1165,169 @@ class TrainingWorker(threading.Thread):
         try:
             import glob
             files = sorted(glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json")))
-            if not files:
-                log("[Python] No trajectories found for offline training.")
-                return
-
             trajectories = []
-            for filepath in files:
-                try:
-                    with open(filepath, "r") as f:
-                        data = json.load(f)
-                        steps = data.get("steps", [])
+            if files:
+                for filepath in files:
+                    try:
+                        with open(filepath, "r") as f:
+                            data = json.load(f)
+                            steps = data.get("steps", [])
+                            traj_segment = []
+                            for idx, step in enumerate(steps):
+                                state_json = step["state_json"]
+                                state = json.loads(state_json)
+                                state_dict = encode_state(state)
+                                
+                                # Recalculate reward
+                                state_type = state.get("type", "unknown")
+                                action_idx = step["action_idx"]
+                                base_reward = compute_reward(state, state_type)
+                                intermediate_reward = compute_intermediate_reward(state, state_type, action_idx)
+                                reward = base_reward + intermediate_reward
+                                
+                                # Fallback for older trajectories missing log_prob
+                                log_p = step.get("log_prob")
+                                if log_p is None:
+                                    # Calculate from probs if available
+                                    if "probs" in step and action_idx < len(step["probs"]):
+                                        log_p = float(np.log(max(step["probs"][action_idx], 1e-10)))
+                                    else:
+                                        log_p = 0.0 # Default fallback
+                                        
+                                traj_step = {
+                                    "obs": state_dict,
+                                    "act": action_idx,
+                                    "rew": reward,
+                                    "mask": np.array(step["mask"], dtype=np.float32),
+                                    "log_prob": log_p,
+                                    "done": 1.0 if step.get("terminal") else 0.0
+                                }
+                                traj_segment.append(traj_step)
+                                
+                                if len(traj_segment) >= self.config.unroll_length:
+                                    # Look ahead for bootstrapping step
+                                    next_step = None
+                                    if idx + 1 < len(steps):
+                                        next_s_raw = steps[idx + 1]
+                                        next_s_json = next_s_raw["state_json"]
+                                        next_s_dict = encode_state(json.loads(next_s_json))
+                                        next_step = {
+                                            "obs": next_s_dict,
+                                            "mask": np.array(next_s_raw["mask"], dtype=np.float32)
+                                        }
+                                    trajectories.append({"steps": list(traj_segment), "next_step": next_step})
+                                    traj_segment = []
+                            
+                            if traj_segment:
+                                trajectories.append({"steps": list(traj_segment), "next_step": None})
+                    except Exception as e:
+                        log(f"[Python] Error processing {filepath}: {e}")
+
+            # Now parse human replays
+            human_files = sorted(glob.glob("/mnt/nas/StS2/replay/human_play_*.jsonl"))
+            human_trajectories = []
+            if human_files:
+                log(f"[Python] Starting offline training from {len(human_files)} human play files in /mnt/nas/StS2/replay...")
+                for filepath in human_files:
+                    try:
+                        with open(filepath, "r") as f:
+                            lines = f.readlines()
+                            
+                        # process human steps...
+                        steps = []
+                        for line in lines:
+                            line = line.strip()
+                            if not line: continue
+                            step_data = json.loads(line)
+                            state = step_data.get("state")
+                            if not state: continue
+                            action_id = step_data.get("action_id")
+                            if action_id is None: continue
+                            
+                            try:
+                                action_idx = int(action_id)
+                            except ValueError:
+                                continue # skip invalid actions
+                                
+                            state_type = state.get("type", "unknown")
+                            reward = compute_reward(state, state_type) + compute_intermediate_reward(state, state_type, action_idx)
+                            
+                            terminal = (state_type == "game_over")
+                            
+                            steps.append({
+                                "state": state,
+                                "action_idx": action_idx,
+                                "reward": reward,
+                                "terminal": terminal
+                            })
+                            
+                        # convert to trajectories
                         traj_segment = []
                         for idx, step in enumerate(steps):
-                            state_json = step["state_json"]
-                            state = json.loads(state_json)
+                            state = step["state"]
                             state_dict = encode_state(state)
-                            
-                            # Recalculate reward
-                            state_type = state.get("type", "unknown")
                             action_idx = step["action_idx"]
-                            base_reward = compute_reward(state, state_type)
-                            intermediate_reward = compute_intermediate_reward(state, state_type, action_idx)
-                            reward = base_reward + intermediate_reward
                             
-                            # Fallback for older trajectories missing log_prob
-                            log_p = step.get("log_prob")
-                            if log_p is None:
-                                # Calculate from probs if available
-                                if "probs" in step and action_idx < len(step["probs"]):
-                                    log_p = float(np.log(max(step["probs"][action_idx], 1e-10)))
-                                else:
-                                    log_p = 0.0 # Default fallback
-                                    
+                            mask = get_action_mask(state)
+                            
                             traj_step = {
                                 "obs": state_dict,
                                 "act": action_idx,
-                                "rew": reward,
-                                "mask": np.array(step["mask"], dtype=np.float32),
-                                "log_prob": log_p,
-                                "done": 1.0 if step.get("terminal") else 0.0
+                                "rew": step["reward"],
+                                "mask": np.array(mask, dtype=np.float32),
+                                "log_prob": 0.0, # Human data has fixed log prob 0
+                                "done": 1.0 if step["terminal"] else 0.0
                             }
                             traj_segment.append(traj_step)
                             
-                            if len(traj_segment) >= self.config.unroll_length:
-                                # Look ahead for bootstrapping step
+                            if len(traj_segment) >= self.config.unroll_length or step["terminal"]:
                                 next_step = None
-                                if idx + 1 < len(steps):
-                                    next_s_raw = steps[idx + 1]
-                                    next_s_json = next_s_raw["state_json"]
-                                    next_s_dict = encode_state(json.loads(next_s_json))
+                                if not step["terminal"] and idx + 1 < len(steps):
+                                    next_s = steps[idx + 1]["state"]
+                                    next_s_dict = encode_state(next_s)
+                                    next_mask = get_action_mask(next_s)
                                     next_step = {
                                         "obs": next_s_dict,
-                                        "mask": np.array(next_s_raw["mask"], dtype=np.float32)
+                                        "mask": np.array(next_mask, dtype=np.float32)
                                     }
-                                trajectories.append({"steps": list(traj_segment), "next_step": next_step})
+                                human_trajectories.append({"steps": list(traj_segment), "next_step": next_step})
                                 traj_segment = []
-                        
+                                
                         if traj_segment:
-                            trajectories.append({"steps": list(traj_segment), "next_step": None})
-                except Exception as e:
-                    log(f"[Python] Error processing {filepath}: {e}")
+                            human_trajectories.append({"steps": list(traj_segment), "next_step": None})
+                    except Exception as e:
+                        log(f"[Python] Error processing human replay {filepath}: {e}")
 
-            if not trajectories:
+            all_updates = []
+            
+            # Combine standard trajectories
+            if trajectories:
+                all_updates.extend(trajectories)
+                
+            # Multiple passes for human data
+            if human_trajectories:
+                log(f"[Python] Enhancing {len(human_trajectories)} human play segments with multiple passes.")
+                for epoch in range(5):
+                    all_updates.extend(human_trajectories)
+
+            if not all_updates:
                 log("[Python] No valid trajectory segments found for offline training.")
                 return
 
-            log(f"[Python] Found {len(trajectories)} trajectory segments. Performing updates...")
+            log(f"[Python] Found {len(all_updates)} total trajectory segments. Performing updates...")
             
             batch_size = self.config.batch_size
-            for i in range(0, len(trajectories), batch_size):
-                batch = trajectories[i : i + batch_size]
+            for i in range(0, len(all_updates), batch_size):
+                batch = all_updates[i : i + batch_size]
                 if len(batch) < batch_size:
                     continue 
-
-                # perform_update handles its own self.lock for updating
-                # but we are already holding self.lock's logic via is_updating = True
-                # Actually perform_update has 'with self.lock: self.is_updating = True' at the start
-                # So we should call it carefully.
-                
-                # We'll temporarily release our internal 'is_updating' flag so perform_update can set it.
-                # Or we can just call the logic directly if we want to avoid double locking or redundancy.
-                # However, perform_update is designed to be called with a batch.
                 
                 self.perform_update(batch, increment_step=False)
                 
                 with self.lock:
                     self.is_updating = True
                     
-                log(f"[Python] Offline update {i // batch_size + 1}/{(len(trajectories) // batch_size)} done.")
+                log(f"[Python] Offline update {i // batch_size + 1}/{(len(all_updates) // batch_size)} done.")
 
             log("[Python] Offline training complete.")
 
@@ -2421,6 +2503,31 @@ def predict_action(state_json):
         
         # Probs are calculated from logits which are already masked in the network
         probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
+        
+        # --- Skip Override Logic ---
+        sampling_mask = mask.copy()
+        if state_type == "card_reward":
+            buttons = state.get("buttons", [])
+            room_type = state.get("room_type", "")
+            if mask_card_skip and room_type in ["Monster", "Elite", "Boss"]:
+                for i in range(min(len(buttons), 5)):
+                    btn_name = buttons[i].get("name", "").lower()
+                    if "skip" in btn_name or "スキップ" in btn_name:
+                        if sampling_mask[10 + i]:
+                            sampling_mask[10 + i] = False
+                            log(f"[Python] SKIP OVERRIDE: Zeroing prob for Skip button at index {10+i} (original prob: {probs[10+i]:.4f})")
+                
+                # Re-calculate probs based on the sampling_mask
+                # This ensures "selecting from others according to their relative probabilities"
+                probs = probs * sampling_mask
+                sum_p = jnp.sum(probs)
+                if sum_p > 1e-9:
+                    probs = probs / sum_p
+                else:
+                    log("[Python] WARNING: All actions masked during Skip override! Reverting to original mask.")
+                    sampling_mask = mask.copy()
+                    probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
+        # ---------------------------
         # --- Search Features ---
         # Lethal Search: Harness to ensure we don't miss a deterministic kill-all sequence.
         # Multiple Move: Full tree search with value-head evaluation for best next state.
@@ -2511,12 +2618,13 @@ def predict_action(state_json):
             log(f"[Python] Using SEARCH-selected action: {action_idx} (prob={probs[action_idx]:.4f})")
         elif inference_mode:
             # Highest probability selection (Greedy)
-            action_idx = jnp.argmax(logits).item()
+            action_idx = jnp.argmax(probs).item()
             log(f"[Python] Inference mode (Greedy selection): index={action_idx}, prob={probs[action_idx]:.4f}")
         else:
             # Stochastic selection (Sampling)
             rng_key, subkey = jax_local.random.split(rng_key)
-            action_idx = jax_local.random.categorical(subkey, logits).item()
+            # Use choice with adjusted probs
+            action_idx = jax_local.random.choice(subkey, jnp.arange(len(probs)), p=probs).item()
             
         # Store state for next validation if we're in combat
         # Skip storing if it's the End Turn action (75) to avoid false discrepancies next time
@@ -2531,7 +2639,7 @@ def predict_action(state_json):
                 log(f"[Python] Map transition detected (current_pos is None). Auto-selecting first node (index 0).")
                 action_idx = 0
             
-        log_prob = jax_local.nn.log_softmax(logits)[0, 0, action_idx].item()
+        log_prob = jnp.log(jnp.maximum(probs[action_idx], 1e-9)).item()
         
         # ▼ [DEBUG LOGGING]
         try:
@@ -2709,7 +2817,7 @@ def predict_action(state_json):
                         "obs": state_dict,
                         "act": int(action_idx),
                         "rew": float(reward),
-                        "mask": mask.astype(np.float32),
+                        "mask": sampling_mask.astype(np.float32),
                         "log_prob": float(log_prob),
                         "done": 0.0
                     })
@@ -2813,6 +2921,14 @@ class CommandHandler(BaseHTTPRequestHandler):
             }).encode())
 
         elif parsed_path.path == "/offline_train":
+            if not offline_enabled:
+                log("WARNING: /offline_train called but --offline flag was not provided at launch.")
+                self.send_response(403)
+                self.send_header("Content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "forbidden", "message": "Offline training not enabled via --offline flag"}).encode())
+                return
+
             if training_worker:
                 def run_offline():
                     try:

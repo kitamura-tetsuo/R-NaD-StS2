@@ -106,7 +106,7 @@ impl Simulator {
     }
 
     pub fn add_card_to_hand(&mut self, id: String, cost: i32, damage: i32, block: i32, magic: i32) {
-        let target = if id.contains("STRIKE") || id == "BASH" || id == "IRON_WAVE" {
+        let target = if id.contains("STRIKE") || id == "BASH" || id == "IRON_WAVE" || id == "HEMOKINESIS" {
             TargetType::Single
         } else if id.contains("DEFEND") {
             TargetType::SelfTarget
