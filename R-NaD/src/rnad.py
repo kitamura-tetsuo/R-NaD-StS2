@@ -118,24 +118,31 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     # logits = logits.reshape(T, B, -1)
     # values = values.reshape(T, B)
     
+    is_human = batch.get('is_human', jnp.zeros((T, B))) # (T, B)
+    
     # NEW: Pass T and B directly to the network
     logits, values = apply_fn(params, jax.random.PRNGKey(0), obs, mask)
-    
-    # fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), obs_flat, mask_flat)
-    # fixed_logits = fixed_logits.reshape(T, B, -1)
     fixed_logits, _ = apply_fn(fixed_params, jax.random.PRNGKey(0), obs, mask)
     
     log_probs = jax.nn.log_softmax(logits)
     fixed_log_probs = jax.nn.log_softmax(fixed_logits)
     
+    # Action probabilities for the current policy
+    probs = jax.nn.softmax(logits)
+    
     act_one_hot = jax.nn.one_hot(act, logits.shape[-1])
     log_pi_a = jnp.sum(log_probs * act_one_hot, axis=-1)
-    log_pi_fixed_a = jnp.sum(fixed_log_probs * act_one_hot, axis=-1)
+    # log_pi_fixed_a = jnp.sum(fixed_log_probs * act_one_hot, axis=-1) # No longer needed for exact KL
     
-    penalty = alpha_rnad * (log_pi_a - log_pi_fixed_a)
+    # Exact KL regularization (Variance Reduction)
+    # Instead of sampled (log_pi_a - log_pi_fixed_a), we use the full distribution KL
+    kl_div = jnp.sum(probs * (log_probs - fixed_log_probs), axis=-1)
+    penalty = alpha_rnad * kl_div
     r_reg = rew - penalty 
     
+    # log_rho handling: For human data, treat as on-policy (rho=1.0)
     log_rho = log_pi_a - log_prob_bhv
+    log_rho = jnp.where(is_human, 0.0, log_rho)
     rho = jnp.exp(log_rho)
     
     v_next = jnp.concatenate([values[1:], bootstrap_value[None, :]], axis=0)
@@ -143,7 +150,15 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     
     # Mask losses by validity
     value_loss = 0.5 * jnp.sum((jax.lax.stop_gradient(vs) - values) ** 2 * valid_mask) / jnp.maximum(jnp.sum(valid_mask), 1.0)
-    policy_loss = -jnp.sum(log_pi_a * jax.lax.stop_gradient(pg_adv) * valid_mask) / jnp.maximum(jnp.sum(valid_mask), 1.0)
+    
+    # Selective Gradient Blocking for human data: Policy gradients only from AI data
+    # Use jnp.where + stop_gradient to cleanly disable policy updates for human steps
+    log_pi_a_final = jnp.where(is_human, jax.lax.stop_gradient(log_pi_a), log_pi_a)
+    policy_loss_terms = -log_pi_a_final * jax.lax.stop_gradient(pg_adv)
+    # Also zero out the value for human steps in the sum for clean metrics
+    policy_loss_terms = jnp.where(is_human, 0.0, policy_loss_terms)
+    
+    policy_loss = jnp.sum(policy_loss_terms * valid_mask) / jnp.maximum(jnp.sum(valid_mask * (1.0 - is_human)), 1.0)
     
     return policy_loss + value_loss, (policy_loss, value_loss)
 

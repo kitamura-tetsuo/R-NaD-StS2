@@ -1012,7 +1012,7 @@ class RawTrajectoryLogger:
         self.current_episode = []
         self.lock = threading.Lock()
 
-    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, terminal=False):
+    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, terminal=False):
         with self.lock:
             self.current_episode.append({
                 "state_json": state_json,
@@ -1021,6 +1021,7 @@ class RawTrajectoryLogger:
                 "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
                 "reward": float(reward),
                 "log_prob": float(log_prob),
+                "predicted_v": float(predicted_v),
                 "terminal": terminal
             })
             if terminal:
@@ -1120,6 +1121,8 @@ class TrainingWorker(threading.Thread):
         self.buffer_lock = threading.Lock()
         self.last_error: str | None = None
         self.is_updating = False
+        self.update_progress = 0
+        self.update_total = 0
 
     def run(self):
         print("[Python] TrainingWorker started.")
@@ -1200,6 +1203,9 @@ class TrainingWorker(threading.Thread):
                                     "rew": reward,
                                     "mask": np.array(step["mask"], dtype=np.float32),
                                     "log_prob": log_p,
+                                    "probs_dist": np.array(step.get("probs", np.zeros(100)), dtype=np.float32),
+                                    "predicted_v": float(step.get("predicted_v", 0.0)),
+                                    "is_human": 0.0,
                                     "done": 1.0 if step.get("terminal") else 0.0
                                 }
                                 traj_segment.append(traj_step)
@@ -1270,12 +1276,21 @@ class TrainingWorker(threading.Thread):
                             
                             mask = get_action_mask(state)
                             
+                            # For human data, we create a uniform distribution over valid actions for probs_dist placeholder
+                            probs_placeholder = np.zeros(100, dtype=np.float32)
+                            valid_indices = np.where(mask > 0)[0]
+                            if len(valid_indices) > 0:
+                                probs_placeholder[valid_indices] = 1.0 / len(valid_indices)
+
                             traj_step = {
                                 "obs": state_dict,
                                 "act": action_idx,
                                 "rew": step["reward"],
                                 "mask": np.array(mask, dtype=np.float32),
                                 "log_prob": 0.0, # Human data has fixed log prob 0
+                                "probs_dist": probs_placeholder,
+                                "predicted_v": 0.0,
+                                "is_human": 1.0,
                                 "done": 1.0 if step["terminal"] else 0.0
                             }
                             traj_segment.append(traj_step)
@@ -1317,6 +1332,10 @@ class TrainingWorker(threading.Thread):
             log(f"[Python] Found {len(all_updates)} total trajectory segments. Performing updates...")
             
             batch_size = self.config.batch_size
+            total_batches = len(all_updates) // batch_size
+            with self.lock:
+                self.update_total = total_batches
+                self.update_progress = 0
             for i in range(0, len(all_updates), batch_size):
                 batch = all_updates[i : i + batch_size]
                 if len(batch) < batch_size:
@@ -1328,16 +1347,26 @@ class TrainingWorker(threading.Thread):
                     self.is_updating = True
                     
                 log(f"[Python] Offline update {i // batch_size + 1}/{(len(all_updates) // batch_size)} done.")
+                with self.lock:
+                    self.update_progress += 1
 
             log("[Python] Offline training complete.")
 
         finally:
             with self.lock:
                 self.is_updating = False
+                self.update_progress = 0
+                self.update_total = 0
 
     def perform_update(self, batch, increment_step=True):
-        with self.lock:
-            self.is_updating = True
+        if increment_step:
+            with self.lock:
+                self.is_updating = True
+                self.update_progress = 0
+                self.update_total = 1
+        else:
+            with self.lock:
+                self.is_updating = True
         
         print("[Python] TrainingWorker: Bridge is performing an update. Waiting...")
 
@@ -1365,6 +1394,9 @@ class TrainingWorker(threading.Thread):
             padded_act = []
             padded_rew = []
             padded_mask = []
+            padded_probs_dist = []
+            padded_pred_v = []
+            padded_is_human = []
             padded_log_prob = []
             padded_done = []
             padded_next_obs_dict = {
@@ -1420,6 +1452,21 @@ class TrainingWorker(threading.Thread):
                 mask_traj = [t['mask'] for t in traj]
                 mask_traj += [np.zeros_like(mask_traj[0])] * (max_len - l)
                 padded_mask.append(mask_traj)
+
+                # Pad probs_dist
+                probs_traj = [t.get('probs_dist', np.zeros(100)) for t in traj]
+                probs_traj += [np.zeros_like(probs_traj[0])] * (max_len - l)
+                padded_probs_dist.append(probs_traj)
+
+                # Pad predicted_v
+                pv_traj = [t.get('predicted_v', 0.0) for t in traj]
+                pv_traj += [0.0] * (max_len - l)
+                padded_pred_v.append(pv_traj)
+
+                # Pad is_human
+                ih_traj = [t.get('is_human', 0.0) for t in traj]
+                ih_traj += [0.0] * (max_len - l)
+                padded_is_human.append(ih_traj)
 
                 # Pad log_prob
                 lp_traj = [t['log_prob'] for t in traj]
@@ -1484,6 +1531,9 @@ class TrainingWorker(threading.Thread):
                 'act': jnp.array(act.transpose(1, 0)),
                 'rew': jnp.array(rew.transpose(1, 0)),
                 'mask': jnp.array(mask.transpose(1, 0, 2)),
+                'probs_dist': jnp.array(np.array(padded_probs_dist).transpose(1, 0, 2)),
+                'predicted_v': jnp.array(np.array(padded_pred_v).transpose(1, 0)),
+                'is_human': jnp.array(np.array(padded_is_human).transpose(1, 0)),
                 'log_prob': jnp.array(log_prob.transpose(1, 0)),
                 'done': jnp.array(done.transpose(1, 0)),
                 'valid': jnp.array(valid.transpose(1, 0)),
@@ -1547,6 +1597,9 @@ class TrainingWorker(threading.Thread):
         finally:
             with self.lock:
                 self.is_updating = False
+                if increment_step:
+                    self.update_progress = 0
+                    self.update_total = 0
 
 # training_worker = None # Handled at top now
 
@@ -2819,12 +2872,14 @@ def predict_action(state_json):
                         "rew": float(reward),
                         "mask": sampling_mask.astype(np.float32),
                         "log_prob": float(log_prob),
+                        "probs": probs.tolist() if hasattr(probs, "tolist") else list(probs),
+                        "predicted_v": float(value.item()),
                         "done": 0.0
                     })
                 
                 # NEW: Raw trajectory logging for offline learning
                 terminal = (state_type == "game_over")
-                raw_logger.log_step(state_json, action_idx, probs, mask, reward, log_prob, terminal=terminal)
+                raw_logger.log_step(state_json, action_idx, probs, mask, reward, log_prob, predicted_v=value.item(), terminal=terminal)
 
                 if config and len(current_trajectory) >= config.unroll_length:
                     # Defer flushing until we see the next state for bootstrapping
@@ -2890,6 +2945,8 @@ class CommandHandler(BaseHTTPRequestHandler):
                 "step_count": training_worker.step_count if training_worker else 0,
                 "worker_error": training_worker.last_error if training_worker else None,
                 "is_updating": training_worker.is_updating if training_worker else False,
+                "update_progress": training_worker.update_progress if training_worker else 0,
+                "update_total": training_worker.update_total if training_worker else 0,
                 "initialized": initialized,
                 "last_activity_time": last_activity_time
             }).encode())

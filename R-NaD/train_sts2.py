@@ -290,7 +290,9 @@ def wait_for_update_to_finish(status_url="http://127.0.0.1:8081/status", max_fai
                         break
                     logging.info(f"Queue is full ({queue_size}/{batch_size}). Waiting for update to start...")
                 else:
-                    logging.info("Bridge is performing an update. Waiting...")
+                    update_progress = data.get("update_progress", 0)
+                    update_total = data.get("update_total", 0)
+                    logging.info(f"Bridge is performing an update ({update_progress}/{update_total}). Waiting...")
             else:
                 logging.warning(f"Bridge status endpoint returned {resp.status_code}. Retrying...")
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
