@@ -36,6 +36,8 @@ public class AiSlayer
     private string _currentSeed = "";
 
     public static bool IsActive { get; private set; }
+    public int HpBeforeCombat { get; private set; } = 0;
+
 
     public AiSlayer()
     {
@@ -186,8 +188,22 @@ public class AiSlayer
             RoomType roomType = runState.CurrentRoom?.RoomType ?? RoomType.Unassigned;
             _watchdog.Reset($"Entering {roomType} room (Floor {runState.TotalFloor})");
             
+            // Record HP before combat for retry threshold check
+            if (roomType == RoomType.Monster || roomType == RoomType.Elite || roomType == RoomType.Boss)
+            {
+                var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
+                HpBeforeCombat = (int)player.Creature.CurrentHp;
+                MainFile.Logger.Info($"[AiSlayer] Recorded HP before {roomType} combat: {HpBeforeCombat}");
+            }
+            else
+            {
+                HpBeforeCombat = 0; // Reset for non-combat rooms
+            }
+
+
             MainFile.Logger.Info($"[AiSlayer] Game Loop: floor={runState.TotalFloor}, room={roomType}, overlay={NOverlayStack.Instance?.Peek()?.GetType().FullName ?? "none"}");
             await HandleRoomAsync(roomType, ct);
+
             
             // Wait for rewards after combat or event rooms (which might trigger rewards)
             if (roomType == RoomType.Monster || roomType == RoomType.Elite || roomType == RoomType.Boss || roomType == RoomType.Event)

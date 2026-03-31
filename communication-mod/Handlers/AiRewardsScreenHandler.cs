@@ -33,9 +33,51 @@ public class AiRewardsScreenHandler : IScreenHandler
             if (peek == null || !GodotObject.IsInstanceValid(peek as GodotObject) || peek.GetType() != typeof(NRewardsScreen)) break;
 
             NRewardsScreen screen = (NRewardsScreen)peek;
+            
+            // HP loss check for combat retry
+            if (AiSlayer.IsActive)
+            {
+                var slayer = MainFile.Instance.GetAiSlayer();
+                var runState = MegaCrit.Sts2.Core.Runs.RunManager.Instance?.DebugOnlyGetState();
+                var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
+                
+                if (runState != null && player != null)
+                {
+                    int currentHp = (int)player.Creature.CurrentHp;
+                    int hpLoss = slayer.HpBeforeCombat - currentHp;
+                    int floorThreshold = runState.TotalFloor;
+                    
+                    if (hpLoss >= floorThreshold && slayer.HpBeforeCombat > 0)
+                    {
+                        MainFile.Logger.Info($"[AiRewardsScreenHandler] HP Loss Check: loss={hpLoss}, threshold={floorThreshold}. Triggering retry...");
+                        
+                        // Wait for a few seconds as requested
+                        await Task.Delay(3000, ct);
+                        
+                        // Call bridge to restore save
+                        var restoreRes = await MainFile.Instance.CallBridgeSafe("trigger_restore");
+                        if (restoreRes.VariantType == Variant.Type.Bool && (bool)restoreRes)
+                        {
+                            MainFile.Logger.Info("[AiRewardsScreenHandler] Restore successful. Performing Soft Reset (Return to Main Menu).");
+                            
+                            // Use Universal Action to return to main menu
+                            var dict = new Godot.Collections.Dictionary { ["action"] = "return_to_main_menu" };
+                            await MainFile.Instance.ExecuteUniversalAction(dict);
+                            
+                            // Exit the handler and let the AiSlayer loop handle the return to main menu and continue
+                            return;
+                        }
+                        else
+                        {
+                            MainFile.Logger.Error("[AiRewardsScreenHandler] Restore failed or backups exhausted. Proceeding with current rewards.");
+                        }
+                    }
+                }
+            }
 
             // Find all reward buttons
             var buttons = UiHelper.FindAll<NRewardButton>((Node)(object)screen)
+
                 .Where(b => b.IsEnabled && b.Visible)
                 .ToList();
 
