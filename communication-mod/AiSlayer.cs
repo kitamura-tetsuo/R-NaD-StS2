@@ -119,8 +119,18 @@ public class AiSlayer
         bool runActive = RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom != null;
         if (!runActive)
         {
-            MainFile.Logger.Info("[AiSlayer] Stage: PlayMainMenu");
-            await PlayMainMenuAsync(ct);
+            if (MainFile.Instance.TrainMode)
+            {
+                MainFile.Logger.Info("[AiSlayer] Stage: PlayMainMenu");
+                await PlayMainMenuAsync(ct);
+            }
+            else
+            {
+                MainFile.Logger.Info("[AiSlayer] Stage: Waiting for manual run start (TrainMode is disabled)");
+                await WaitHelper.Until(() => {
+                    return RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom != null;
+                }, ct, TimeSpan.FromMinutes(10), "Run did not start manually");
+            }
         }
         else
         {

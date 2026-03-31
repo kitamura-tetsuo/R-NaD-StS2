@@ -30,7 +30,7 @@ def cleanup_processes():
 def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headless=False, offline=False, mask_card_skip=False):
     logging.info("Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
-    cmd = ["./SlayTheSpire2", "--gym"]
+    cmd = ["./SlayTheSpire2", "--gym", "--train"]
     if seed:
         cmd.extend(["--seed", seed])
     if no_speedup:

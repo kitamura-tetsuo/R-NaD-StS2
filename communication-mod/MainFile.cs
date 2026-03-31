@@ -43,6 +43,7 @@ public partial class MainFile : Node
     private bool _gymMode = false;
     private bool _noSpeedup = false;
     private bool _isStartingRun = false;
+    public bool TrainMode { get; private set; } = false;
 
 
     private void ScheduleAI()
@@ -207,6 +208,7 @@ public partial class MainFile : Node
 
         bool gym = args.Contains("--gym") || args.Contains("gym");
         bool noSpeedup = args.Contains("--no-speedup");
+        bool train = args.Contains("--train") || args.Contains("train");
         bool offline = args.Contains("--offline") || System.Environment.GetEnvironmentVariable("RNAD_OFFLINE") == "true";
         bool collect = false;
         string defaultSeed = "";
@@ -237,6 +239,7 @@ public partial class MainFile : Node
         Instance.Name = "R_NaD_Controller";
         Instance._gymMode = gym;
         Instance._noSpeedup = noSpeedup;
+        Instance.TrainMode = train;
         Instance._defaultSeed = defaultSeed;
         Logger.Info($"[AutoAI] Initialized with defaultSeed: '{defaultSeed}'");
         
