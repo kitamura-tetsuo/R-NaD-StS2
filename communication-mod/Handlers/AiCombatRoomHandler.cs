@@ -69,6 +69,12 @@ public class AiCombatRoomHandler : IRoomHandler
                 await Task.Delay(500, ct);
                 actionsInTurn++;
             }
+
+            if (turnCount == 1)
+            {
+                MainFile.Logger.Info("[AiCombatRoomHandler] End of Turn 1. Requesting save backup via Rust bridge...");
+                await MainFile.Instance.CallBridgeSafe("trigger_backup");
+            }
         }
 
         await WaitHelper.Until(() => !CombatManager.Instance.IsInProgress, ct, TimeSpan.FromSeconds(30), "Combat did not end");

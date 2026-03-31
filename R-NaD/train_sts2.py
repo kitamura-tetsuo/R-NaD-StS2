@@ -598,39 +598,6 @@ def main():
                 last_traj_size = -1
                 continue
 
-            # Check if game over to restart
-            if os.path.exists(last_state_path):
-                try:
-                    with open(last_state_path, "r") as f:
-                        content = f.read()
-                        if content.strip() != "{}":
-                            state = json.loads(content)
-                            if state.get("type") == "game_over":
-                                try:
-                                    wait_for_update_to_finish(max_failures=10)
-                                except BridgeConnectionError:
-                                    logging.warning("Bridge failed during game_over update wait. Triggering restart...")
-                                    process, checkpoint = perform_restart(process, checkpoint, args)
-                                    os.remove(last_state_path)
-                                    last_traj_progress_time = time.time()
-                                    last_traj_size = -1
-                                    continue
-
-                                logging.info(f"Game over detected. Restarting game run{' with seed ' + args.seed if args.seed else ''} in 5s...")
-                                time.sleep(5)
-                                new_game_url = "http://127.0.0.1:8081/new_game"
-                                if args.seed:
-                                    new_game_url += f"?seed={args.seed}"
-                                try:
-                                    requests.get(new_game_url, timeout=5)
-                                except Exception as e:
-                                    logging.error(f"Failed to start new game: {e}")
-                                # Remove the game_over state so we don't spam restarts
-                                os.remove(last_state_path)
-                                last_traj_progress_time = time.time()
-                                last_traj_size = -1
-                except Exception:
-                    pass
 
             time.sleep(2)
 

@@ -78,25 +78,29 @@ public class AiSlayer
 
     private async Task RunAsync(string seed, CancellationToken ct)
     {
-        MainFile.Logger.Info($"[AiSlayer] Starting run with seed: {seed}");
-        try
+        while (IsActive && !ct.IsCancellationRequested)
         {
-            await PlayRunAsync(seed, ct);
-            MainFile.Logger.Info($"[AiSlayer] Run completed: {seed}");
+            MainFile.Logger.Info($"[AiSlayer] Starting run iteration with seed: {seed}");
+            try
+            {
+                await PlayRunAsync(seed, ct);
+                MainFile.Logger.Info($"[AiSlayer] Run iteration finished: {seed}");
+            }
+            catch (OperationCanceledException)
+            {
+                MainFile.Logger.Info($"[AiSlayer] Run session cancelled: {seed}");
+                break;
+            }
+            catch (Exception ex)
+            {
+                MainFile.Logger.Error($"[AiSlayer] Run iteration failed: {ex.Message}\n{ex.StackTrace}");
+                await Task.Delay(5000, ct); // Wait before retrying on error
+            }
+            await Task.Delay(1000, ct);
         }
-        catch (OperationCanceledException)
-        {
-            MainFile.Logger.Info($"[AiSlayer] Run cancelled: {seed}");
-        }
-        catch (Exception ex)
-        {
-            MainFile.Logger.Error($"[AiSlayer] Run failed: {ex.Message}\n{ex.StackTrace}");
-        }
-        finally
-        {
-            IsActive = false;
-            _watchdog = null;
-        }
+        
+        IsActive = false;
+        _watchdog = null;
     }
 
     private async Task PlayRunAsync(string seed, CancellationToken ct)
@@ -206,6 +210,15 @@ public class AiSlayer
         Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
         Control mainMenu = await WaitHelper.ForNode<Control>(root, "/root/Game/RootSceneContainer/MainMenu", ct, TimeSpan.FromSeconds(30));
         
+        // Preference order: Continue > Start seeded > Standard
+        NButton continueBtn = mainMenu.GetNodeOrNull<NButton>(new NodePath("MainMenuTextButtons/ContinueButton"));
+        if (continueBtn != null && continueBtn.Visible)
+        {
+            MainFile.Logger.Info("[AiSlayer] Continuing existing run...");
+            await UiHelper.Click(continueBtn);
+            return;
+        }
+
         // Abandon existing run if present
         NButton abandonBtn = mainMenu.GetNodeOrNull<NButton>(new NodePath("MainMenuTextButtons/AbandonRunButton"));
         if (abandonBtn != null && abandonBtn.Visible)

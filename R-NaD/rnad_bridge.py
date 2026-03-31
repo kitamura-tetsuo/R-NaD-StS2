@@ -1,8 +1,11 @@
 import os
 import sys
 import time
-import importlib.util
+import json
+import datetime
 import glob
+import shutil
+import filecmp
 
 # Set XLA environment variables before JAX/other imports to prevent GPU OOM
 # Godot game and JAX both need GPU memory.
@@ -558,6 +561,140 @@ current_trajectory = []
 training_worker = None
 deferred_chunk = None
 history = []
+
+# --- Save Data Backup & Restoration Logic ---
+SOURCE_A = "/home/ubuntu/.local/share/SlayTheSpire2/steam/76561198725031675/modded/profile1/saves"
+SOURCE_B = "/home/ubuntu/.local/share/Steam/userdata/764765947/2868840/remote/modded/profile1/saves"
+BACKUP_ROOT = os.path.expanduser("~/sts2_backups")
+
+class BackupManager:
+    def __init__(self, backup_root):
+        self.backup_root = backup_root
+        self.stack = [] # List of {path: str, retry_count: int, reward: float}
+        self.max_retries = 3
+        if not os.path.exists(self.backup_root):
+            os.makedirs(self.backup_root, exist_ok=True)
+
+    def _are_saves_identical(self, backup_dir):
+        """Compare current saves with a backup directory."""
+        appdata_backup = os.path.join(backup_dir, "AppData")
+        userdata_backup = os.path.join(backup_dir, "UserData")
+        
+        # Check AppData
+        if os.path.exists(SOURCE_A) and os.path.exists(appdata_backup):
+            # Check only files, not metadata/directories
+            dcomp = filecmp.dircmp(SOURCE_A, appdata_backup)
+            if dcomp.left_only or dcomp.right_only or dcomp.diff_files:
+                return False
+        elif os.path.exists(SOURCE_A) != os.path.exists(appdata_backup):
+            return False
+            
+        # Check UserData
+        if os.path.exists(SOURCE_B) and os.path.exists(userdata_backup):
+            dcomp = filecmp.dircmp(SOURCE_B, userdata_backup)
+            if dcomp.left_only or dcomp.right_only or dcomp.diff_files:
+                return False
+        elif os.path.exists(SOURCE_B) != os.path.exists(userdata_backup):
+            return False
+            
+        return True
+
+    def backup(self, current_reward):
+        """Create a backup if the state has changed."""
+        if self.stack:
+            last_backup = self.stack[-1]["path"]
+            if self._are_saves_identical(last_backup):
+                log(f"[BackupManager] Saves are identical to latest backup ({os.path.basename(last_backup)}). Skipping.")
+                return False
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = os.path.join(self.backup_root, f"backup_{timestamp}")
+        
+        try:
+            os.makedirs(os.path.join(backup_dir, "AppData"), exist_ok=True)
+            os.makedirs(os.path.join(backup_dir, "UserData"), exist_ok=True)
+            
+            if os.path.exists(SOURCE_A):
+                shutil.copytree(SOURCE_A, os.path.join(backup_dir, "AppData"), dirs_exist_ok=True)
+            if os.path.exists(SOURCE_B):
+                shutil.copytree(SOURCE_B, os.path.join(backup_dir, "UserData"), dirs_exist_ok=True)
+                
+            metadata = {
+                "retry_count": 0,
+                "accumulated_reward": float(current_reward)
+            }
+            with open(os.path.join(backup_dir, "metadata.json"), "w") as f:
+                json.dump(metadata, f)
+                
+            self.stack.append({
+                "path": backup_dir,
+                "retry_count": 0,
+                "reward": current_reward
+            })
+            log(f"[BackupManager] Created new backup at {backup_dir}. Stack size: {len(self.stack)}")
+            return True
+        except Exception as e:
+            log(f"[BackupManager] ERROR during backup: {e}")
+            return False
+
+    def restore(self):
+        """Restore the latest valid backup, backtracking if necessary."""
+        while self.stack:
+            latest = self.stack[-1]
+            if latest["retry_count"] < self.max_retries:
+                # Perform restoration
+                log(f"[BackupManager] Restoring {os.path.basename(latest['path'])} (Retry {latest['retry_count']+1}/{self.max_retries})")
+                
+                try:
+                    appdata_backup = os.path.join(latest["path"], "AppData")
+                    userdata_backup = os.path.join(latest["path"], "UserData")
+                    
+                    if os.path.exists(appdata_backup):
+                        shutil.copytree(appdata_backup, SOURCE_A, dirs_exist_ok=True)
+                    if os.path.exists(userdata_backup):
+                        shutil.copytree(userdata_backup, SOURCE_B, dirs_exist_ok=True)
+                    
+                    latest["retry_count"] += 1
+                    return latest["reward"]
+                except Exception as e:
+                    log(f"[BackupManager] ERROR during restore: {e}")
+                    return None
+            else:
+                log(f"[BackupManager] Backup {os.path.basename(latest['path'])} exhausted (tried {self.max_retries} times). Backtracking...")
+                self.stack.pop()
+        
+        log("[BackupManager] All backups exhausted or stack empty. Starting fresh.")
+        return None
+
+# Initialize BackupManager
+backup_manager = BackupManager(BACKUP_ROOT)
+is_restoring = False
+
+def trigger_backup():
+    """Top-level function called from Rust bridge."""
+    global reward_tracker
+    return backup_manager.backup(reward_tracker.session_cumulative_reward)
+
+def trigger_restore():
+    """Top-level function called from Rust bridge or internally."""
+    global is_restoring
+    global reward_tracker, experience_queue, current_trajectory, history
+    
+    # Flush current trajectory before restoration
+    if current_trajectory:
+        log(f"[Python] /restore: Flushing trajectory of length {len(current_trajectory)} before restoration.")
+        experience_queue.put(list(current_trajectory))
+        current_trajectory = []
+    
+    restored_reward = backup_manager.restore()
+    if restored_reward is not None:
+        reward_tracker.session_cumulative_reward = restored_reward
+        # Mark combat not initialized to allow re-initialization in the next step
+        reward_tracker.combat_initialized = False
+        log(f"[Python] /restore: Restored reward tracker to {restored_reward:.2f}")
+        return True
+    return False
+
 # Bridge state trackers
 # Reward and Game State Tracking
 class RewardTracker:
@@ -2375,6 +2512,7 @@ def check_commands():
     return json.dumps({"action": "wait"})
 
 def predict_action(state_json):
+    global is_restoring
     t0 = time.time()
     do_deferred_imports()
     # Explicitly refer to the global jax module after deferred imports
@@ -2450,12 +2588,19 @@ def predict_action(state_json):
         # Debug: write last state to a local file for monitoring
         try:
             last_state_path = os.path.join(LOG_DIR, "rnad_last_state.json")
+            display_state = json.loads(state_json)
+            # If we are in the middle of a restoration, tell the supervisor to wait
+            if is_restoring:
+                display_state["type"] = "restoration_pending"
+            
             with open(last_state_path, "w", encoding="utf-8") as f:
-                f.write(str(state_json))
+                f.write(json.dumps(display_state))
         except:
             pass
 
         if state_type in ["none", "main_menu", "unknown", "combat_waiting"]:
+            if state_type == "main_menu":
+                is_restoring = False # Reset restoration flag when we reach main menu
             return json.dumps({"action": "wait"})
 
         if not initialization_event.is_set():
@@ -2848,6 +2993,14 @@ def predict_action(state_json):
             if action_idx == 86:
                 action = {"action": "proceed"}
             elif action_idx == 87:
+                # User requested: Trigger restore on Game Over when returning to main menu
+                if not is_restoring:
+                    log("[Python] Game Over: Initiating restoration sequence...")
+                    if trigger_restore():
+                        is_restoring = True
+                        log("[Python] Game Over: Restoration successful. Returning to main menu.")
+                    else:
+                        log("[Python] Game Over: Restoration failed (no backups). Returning to main menu for fresh start.")
                 action = {"action": "return_to_main_menu"}
 
         # Trajectory collection

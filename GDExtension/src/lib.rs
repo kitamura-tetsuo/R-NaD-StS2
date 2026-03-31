@@ -121,5 +121,43 @@ impl AiBridge {
             }
         }
     }
+
+    #[func]
+    pub fn trigger_backup(&self) -> Variant {
+        let result = Python::with_gil(|py| -> PyResult<bool> {
+            Self::ensure_sys_path(py)?;
+            let my_ai_module = py.import("rnad_bridge")?;
+            let backup_fn = my_ai_module.getattr("trigger_backup")?;
+            let res: bool = backup_fn.call0()?.extract()?;
+            Ok(res)
+        });
+
+        match result {
+            Ok(res) => res.to_variant(),
+            Err(e) => {
+                eprintln!("[AiBridge-Rust] Python Error in trigger_backup: {:?}", e);
+                false.to_variant()
+            }
+        }
+    }
+
+    #[func]
+    pub fn trigger_restore(&self) -> Variant {
+        let result = Python::with_gil(|py| -> PyResult<bool> {
+            Self::ensure_sys_path(py)?;
+            let my_ai_module = py.import("rnad_bridge")?;
+            let restore_fn = my_ai_module.getattr("trigger_restore")?;
+            let res: bool = restore_fn.call0()?.extract()?;
+            Ok(res)
+        });
+
+        match result {
+            Ok(res) => res.to_variant(),
+            Err(e) => {
+                eprintln!("[AiBridge-Rust] Python Error in trigger_restore: {:?}", e);
+                false.to_variant()
+            }
+        }
+    }
 }
 
