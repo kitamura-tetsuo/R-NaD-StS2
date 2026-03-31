@@ -18,6 +18,9 @@ using communication_mod.Handlers;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.Timeline;
+using MegaCrit.Sts2.Core.Nodes.Screens.Timeline;
+using MegaCrit.Sts2.Core.Nodes.Screens.Timeline.UnlockScreens;
+
 
 namespace communication_mod;
 
@@ -51,7 +54,15 @@ public class AiSlayer
         _screenHandlers = new Dictionary<Type, IScreenHandler>
         {
             [typeof(NGameOverScreen)] = new AiGameOverScreenHandler(),
-            [typeof(MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen)] = new AiRewardsScreenHandler()
+            [typeof(MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen)] = new AiRewardsScreenHandler(),
+            [typeof(NTimelineScreen)] = new AiTimelineScreenHandler(),
+            [typeof(NUnlockCardsScreen)] = new AiUnlockScreenHandler(typeof(NUnlockCardsScreen)),
+            [typeof(NUnlockPotionsScreen)] = new AiUnlockScreenHandler(typeof(NUnlockPotionsScreen)),
+            [typeof(NUnlockRelicsScreen)] = new AiUnlockScreenHandler(typeof(NUnlockRelicsScreen)),
+            [typeof(NUnlockCharacterScreen)] = new AiUnlockScreenHandler(typeof(NUnlockCharacterScreen)),
+            [typeof(NUnlockEpochScreen)] = new AiUnlockScreenHandler(typeof(NUnlockEpochScreen)),
+            [typeof(NUnlockMiscScreen)] = new AiUnlockScreenHandler(typeof(NUnlockMiscScreen)),
+            [typeof(NUnlockTimelineScreen)] = new AiUnlockScreenHandler(typeof(NUnlockTimelineScreen))
         };
     }
 
