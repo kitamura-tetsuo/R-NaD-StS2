@@ -677,15 +677,30 @@ def trigger_backup():
 
 def trigger_restore():
     """Top-level function called from Rust bridge or internally."""
-    global is_restoring
+    global is_restoring, deferred_chunk
     global reward_tracker, experience_queue, current_trajectory, history
     
+    # Check for deferred_chunk (steps reached unroll_length but waiting for next_step)
+    if deferred_chunk:
+        log(f"[Python] /restore: Finalizing deferred_chunk (len {len(deferred_chunk['steps'])}) without next_step before restoration.")
+        # Marking the last step as terminal for bootstrapping purposes (as requested by user)
+        deferred_chunk['steps'][-1]['done'] = 1.0
+        experience_queue.put({"steps": list(deferred_chunk['steps']), "next_step": None})
+        deferred_chunk = None
+
     # Flush current trajectory before restoration
     if current_trajectory:
-        log(f"[Python] /restore: Flushing trajectory of length {len(current_trajectory)} before restoration.")
+        log(f"[Python] /restore: Flushing current_trajectory of length {len(current_trajectory)} before restoration.")
+        # Marking the last step as terminal for bootstrapping purposes (as requested by user)
+        current_trajectory[-1]['done'] = 1.0
         experience_queue.put(list(current_trajectory))
         current_trajectory = []
     
+    # Flush raw_logger for offline trajectories
+    if raw_logger:
+        # Mark as terminal because it's a split that we treat as 0-valued future
+        raw_logger.flush(force_terminal=True)
+
     restored_reward = backup_manager.restore()
     if restored_reward is not None:
         reward_tracker.session_cumulative_reward = restored_reward
@@ -1164,28 +1179,32 @@ class RawTrajectoryLogger:
             if terminal:
                 self.flush()
 
-    def flush(self):
+    def flush(self, force_terminal=False):
         if not self.current_episode:
             return
         
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"traj_{timestamp}.json"
-        filepath = os.path.join(self.trajectory_dir, filename)
-        
-        # Build semantic map for this episode
-        semantic_map = get_semantic_map()
-        
-        try:
-            with open(filepath, "w") as f:
-                json.dump({
-                    "semantic_map": semantic_map,
-                    "steps": self.current_episode
-                }, f)
-            log(f"RawTrajectoryLogger: Saved episode with {len(self.current_episode)} steps to {filepath}")
-        except Exception as e:
-            log(f"RawTrajectoryLogger: Error saving trajectory: {e}")
-        
-        self.current_episode = []
+        with self.lock:
+            if force_terminal and self.current_episode:
+                self.current_episode[-1]["terminal"] = True
+
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"traj_{timestamp}.json"
+            filepath = os.path.join(self.trajectory_dir, filename)
+            
+            # Build semantic map for this episode
+            semantic_map = get_semantic_map()
+            
+            try:
+                with open(filepath, "w") as f:
+                    json.dump({
+                        "semantic_map": semantic_map,
+                        "steps": self.current_episode
+                    }, f)
+                log(f"RawTrajectoryLogger: Saved episode segment with {len(self.current_episode)} steps to {filepath} (force_terminal={force_terminal})")
+            except Exception as e:
+                log(f"RawTrajectoryLogger: Error saving trajectory: {e}")
+            
+            self.current_episode = []
 
 raw_logger = RawTrajectoryLogger(TRAJECTORY_DIR)
 
