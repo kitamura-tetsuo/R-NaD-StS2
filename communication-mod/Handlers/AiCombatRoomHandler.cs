@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Godot;
 using MegaCrit.Sts2.Core.AutoSlay;
 using MegaCrit.Sts2.Core.AutoSlay.Handlers;
 
@@ -21,8 +22,21 @@ public class AiCombatRoomHandler : IRoomHandler
 
     public async Task HandleAsync(Rng random, CancellationToken ct)
     {
-        MainFile.Logger.Info("[AiSlayer] Waiting for combat to start");
-        await WaitHelper.Until(() => CombatManager.Instance.IsInProgress, ct, TimeSpan.FromSeconds(30), "Combat not started");
+        MainFile.Logger.Info("[AiSlayer] Waiting for combat to start...");
+        await WaitHelper.Until(() => {
+            if (CombatManager.Instance.IsInProgress) return true;
+            
+            // Handle dialogue hitboxes if they appear (common in Boss/Elite intro)
+            var root = ((Node)(object)((SceneTree)Engine.GetMainLoop()).Root);
+            var ancientHitbox = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NAncientDialogueHitbox>(root);
+            if (ancientHitbox != null && ancientHitbox.IsVisibleInTree() && ancientHitbox.IsEnabled)
+            {
+                MainFile.Logger.Info("[AiSlayer] Clicking ancient dialogue hitbox to start combat.");
+                ancientHitbox.Call("ForceClick");
+            }
+            
+            return false;
+        }, ct, TimeSpan.FromSeconds(30), "Combat not started");
         
         int turnCount = 0;
         while (CombatManager.Instance.IsInProgress && turnCount < 100)

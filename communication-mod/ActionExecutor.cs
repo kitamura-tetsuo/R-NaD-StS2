@@ -843,6 +843,15 @@ public partial class MainFile : Node
                 }
             }
         }
+        else
+        {
+            Logger.Info("[AutoAI] No GameOverScreen found. Using NGame.Instance.ReturnToMainMenu() fallback.");
+            var nGame = MegaCrit.Sts2.Core.Nodes.NGame.Instance;
+            if (nGame != null)
+            {
+                await nGame.ReturnToMainMenu();
+            }
+        }
     }
 
     public async Task HandleProceed(Godot.Collections.Dictionary dict)
