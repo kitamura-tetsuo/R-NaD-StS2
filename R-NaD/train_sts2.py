@@ -117,83 +117,127 @@ def wait_for_bridge_initialization(timeout=300):
         time.sleep(2)
     return False
 
-def get_latest_mlflow_run_id(experiment_name="R-NaD-StS2"):
-    """Finds the latest run ID in the specified MLflow experiment with retries."""
-    for attempt in range(3):
-        try:
-            mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
-            experiment = mlflow.get_experiment_by_name(experiment_name)
-            if not experiment:
-                return None
+def get_latest_local_checkpoint():
+    """Finds the most recently modified checkpoint file in common local directories."""
+    search_dirs = [
+        "/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints",
+        "/home/ubuntu/.local/share/Steam/steamapps/common/Slay the Spire 2/checkpoints",
+        "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2/checkpoints"
+    ]
+    
+    latest_file = None
+    latest_mtime = 0
+    
+    for base_dir in search_dirs:
+        if not os.path.exists(base_dir):
+            continue
             
-            runs = mlflow.search_runs(
-                experiment_ids=[experiment.experiment_id],
-                order_by=["attributes.start_time DESC"],
-                max_results=1
-            )
-            if not runs.empty:
-                return runs.iloc[0].run_id
-            break # No runs found is not an error
-        except Exception as e:
-            if attempt < 2:
-                logging.warning(f"Failed to fetch latest run ID from MLflow (attempt {attempt+1}/3): {e}. Retrying...")
-                time.sleep(2)
-            else:
-                logging.warning(f"Final failure to fetch latest run ID from MLflow: {e}")
-    return None
+        # Search recursively for .pkl files
+        for root, _, files in os.walk(base_dir):
+            for file in files:
+                if file.endswith(".pkl") and "checkpoint_" in file:
+                    full_path = os.path.join(root, file)
+                    try:
+                        mtime = os.path.getmtime(full_path)
+                        if mtime > latest_mtime:
+                            latest_mtime = mtime
+                            latest_file = full_path
+                    except OSError:
+                        continue
+    
+    if latest_file:
+        # Extract run_id from path if it follows checkpoints/<run_id>/ pattern
+        run_id = None
+        match = re.search(r"checkpoints/([0-9a-f]{32})/", latest_file)
+        if match:
+            run_id = match.group(1)
+        return latest_file, run_id, latest_mtime
+        
+    return None, None, 0
 
 def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
-    """Finds the latest checkpoint in the specified MLflow experiment."""
+    """Finds the latest checkpoint in the specified MLflow experiment, returning the one with the highest step number among the recent runs."""
     mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if not experiment:
         logging.info(f"Experiment {experiment_name} not found.")
-        return None, None
+        return None, None, 0
+    
+    latest_step_global = -1
+    latest_pkl_path = None
+    latest_run_id = None
+    latest_mtime = 0
 
     try:
-        # Search for the latest run in this experiment
-        # We look at up to 10 latest runs to be safe
+        # Search for the latest runs in this experiment
         runs = mlflow.search_runs(
             experiment_ids=[experiment.experiment_id],
             order_by=["attributes.start_time DESC"],
-            max_results=10
+            max_results=5
         )
         
         if runs.empty:
             logging.info("No runs found in experiment.")
-            return None, None
+            return None, None, 0
 
-        # Iterate through runs to find one with checkpoint artifacts
+        # Iterate through runs to find the latest checkpoint
         for _, run in runs.iterrows():
             run_id = run.run_id
             client = mlflow.tracking.MlflowClient()
             artifacts = client.list_artifacts(run_id, "checkpoints")
             
             if artifacts:
-                # Sort artifacts by step number to find the latest
-                # Artifact names are like 'checkpoints/step_10'
-                checkpoint_steps = []
                 for art in artifacts:
                     match = re.search(r"step_(\d+)", art.path)
                     if match:
-                        checkpoint_steps.append((int(match.group(1)), art.path))
+                        step = int(match.group(1))
+                        # For MLflow, we still use the highest step number within a run to find its 'latest'
+                        # but we will compare the local vs MLflow later using mtime.
+                        
+                        # Download if it's potentially the newest
+                        local_path = client.download_artifacts(run_id, art.path)
+                        pkl_files = glob.glob(os.path.join(local_path, "*.pkl"))
+                        if pkl_files:
+                            mtime = os.path.getmtime(pkl_files[0])
+                            # In MLflow we still prefer higher step count if multiple checkpoints exist in the SAME run
+                            # because mtime of downloaded artifacts might be reset to 'now'.
+                            # However, across runs we will rely on the start_time order.
+                            if step > latest_step_global:
+                                latest_step_global = step
+                                latest_pkl_path = pkl_files[0]
+                                latest_run_id = run_id
+                                latest_mtime = mtime
                 
-                if checkpoint_steps:
-                    latest_step, latest_art_path = max(checkpoint_steps, key=lambda x: x[0])
-                    logging.info(f"Found latest checkpoint at step {latest_step} in run {run_id}")
-                    
-                    # Download the artifact
-                    local_path = client.download_artifacts(run_id, latest_art_path)
-                    # The downloaded path will be a directory containing the .pkl file
-                    pkl_files = glob.glob(os.path.join(local_path, "*.pkl"))
-                    if pkl_files:
-                        return pkl_files[0], run_id
+                # If we found at least one checkpoint in the latest run that has artifacts, we stop here
+                # to avoid picking a higher step count from an older run.
+                if latest_pkl_path:
+                    break
         
-        logging.info("No checkpoint artifacts found in recent runs.")
-        return None, None
+        return latest_pkl_path, latest_run_id, latest_mtime
     except Exception as e:
         logging.warning(f"Failed to fetch checkpoint from MLflow: {e}")
-        return None, None
+        return None, None, 0
+
+def select_best_checkpoint():
+    """Selects the best checkpoint by comparing local files and MLflow artifacts using mtime."""
+    local_ckpt, local_run_id, local_mtime = get_latest_local_checkpoint()
+    mlflow_ckpt, mlflow_run_id, mlflow_mtime = get_latest_mlflow_checkpoint()
+    
+    if local_ckpt and mlflow_ckpt:
+        if local_mtime >= mlflow_mtime:
+            logging.info(f"Selecting local checkpoint (mtime: {time.ctime(local_mtime)}): {local_ckpt}")
+            return local_ckpt, local_run_id
+        else:
+            logging.info(f"Selecting MLflow checkpoint (mtime: {time.ctime(mlflow_mtime)}): {mlflow_ckpt}")
+            return mlflow_ckpt, mlflow_run_id
+    elif local_ckpt:
+        logging.info(f"Selecting local checkpoint: {local_ckpt}")
+        return local_ckpt, local_run_id
+    elif mlflow_ckpt:
+        logging.info(f"Selecting MLflow checkpoint: {mlflow_ckpt}")
+        return mlflow_ckpt, mlflow_run_id
+    
+    return None, None
 
 def save_last_n_lines(src_path, dst_path, n=100):
     """Save the last n lines of a file to a new destination."""
@@ -320,7 +364,7 @@ def perform_restart(process, current_checkpoint, args):
     # Even if args.checkpoint was provided, on restart we usually want to continue from where we left off (the latest save)
     # unless a specific flag was set to keep using the old one.
     logging.info("Searching for latest checkpoint for restart...")
-    new_checkpoint, run_id = get_latest_mlflow_checkpoint()
+    new_checkpoint, run_id = select_best_checkpoint()
     if new_checkpoint:
         logging.info(f"Updating checkpoint for restart: {new_checkpoint}")
         checkpoint = new_checkpoint
@@ -329,12 +373,18 @@ def perform_restart(process, current_checkpoint, args):
             logging.info(f"Continuing MLflow Run ID: {run_id}")
     elif not os.environ.get("RNAD_RUN_ID"):
         # If no checkpoint found, still try to stay on the same run if not already set
-        run_id = get_latest_mlflow_run_id()
-        if run_id:
-            os.environ["RNAD_RUN_ID"] = run_id
-            logging.info(f"Continuing MLflow Run ID (no new checkpoint): {run_id}")
-        else:
-            logging.info("No active MLflow run found during restart.")
+        # Re-import mllow briefly or just use subprocess if needed, but we can reuse the logic
+        import mlflow
+        mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+        experiment = mlflow.get_experiment_by_name("R-NaD-StS2")
+        if experiment:
+            runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["attributes.start_time DESC"], max_results=1)
+            if not runs.empty:
+                run_id = runs.iloc[0].run_id
+                os.environ["RNAD_RUN_ID"] = run_id
+                logging.info(f"Continuing MLflow Run ID (no new checkpoint): {run_id}")
+    else:
+        logging.info("No active MLflow run found during restart.")
 
     # 1. Save the current trajectory buffer to disk before killing the process
     try:
@@ -436,17 +486,24 @@ def main():
             os.environ["RNAD_RUN_ID"] = run_id
 
     if not checkpoint:
-        logging.info("Searching for latest checkpoint in MLflow...")
-        checkpoint, run_id = get_latest_mlflow_checkpoint()
+        logging.info("Searching for latest checkpoint...")
+        checkpoint, run_id = select_best_checkpoint()
         if checkpoint:
-            logging.info(f"Resuming from MLflow checkpoint: {checkpoint} (Run ID: {run_id})")
+            logging.info(f"Resuming from detected checkpoint: {checkpoint} (Run ID: {run_id})")
             os.environ["RNAD_RUN_ID"] = run_id
         else:
-            logging.info("No MLflow checkpoint found, searching for latest run ID...")
-            run_id = get_latest_mlflow_run_id()
-            if run_id:
-                logging.info(f"Resuming MLflow Run ID (no checkpoint): {run_id}")
-                os.environ["RNAD_RUN_ID"] = run_id
+            # Fallback for just run ID
+            import mlflow
+            mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+            experiment = mlflow.get_experiment_by_name("R-NaD-StS2")
+            if experiment:
+                runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["attributes.start_time DESC"], max_results=1)
+                if not runs.empty:
+                    run_id = runs.iloc[0].run_id
+                    logging.info(f"Resuming MLflow Run ID (no checkpoint): {run_id}")
+                    os.environ["RNAD_RUN_ID"] = run_id
+                else:
+                    logging.info("No MLflow run found, starting fresh.")
             else:
                 logging.info("No MLflow run found, starting fresh.")
 

@@ -1865,14 +1865,16 @@ def load_model(checkpoint_path=None):
             # Search recursively for checkpoints because ExperimentManager saves them in subdirs
             checkpoints = glob.glob(os.path.join(checkpoint_dir, "**", "checkpoint_*.pkl"), recursive=True)
             if checkpoints:
-                # Extract step number and find the max
-                def get_step(path):
-                    match = re.search(r"checkpoint_(\d+)\.pkl", os.path.basename(path))
-                    return int(match.group(1)) if match else -1
+                # Extract step number and find the max based on mtime to handle step resets
+                def get_mtime(path):
+                    try:
+                        return os.path.getmtime(path)
+                    except OSError:
+                        return 0
                 
-                latest_checkpoint = max(checkpoints, key=get_step)
+                latest_checkpoint = max(checkpoints, key=get_mtime)
                 checkpoint_path = latest_checkpoint
-                print(f"[Python] Auto-detected latest checkpoint: {checkpoint_path}")
+                print(f"[Python] Auto-detected latest checkpoint (by mtime): {checkpoint_path}")
 
     step = 0
     if checkpoint_path and os.path.exists(checkpoint_path):
