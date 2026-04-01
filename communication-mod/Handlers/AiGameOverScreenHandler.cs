@@ -20,15 +20,15 @@ public class AiGameOverScreenHandler : IScreenHandler
     {
         MainFile.Logger.Info("[AiGameOverScreenHandler] Game Over screen detected. Handling by code...");
         
-        // Notify AI of game over state so it can record episode and trigger restart if needed
-        // We capture whether the AI returned a valid step (like 'wait' or 'return_to_main_menu')
-        bool stepped = await MainFile.Instance.StepAI(async (d) => {
-            string action = d.ContainsKey("action") ? d["action"].AsString() : "";
-            if (action == "return_to_main_menu") {
-                MainFile.Logger.Info("[AiGameOverScreenHandler] AI requested return to main menu (likely after restore).");
-            }
-        });
+        // Notify AI of game over state. Execute the returned action (e.g. return_to_main_menu).
+        bool stepped = await MainFile.Instance.StepAI(MainFile.Instance.ExecuteGameOverAction);
         
+        if (stepped)
+        {
+            MainFile.Logger.Info("[AiGameOverScreenHandler] AI took an action. Exiting handler.");
+            return;
+        }
+
         NGameOverScreen? screen = NOverlayStack.Instance?.Peek() as NGameOverScreen;
         if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree())
         {
@@ -37,19 +37,16 @@ public class AiGameOverScreenHandler : IScreenHandler
         }
 
         // 1. Find and click the Continue button
-        NGameOverContinueButton? continueButton = UiHelper.FindFirst<NGameOverContinueButton>(screen);
-        if (continueButton == null)
-        {
-            MainFile.Logger.Error("[AiGameOverScreenHandler] Continue button not found. Checking if screen already closed.");
-            if (NOverlayStack.Instance?.Peek() != screen) return;
-            return;
-        }
-
-        MainFile.Logger.Info("[AiGameOverScreenHandler] Waiting for Continue button to be enabled...");
+        MainFile.Logger.Info("[AiGameOverScreenHandler] Waiting for Continue button to appear and be enabled...");
+        NGameOverContinueButton? continueButton = null;
         try {
-            await WaitHelper.Until(() => continueButton.IsEnabled, ct, TimeSpan.FromSeconds(20), "Continue button did not become enabled");
+            await WaitHelper.Until(() => {
+                if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree()) return true;
+                continueButton = UiHelper.FindFirst<NGameOverContinueButton>(screen);
+                return continueButton != null && continueButton.IsEnabled;
+            }, ct, TimeSpan.FromSeconds(30), "Continue button did not become ready");
         } catch (Exception ex) {
-            MainFile.Logger.Warn($"[AiGameOverScreenHandler] Continue button wait failed: {ex.Message}. Attempting to proceed anyway.");
+            MainFile.Logger.Warn($"[AiGameOverScreenHandler] Continue button wait failed: {ex.Message}. Screen might be auto-closed.");
         }
         
         if (GodotObject.IsInstanceValid(continueButton) && continueButton.Visible && continueButton.IsEnabled)

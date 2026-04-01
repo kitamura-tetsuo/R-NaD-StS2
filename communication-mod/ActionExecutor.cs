@@ -817,6 +817,8 @@ public partial class MainFile : Node
     {
         var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
         var gameOverScreen = overlayStack?.Peek() as MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen;
+        
+        bool clicked = false;
         if (gameOverScreen != null)
         {
             Logger.Info("[AutoAI] Found GameOverScreen. Returning to main menu.");
@@ -827,6 +829,7 @@ public partial class MainFile : Node
             {
                 Logger.Info("[AutoAI] Clicking Main Menu button.");
                 mainMenuBtn.Call("ForceClick");
+                clicked = true;
             }
             else
             {
@@ -836,20 +839,22 @@ public partial class MainFile : Node
                 {
                     Logger.Info("[AutoAI] Main menu button not ready, clicking Continue button first.");
                     continueBtn.Call("ForceClick");
-                }
-                else
-                {
-                     Logger.Info("[AutoAI] No button on GameOverScreen is enabled yet. Waiting.");
+                    clicked = true;
                 }
             }
         }
-        else
+
+        if (!clicked)
         {
-            Logger.Info("[AutoAI] No GameOverScreen found. Using NGame.Instance.ReturnToMainMenu() fallback.");
+            Logger.Info("[AutoAI] No enabled button found on GameOverScreen (or screen not present). Using NGame.Instance.ReturnToMainMenu() forced fallback.");
             var nGame = MegaCrit.Sts2.Core.Nodes.NGame.Instance;
             if (nGame != null)
             {
                 await nGame.ReturnToMainMenu();
+            }
+            else
+            {
+                Logger.Error("[AutoAI] Could not perform ReturnToMainMenu: NGame.Instance is null");
             }
         }
     }
