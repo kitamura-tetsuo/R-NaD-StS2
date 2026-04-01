@@ -7,7 +7,11 @@ import time
 import pandas as pd
 
 class ExperimentManager:
-    def __init__(self, experiment_name: str, checkpoint_dir: str = "checkpoints", run_id: str | None = None, log_checkpoints: bool = False):
+    def __init__(self, experiment_name: str, checkpoint_dir: str | None = None, run_id: str | None = None, log_checkpoints: bool = False):
+        if checkpoint_dir is None:
+            # Default to a project-local absolute path to avoid saving in game folder
+            checkpoint_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
+
         self.last_checkpoint_path: str | None = None
         self.last_checkpoint_step: int | None = None
         # Ensure logs go to the project root regardless of CWD

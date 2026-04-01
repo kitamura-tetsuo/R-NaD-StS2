@@ -97,6 +97,19 @@ def wait_for_server(url, timeout=60):
     logging.error("Server did not start in time.")
     raise BridgeConnectionError(f"Server at {url} did not start in time.")
 
+def check_disk_space(path, threshold=0.1):
+    """Returns True if the disk space on the given path is below the threshold."""
+    try:
+        usage = shutil.disk_usage(path)
+        free_ratio = usage.free / usage.total
+        if free_ratio <= threshold:
+            logging.error(f"Low disk space: {usage.free / (1024**3):.2f}GB free ({free_ratio*100:.1f}%) on {path}")
+            return True
+        return False
+    except Exception as e:
+        logging.warning(f"Failed to check disk space on {path}: {e}")
+        return False
+
 def wait_for_bridge_initialization(timeout=300):
     logging.info("Waiting for R-NaD bridge to initialize (pre-warm JAX)...")
     start_time = time.time()
@@ -600,6 +613,12 @@ def main():
                     
                     consecutive_failures = 0
                     
+                    # Check disk space (on the mlruns directory)
+                    mlruns_dir = os.path.join(os.path.dirname(__file__), "..", "mlruns")
+                    if check_disk_space(mlruns_dir, threshold=0.1):
+                        logging.error("FATAL: Insufficient disk space for checkpoints (<10% free). Stopping training.")
+                        raise RuntimeError("Low disk space on checkpoint storage.")
+
                     # Stop if worker encountered a training error
                     worker_error = status_data.get("worker_error")
                     if worker_error:
@@ -625,7 +644,7 @@ def main():
                         last_traj_size = traj_size
                         last_traj_progress_time = time.time()
                         
-                    if time.time() - last_traj_progress_time > 60:
+                    if time.time() - last_traj_progress_time > 600:
                         logging.warning(f"Stall detected! Trajectory size ({traj_size}) hasn't changed for {time.time() - last_traj_progress_time:.1f}s.")
                         take_screenshot(f"stall_traj_size_{traj_size}")
                         process, checkpoint = perform_restart(process, checkpoint, args)
