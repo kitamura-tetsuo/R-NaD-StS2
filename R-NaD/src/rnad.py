@@ -60,6 +60,8 @@ class RNaDConfig(NamedTuple):
     unroll_length: int = 32
     card_vocab_size: int = 100
     monster_vocab_size: int = 40
+    relic_vocab_size: int = 300
+    power_vocab_size: int = 280
     seed: int = None
 
 def v_trace(
@@ -196,10 +198,13 @@ class CombatExpert(hk.Module):
         self.hidden_size = hidden_size
         self.num_blocks = num_blocks
         self.num_heads = num_heads
-    
-    def __call__(self, h_global, combat_obs, bow_obs, is_training: bool = False, config: Optional[RNaDConfig] = None):
+
+    def __call__(self, h_global, combat_obs, bow_obs, relic_obs=None, is_training: bool = False, config: Optional[RNaDConfig] = None):
         card_vocab = config.card_vocab_size if config else 100
-        card_embedding = hk.Embed(vocab_size=card_vocab, embed_dim=64, name="card_embedding")
+        # Card embedding: 384-dim projected to hidden_size
+        card_embedding = hk.Embed(vocab_size=card_vocab, embed_dim=384, name="card_embedding")
+        card_proj = hk.Linear(self.hidden_size, name="card_proj")
+        
         bow_vecs = [bow_obs[k] for k in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]]
         bow_combined = jnp.concatenate(bow_vecs, axis=-1)
         bow_proj = jax.nn.relu(hk.Linear(128, name="bow_proj")(bow_combined))
@@ -210,14 +215,16 @@ class CombatExpert(hk.Module):
         for i in range(10):
             base_idx = 10 + i * 10
             card_id_idx = combat_vec_to_id(combat_obs[base_idx])
-            card_embed = card_embedding(card_id_idx)
+            card_embed = card_embedding(card_id_idx) # (384,)
             other_feats = combat_obs[base_idx+1 : base_idx+10]
+            # Project 384-dim embedding + other feats to hidden_size
             card_feat = jnp.concatenate([card_embed, other_feats], axis=-1)
-            hand_cards.append(hk.Linear(self.hidden_size, name=f"hand_linear_{i}")(card_feat))
+            hand_cards.append(card_proj(card_feat))
             
         enemy_nodes = []
         monster_vocab = config.monster_vocab_size if config else 40
-        monster_embedding = hk.Embed(vocab_size=monster_vocab, embed_dim=32, name="monster_embedding")
+        monster_embedding = hk.Embed(vocab_size=monster_vocab, embed_dim=384, name="monster_embedding")
+        monster_proj = hk.Linear(self.hidden_size, name="monster_proj")
         for i in range(5):
             base_idx = 110 + i * 16
             alive = combat_obs[base_idx : base_idx + 1]
@@ -226,10 +233,53 @@ class CombatExpert(hk.Module):
             is_minion = combat_obs[base_idx + 2 : base_idx + 3]
             other_feats = combat_obs[base_idx + 3 : base_idx + 14]
             combined_enemy_feat = jnp.concatenate([alive, monster_embed, is_minion, other_feats], axis=-1)
-            enemy_nodes.append(hk.Linear(self.hidden_size, name=f"enemy_linear_{i}")(combined_enemy_feat))
+            enemy_nodes.append(monster_proj(combined_enemy_feat))
             
-        tokens = jnp.stack([context_proj] + hand_cards + enemy_nodes, axis=0)
-        pos_emb = hk.get_parameter("pos_emb_combat", [16, self.hidden_size], init=hk.initializers.TruncatedNormal())
+        # New: Powers and Relics tokens
+        power_vocab = config.power_vocab_size if config else 280
+        power_embedding = hk.Embed(vocab_size=power_vocab, embed_dim=384, name="power_embedding")
+        power_proj = hk.Linear(self.hidden_size, name="power_proj")
+        
+        relic_vocab = config.relic_vocab_size if config else 300
+        relic_embedding = hk.Embed(vocab_size=relic_vocab, embed_dim=384, name="relic_embedding")
+        relic_proj = hk.Linear(self.hidden_size, name="relic_proj")
+
+        power_relic_nodes = []
+        
+        # Player Relics (up to 30) - indices are usually passed in global or separate obs
+        if relic_obs is not None:
+            # relic_obs should be (30,) or similar
+            for i in range(30):
+                ridx = combat_vec_to_id(relic_obs[i])
+                rembed = relic_embedding(ridx)
+                power_relic_nodes.append(relic_proj(rembed))
+        else:
+            # Padding if no relics provided
+            dummy_relic = jnp.zeros(384)
+            for _ in range(30):
+                power_relic_nodes.append(relic_proj(dummy_relic))
+
+        # Player powers (up to 10)
+        for i in range(10):
+            base_idx = 200 + i * 2
+            pidx = combat_vec_to_id(combat_obs[base_idx])
+            pamt = combat_obs[base_idx + 1 : base_idx + 2]
+            pembed = power_embedding(pidx)
+            power_relic_nodes.append(power_proj(jnp.concatenate([pembed, pamt], axis=-1)))
+
+        # Enemy powers (up to 5 enemies * 10 powers = 50)
+        for i in range(5):
+            enemy_base = 220 + i * 20
+            for j in range(10):
+                idx = enemy_base + j * 2
+                pidx = combat_vec_to_id(combat_obs[idx])
+                pamt = combat_obs[idx + 1 : idx + 2]
+                pembed = power_embedding(pidx)
+                power_relic_nodes.append(power_proj(jnp.concatenate([pembed, pamt], axis=-1)))
+
+        # Total tokens: 1 (context) + 10 (hand) + 5 (enemies) + 30 (relics) + 10 (p_pow) + 50 (e_pow) = 106
+        tokens = jnp.stack([context_proj] + hand_cards + enemy_nodes + power_relic_nodes, axis=0)
+        pos_emb = hk.get_parameter("pos_emb_combat", [106, self.hidden_size], init=hk.initializers.TruncatedNormal())
         tokens = tokens + pos_emb
         
         for i in range(self.num_blocks):
@@ -380,7 +430,7 @@ class TransformerNet(hk.Module):
                 "master_bow": s_dict["master_bow"]
             }
             return jax.lax.switch(st_idx, [
-                lambda: combat_expert(h_g, s_dict["combat"], bow_obs, is_training, config=self.config),
+                lambda: combat_expert(h_g, s_dict["combat"], bow_obs, s_dict.get("relic_ids"), is_training, config=self.config),
                 lambda: map_expert(h_g, s_dict["map"], bow_obs, is_training, config=self.config),
                 lambda: event_expert(h_g, s_dict["event"], bow_obs, is_training),
                 lambda: grid_expert(h_g, s_dict["event"], bow_obs, is_training),
@@ -408,7 +458,7 @@ class TransformerNet(hk.Module):
             }.items()}
             
             # Ensure every expert is called at least once during init
-            _ = combat_expert(dummy_h_g, state_dict["combat"][0, 0], dummy_bow_obs, is_training, config=self.config)
+            _ = combat_expert(dummy_h_g, state_dict["combat"][0, 0], dummy_bow_obs, state_dict.get("relic_ids", jnp.zeros((30,)))[0, 0], is_training, config=self.config)
             _ = map_expert(dummy_h_g, state_dict["map"][0, 0], dummy_bow_obs, is_training, config=self.config)
             _ = event_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             _ = grid_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
@@ -541,6 +591,7 @@ class RNaDLearner:
         dummy_state = {
             "global": jnp.zeros((1, 1, 512)),
             "combat": jnp.zeros((1, 1, 384)),
+            "relic_ids": jnp.zeros((1, 1, 30)),
             "draw_bow": jnp.zeros((1, 1, self.config.card_vocab_size)),
             "discard_bow": jnp.zeros((1, 1, self.config.card_vocab_size)),
             "exhaust_bow": jnp.zeros((1, 1, self.config.card_vocab_size)),
@@ -633,4 +684,54 @@ class RNaDLearner:
             self.opt_state = self.optimizer.init(self.params)
             
         return data['step']
+
+def load_pretrained_embeddings(params: Dict[str, Any], embeddings_path: str, card_vocab: Dict[str, int], monster_vocab: Dict[str, int], power_vocab: Dict[str, int], relic_vocab: Dict[str, int]) -> Dict[str, Any]:
+    """Populates embedding weights from pretrained text embeddings."""
+    if not os.path.exists(embeddings_path):
+        logging.warning(f"Embeddings file not found: {embeddings_path}")
+        return params
+
+    try:
+        with open(embeddings_path, 'rb') as f:
+            pretrained = pickle.load(f)
+        
+        new_params = hk.data_structures.to_mutable_dict(params)
+        
+        # Helper to populate a specific embedding layer
+        def populate_layer(scope_suffix, vocab, pretrained_key):
+            target_scope = None
+            for scope in new_params.keys():
+                if scope_suffix in scope and 'embeddings' in new_params[scope]:
+                    target_scope = scope
+                    break
+            
+            if not target_scope:
+                logging.warning(f"Could not find embedding scope for {scope_suffix}")
+                return
+            
+            embeddings = np.array(new_params[target_scope]['embeddings'])
+            mapping = pretrained.get(pretrained_key, {})
+            
+            count = 0
+            for name, idx in vocab.items():
+                if name in mapping and idx < embeddings.shape[0]:
+                    embeddings[idx] = mapping[name]
+                    count += 1
+                elif name.upper() in mapping and idx < embeddings.shape[0]:
+                    embeddings[idx] = mapping[name.upper()]
+                    count += 1
+            
+            new_params[target_scope]['embeddings'] = jnp.array(embeddings)
+            logging.info(f"Loaded {count}/{len(vocab)} embeddings for {scope_suffix}")
+
+        populate_layer('card_embedding', card_vocab, 'CARDS')
+        populate_layer('monster_embedding', monster_vocab, 'MONSTERS')
+        populate_layer('power_embedding', power_vocab, 'POWERS')
+        populate_layer('relic_embedding', relic_vocab, 'RELICS')
+        
+        return hk.data_structures.to_immutable_dict(new_params)
+    except Exception as e:
+        logging.error(f"Error loading pretrained embeddings: {e}")
+        traceback.print_exc()
+        return params
         

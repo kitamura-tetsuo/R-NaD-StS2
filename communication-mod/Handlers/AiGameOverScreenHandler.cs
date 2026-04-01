@@ -21,13 +21,18 @@ public class AiGameOverScreenHandler : IScreenHandler
         MainFile.Logger.Info("[AiGameOverScreenHandler] Game Over screen detected. Handling by code...");
         
         // Notify AI of game over state so it can record episode and trigger restart if needed
-        // We use an empty callback because this handler provides its own robust button clicking logic.
-        await MainFile.Instance.StepAI(async (d) => { await Task.CompletedTask; });
+        // We capture whether the AI returned a valid step (like 'wait' or 'return_to_main_menu')
+        bool stepped = await MainFile.Instance.StepAI(async (d) => {
+            string action = d.ContainsKey("action") ? d["action"].AsString() : "";
+            if (action == "return_to_main_menu") {
+                MainFile.Logger.Info("[AiGameOverScreenHandler] AI requested return to main menu (likely after restore).");
+            }
+        });
         
         NGameOverScreen? screen = NOverlayStack.Instance?.Peek() as NGameOverScreen;
-        if (screen == null)
+        if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree())
         {
-            MainFile.Logger.Error("[AiGameOverScreenHandler] Screen is not NGameOverScreen");
+            MainFile.Logger.Info("[AiGameOverScreenHandler] Screen is no longer valid after StepAI.");
             return;
         }
 
@@ -35,28 +40,40 @@ public class AiGameOverScreenHandler : IScreenHandler
         NGameOverContinueButton? continueButton = UiHelper.FindFirst<NGameOverContinueButton>(screen);
         if (continueButton == null)
         {
-            MainFile.Logger.Error("[AiGameOverScreenHandler] Continue button not found");
+            MainFile.Logger.Error("[AiGameOverScreenHandler] Continue button not found. Checking if screen already closed.");
+            if (NOverlayStack.Instance?.Peek() != screen) return;
             return;
         }
 
         MainFile.Logger.Info("[AiGameOverScreenHandler] Waiting for Continue button to be enabled...");
-        await WaitHelper.Until(() => continueButton.IsEnabled, ct, TimeSpan.FromSeconds(30), "Continue button did not become enabled");
+        try {
+            await WaitHelper.Until(() => continueButton.IsEnabled, ct, TimeSpan.FromSeconds(20), "Continue button did not become enabled");
+        } catch (Exception ex) {
+            MainFile.Logger.Warn($"[AiGameOverScreenHandler] Continue button wait failed: {ex.Message}. Attempting to proceed anyway.");
+        }
         
-        MainFile.Logger.Info("[AiGameOverScreenHandler] Clicking Continue button");
-        await UiHelper.Click(continueButton);
+        if (GodotObject.IsInstanceValid(continueButton) && continueButton.Visible && continueButton.IsEnabled)
+        {
+            MainFile.Logger.Info("[AiGameOverScreenHandler] Clicking Continue button");
+            await UiHelper.Click(continueButton);
+        }
 
         // 2. Wait for the Return to Main Menu button
         MainFile.Logger.Info("[AiGameOverScreenHandler] Waiting for Return to Main Menu button...");
         NReturnToMainMenuButton? mainMenuButton = null;
-        await WaitHelper.Until(() =>
-        {
-            if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree())
+        try {
+            await WaitHelper.Until(() =>
             {
-                return true;
-            }
-            mainMenuButton = UiHelper.FindFirst<NReturnToMainMenuButton>(screen);
-            return mainMenuButton != null && mainMenuButton.Visible && mainMenuButton.IsEnabled;
-        }, ct, TimeSpan.FromSeconds(60), "Main menu button did not become enabled");
+                if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree())
+                {
+                    return true;
+                }
+                mainMenuButton = UiHelper.FindFirst<NReturnToMainMenuButton>(screen);
+                return mainMenuButton != null && mainMenuButton.Visible && mainMenuButton.IsEnabled;
+            }, ct, TimeSpan.FromSeconds(30), "Main menu button did not become enabled");
+        } catch (Exception ex) {
+            MainFile.Logger.Warn($"[AiGameOverScreenHandler] Main menu button wait failed: {ex.Message}");
+        }
 
         if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree())
         {
@@ -64,13 +81,13 @@ public class AiGameOverScreenHandler : IScreenHandler
             return;
         }
 
-        if (mainMenuButton != null)
+        if (mainMenuButton != null && mainMenuButton.Visible && mainMenuButton.IsEnabled)
         {
             MainFile.Logger.Info("[AiGameOverScreenHandler] Clicking Return to Main Menu button");
             await UiHelper.Click(mainMenuButton);
         }
 
-        await WaitHelper.Until(() => !GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree(), ct, TimeSpan.FromSeconds(30), "Game over screen did not close");
+        await WaitHelper.Until(() => !GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree(), ct, TimeSpan.FromSeconds(15), "Game over screen did not close");
         MainFile.Logger.Info("[AiGameOverScreenHandler] Game Over screen closed.");
     }
 }

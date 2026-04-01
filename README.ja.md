@@ -19,6 +19,14 @@
 
 ## ビルド・実行手順
 
+# 仮想環境の再作成
+rm -rf ./R-NaD/venv
+python3 -m venv ./R-NaD/venv
+
+# 構成のインストール
+./R-NaD/venv/bin/pip install -r ./R-NaD/requirements_sts2_gpu.txt
+
+
 ### 1. Rust GDExtension のビルド
 ```bash
 cd GDExtension

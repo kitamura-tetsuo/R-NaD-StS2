@@ -523,16 +523,17 @@ np = None
 RNaDLearner = None
 RNaDConfig = None
 ExperimentManager = None
+load_pretrained_embeddings = None
 initialization_event = threading.Event()
 initialization_lock = threading.Lock()
 
 def do_deferred_imports():
-    global jax, jnp, np, RNaDLearner, RNaDConfig, ExperimentManager
+    global jax, jnp, np, RNaDLearner, RNaDConfig, ExperimentManager, load_pretrained_embeddings
     if jax is None:
         import numpy as np_mod
         import jax as jax_mod
         import jax.numpy as jnp_mod
-        from src.rnad import RNaDLearner as Learner, RNaDConfig as Config
+        from src.rnad import RNaDLearner as Learner, RNaDConfig as Config, load_pretrained_embeddings
         from experiment import ExperimentManager as ExpManager
         
         jax = jax_mod
@@ -541,6 +542,12 @@ def do_deferred_imports():
         RNaDLearner = Learner
         RNaDConfig = Config
         ExperimentManager = ExpManager
+        # Also need to assign the imported function to the global variable
+        # Since it was imported as its original name in the from src.rnad import line,
+        # and we didn't alias it, it's already in the local scope, but we need
+        # it in the global scope for other functions.
+        # Actually, let's just make sure it's in the global scope.
+        globals()['load_pretrained_embeddings'] = load_pretrained_embeddings
         print("[Python] Deferred imports completed.")
         
         # Log JAX devices to confirm GPU usage
@@ -1771,7 +1778,9 @@ def load_model(checkpoint_path=None):
     # Create config with dynamic vocab sizes (already expanded at module level)
     config = RNaDConfig(
         card_vocab_size=VOCAB_SIZE,
-        monster_vocab_size=MONSTER_VOCAB_SIZE
+        monster_vocab_size=MONSTER_VOCAB_SIZE,
+        relic_vocab_size=RELIC_VOCAB_SIZE,
+        power_vocab_size=POWER_VOCAB_SIZE
     )
     
     # Updated dummy observation for structured dictionary input
@@ -1779,6 +1788,7 @@ def load_model(checkpoint_path=None):
     dummy_obs = {
         "global": jnp.zeros((1, 1, 512)),
         "combat": jnp.zeros((1, 1, 384)),
+        "relic_ids": jnp.zeros((1, 1, 30)),
         "draw_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
         "discard_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
         "exhaust_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
@@ -1812,6 +1822,16 @@ def load_model(checkpoint_path=None):
         if learner.params is None:
             log("[Python] Initializing JAX model params for pre-warm...")
             learner.init(rng_key)
+            
+            # Load pretrained embeddings
+            EMB_PATH = os.path.join(BRIDGE_DIR, "..", "text_encoder", "embeddings.pkl")
+            log(f"[Python] Loading pretrained embeddings from {EMB_PATH}")
+            learner.params = load_pretrained_embeddings(
+                learner.params, EMB_PATH, 
+                CARD_VOCAB, MONSTER_VOCAB, POWER_VOCAB, RELIC_VOCAB
+            )
+            learner.fixed_params = learner.params
+            
             log(f"[Python] Initialized params keys: {list(learner.params.keys())}")
         
         # Pre-warm for each switch branch (combat:0, map:1, event-like:2, grid:3, hand:4)
@@ -1982,13 +2002,16 @@ def encode_state(state):
     boss_id = state.get("boss") or "UNKNOWN"
     global_vec[20] = get_boss_idx(boss_id) / float(BOSS_VOCAB_SIZE)
     
-    # Relics (Multi-hot, size 50, starting at index 30)
+    # Relics (up to 30)
     relics = state.get("relics", [])
     if not relics and player: # Fallback for combat state where player is a child
-        # Relics (Multi-hot, starting at index 30)
         relics = player.get("relics", [])
-    for rid in relics:
+    
+    relic_ids = np.zeros(30, dtype=np.float32)
+    for i, rid in enumerate(relics[:30]):
         idx = get_relic_idx(rid) # get_relic_idx handles dicts and strings consistently
+        relic_ids[i] = idx
+        # Also keep multi-hot in global_vec for legacy/compatibility
         if 0 < idx and 30 + idx < 512:
             global_vec[30 + idx] = 1.0
 
@@ -2093,7 +2116,7 @@ def encode_state(state):
         for i in range(min(len(p_powers), 10)):
             p = p_powers[i]
             base_idx = 200 + i * 2
-            combat_vec[base_idx] = get_power_idx(p.get("id")) / float(POWER_VOCAB_SIZE)
+            combat_vec[base_idx] = get_power_idx(p.get("id"))
             combat_vec[base_idx + 1] = p.get("amount", 0) / 10.0
             
         # Enemy powers (up to 5 enemies, 10 powers each, starting at 220)
@@ -2103,7 +2126,7 @@ def encode_state(state):
             for j in range(min(len(e_powers), 10)):
                 p = e_powers[j]
                 idx = enemy_base + j * 2
-                combat_vec[idx] = get_power_idx(p.get("id")) / float(POWER_VOCAB_SIZE)
+                combat_vec[idx] = get_power_idx(p.get("id"))
                 combat_vec[idx + 1] = p.get("amount", 0) / 10.0
                 
         # --- Predicted Features (starting at 320) ---
@@ -2191,6 +2214,7 @@ def encode_state(state):
     return {
         "global": global_vec,
         "combat": combat_vec,
+        "relic_ids": relic_ids,
         "draw_bow": draw_bow,
         "discard_bow": discard_bow,
         "exhaust_bow": exhaust_bow,
