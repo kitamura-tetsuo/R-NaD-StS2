@@ -62,5 +62,10 @@ python3 R-NaD/train_sts2.py --max_steps 1000
 ### 5. Slay the Spire 2 の起動
 StS2をModローダー経由で起動します。`communication-mod` が `AiBridge` ノードを展開し、Pythonのデーモンがバックグラウンドで起動して通信を開始します。先ほど起動したStreamlit UIから、「Learning ACTIVE/INACTIVE」を切り替えることで推論および学習をコントロールします。
 
+
+## To visualize trajectories:
+/home/ubuntu/src/R-NaD-StS2/R-NaD/venv/bin/streamlit run visualize_trajectories.py --server.port 8501
+
+
 ## ライセンス
 MIT License (詳細は LICENSE ファイルをご確認ください)。

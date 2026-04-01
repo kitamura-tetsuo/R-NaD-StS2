@@ -703,9 +703,8 @@ def trigger_restore():
         experience_queue.put(list(current_trajectory))
         current_trajectory = []
     
-    # Flush raw_logger for offline trajectories
+    # NEW: Flush raw trajectory logger as well
     if raw_logger:
-        # Mark as terminal because it's a split that we treat as 0-valued future
         raw_logger.flush(force_terminal=True)
 
     restored_reward = backup_manager.restore()
@@ -1171,12 +1170,13 @@ class RawTrajectoryLogger:
         self.current_episode = []
         self.lock = threading.Lock()
 
-    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, terminal=False):
+    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, logits=None, terminal=False):
         with self.lock:
             self.current_episode.append({
                 "state_json": state_json,
                 "action_idx": int(action_idx),
                 "probs": probs.tolist() if hasattr(probs, "tolist") else list(probs),
+                "logits": logits.tolist() if logits is not None and hasattr(logits, "tolist") else list(logits) if logits is not None else [],
                 "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
                 "reward": float(reward),
                 "log_prob": float(log_prob),
@@ -3071,13 +3071,14 @@ def predict_action(state_json):
                         "mask": sampling_mask.astype(np.float32),
                         "log_prob": float(log_prob),
                         "probs": probs.tolist() if hasattr(probs, "tolist") else list(probs),
+                        "logits": logits[0, 0].tolist() if hasattr(logits, "tolist") else list(logits[0, 0]),
                         "predicted_v": float(value.item()),
                         "done": 0.0
                     })
                 
                 # NEW: Raw trajectory logging for offline learning
                 terminal = (state_type == "game_over")
-                raw_logger.log_step(state_json, action_idx, probs, mask, reward, log_prob, predicted_v=value.item(), terminal=terminal)
+                raw_logger.log_step(state_json, action_idx, probs, mask, reward, log_prob, predicted_v=value.item(), logits=logits[0, 0], terminal=terminal)
 
                 if config and len(current_trajectory) >= config.unroll_length:
                     # Defer flushing until we see the next state for bootstrapping
@@ -3213,6 +3214,10 @@ class CommandHandler(BaseHTTPRequestHandler):
                 log(f"/save_trajectory: Flushing trajectory of length {len(current_trajectory)} to experience_queue before saving.")
                 experience_queue.put(list(current_trajectory))
                 current_trajectory = []
+
+            # Flush raw logger as well
+            if raw_logger:
+                raw_logger.flush()
 
             # Safely capture current state
             with experience_queue.mutex:
