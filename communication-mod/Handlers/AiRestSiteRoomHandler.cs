@@ -26,7 +26,11 @@ public class AiRestSiteRoomHandler : IRoomHandler
     {
         MainFile.Logger.Info("[AiSlayer] Waiting for rest site room");
         Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
-        NRestSiteRoom room = await WaitHelper.ForNode<NRestSiteRoom>(root, _roomPath, ct, null);
+        NRestSiteRoom room = null;
+        await WaitHelper.Until(() => {
+            room = UiHelper.FindFirst<NRestSiteRoom>(root);
+            return room != null;
+        }, ct, TimeSpan.FromSeconds(30), "Rest site room not found");
 
         MainFile.Logger.Info("[AiSlayer] Handling rest site options via AI");
         while (!ct.IsCancellationRequested)

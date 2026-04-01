@@ -26,7 +26,11 @@ public class AiShopRoomHandler : IRoomHandler
     {
         MainFile.Logger.Info("[AiSlayer] Waiting for shop room");
         Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
-        NMerchantRoom room = await WaitHelper.ForNode<NMerchantRoom>(root, _roomPath, ct, null);
+        NMerchantRoom room = null;
+        await WaitHelper.Until(() => {
+            room = UiHelper.FindFirst<NMerchantRoom>(root);
+            return room != null;
+        }, ct, TimeSpan.FromSeconds(30), "Merchant room not found");
 
         MainFile.Logger.Info("[AiSlayer] Opening merchant inventory");
         room.OpenInventory();

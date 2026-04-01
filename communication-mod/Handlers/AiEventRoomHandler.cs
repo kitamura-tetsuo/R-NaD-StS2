@@ -188,7 +188,12 @@ public class AiEventRoomHandler : IRoomHandler
     private async Task<Node> WaitForEventRoom(CancellationToken ct)
     {
         Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
-        return await WaitHelper.ForNode<Node>(root, _roomPath, ct, null);
+        NEventRoom room = null;
+        await WaitHelper.Until(() => {
+            room = UiHelper.FindFirst<NEventRoom>(root);
+            return room != null;
+        }, ct, TimeSpan.FromSeconds(30), "Event room not found");
+        return room;
     }
 
     private async Task<bool> WaitForEventOptions(Node eventRoom, CancellationToken ct)

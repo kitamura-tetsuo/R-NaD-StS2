@@ -23,7 +23,11 @@ public class AiTreasureRoomHandler : IRoomHandler
     {
         MainFile.Logger.Info("[AiSlayer] Waiting for treasure room");
         Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
-        NTreasureRoom room = await WaitHelper.ForNode<NTreasureRoom>(root, _roomPath, ct, null);
+        NTreasureRoom room = null;
+        await WaitHelper.Until(() => {
+            room = UiHelper.FindFirst<NTreasureRoom>(root);
+            return room != null;
+        }, ct, TimeSpan.FromSeconds(30), "Treasure room not found");
 
         NClickableControl chest = room.GetNode<NClickableControl>(new NodePath("Chest"));
         if (chest != null && chest.IsEnabled && chest.Visible)

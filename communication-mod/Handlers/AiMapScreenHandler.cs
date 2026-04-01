@@ -19,18 +19,16 @@ public class AiMapScreenHandler : IHandler
 
     public async Task HandleAsync(Rng random, CancellationToken ct)
     {
-        Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
-        MegaCrit.Sts2.Core.Nodes.NRun runNode = root.GetNode<MegaCrit.Sts2.Core.Nodes.NRun>(new NodePath("/root/Game/RootSceneContainer/Run"));
-
         int initialFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? -1;
 
         // Wait for map screen to be open (not necessarily visible in tree, as animations might delay visibility)
         // OR if the floor already advanced (handling race condition where map was handled prematurely)
         await WaitHelper.Until(delegate {
+            var mapScreen = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance;
             int currentFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? -1;
             bool floorAdvanced = initialFloor != -1 && currentFloor > initialFloor;
             
-            if (runNode.GlobalUi.MapScreen.IsOpen || floorAdvanced) return true;
+            if ((mapScreen != null && mapScreen.IsOpen) || floorAdvanced) return true;
             
             // If map is NOT open, check if there's an overlay blocking it and drain it
             if (MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance != null && 
@@ -46,18 +44,18 @@ public class AiMapScreenHandler : IHandler
         }, ct, TimeSpan.FromSeconds(15), "Map screen not open");
 
         // Extra check: if we broke out of Until because of an overlay, drain it now
-        if (!runNode.GlobalUi.MapScreen.IsOpen)
+        if (!(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false))
         {
              await MainFile.Instance.GetAiSlayer().DrainOverlayScreensAsync(ct);
              
              // After draining, re-check map (it might be open now)
-             if (!runNode.GlobalUi.MapScreen.IsOpen) {
+             if (!(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false)) {
                   // Final short wait for map
-                  await WaitHelper.Until(() => runNode.GlobalUi.MapScreen.IsOpen, ct, TimeSpan.FromSeconds(5), "Map screen still not open after draining overlays");
+                  await WaitHelper.Until(() => MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false, ct, TimeSpan.FromSeconds(5), "Map screen still not open after draining overlays");
              }
         }
 
-        if (runNode.GlobalUi.MapScreen.IsOpen)
+        if (MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false)
         {
             MainFile.Logger.Info("[AiSlayer] Map screen open, handling navigation via AI");
         }
@@ -104,10 +102,7 @@ public class AiMapScreenHandler : IHandler
 
             // Check if we entered a room
             var runState = RunManager.Instance.DebugOnlyGetState();
-            if (runState?.CurrentRoom != null && runState.CurrentRoom.RoomType != RoomType.Unassigned)
-            {
-                if (!runNode.GlobalUi.MapScreen.IsOpen) break;
-            }
+            if (!(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false)) break;
         }
     }
 }
