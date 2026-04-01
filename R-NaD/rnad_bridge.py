@@ -1504,11 +1504,8 @@ class TrainingWorker(threading.Thread):
                 if len(batch) < batch_size:
                     continue 
                 
-                self.perform_update(batch, increment_step=False)
+                self.perform_update(batch, increment_step=False, reset_updating=False)
                 
-                with self.lock:
-                    self.is_updating = True
-                    
                 log(f"[Python] Offline update {i // batch_size + 1}/{(len(all_updates) // batch_size)} done.")
                 with self.lock:
                     self.update_progress += 1
@@ -1521,15 +1518,12 @@ class TrainingWorker(threading.Thread):
                 self.update_progress = 0
                 self.update_total = 0
 
-    def perform_update(self, batch, increment_step=True):
-        if increment_step:
-            with self.lock:
-                self.is_updating = True
+    def perform_update(self, batch, increment_step=True, reset_updating=True):
+        with self.lock:
+            self.is_updating = True
+            if increment_step:
                 self.update_progress = 0
                 self.update_total = 1
-        else:
-            with self.lock:
-                self.is_updating = True
         
         print("[Python] TrainingWorker: Bridge is performing an update. Waiting...")
 
@@ -1758,11 +1752,12 @@ class TrainingWorker(threading.Thread):
                     # Log to the current step (likely 0 for pre-training)
                     self.experiment_manager.log_metrics(self.step_count, metrics)
         finally:
-            with self.lock:
-                self.is_updating = False
-                if increment_step:
-                    self.update_progress = 0
-                    self.update_total = 0
+            if reset_updating:
+                with self.lock:
+                    self.is_updating = False
+                    if increment_step:
+                        self.update_progress = 0
+                        self.update_total = 0
 
 # training_worker = None # Handled at top now
 

@@ -344,6 +344,8 @@ def wait_for_update_to_finish(status_url="http://127.0.0.1:8081/status", max_fai
                 consecutive_failures = 0 # success, reset counter
                 if not is_updating:
                     if batch_size == 0 or queue_size < batch_size:
+                        # Log one final check before breaking
+                        logging.info("Bridge is not updating. Wait complete.")
                         break
                     logging.info(f"Queue is full ({queue_size}/{batch_size}). Waiting for update to start...")
                 else:
@@ -566,7 +568,11 @@ def main():
                     else:
                         logging.error(f"Failed to start offline training: {off_resp.status_code} {off_resp.text}")
             
+            # Re-check status one last time to ensure no residual updates
             wait_for_update_to_finish(max_failures=10)
+            
+            logging.info("Offline training phase cleared. Transitioning to online learning.")
+                        
         except BridgeConnectionError:
             logging.warning("Bridge failed during initial update wait. Triggering restart...")
             process, checkpoint = perform_restart(process, checkpoint, args)

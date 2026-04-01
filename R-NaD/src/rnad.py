@@ -411,16 +411,28 @@ class TransformerNet(hk.Module):
         event_expert = SimpleExpert(self.hidden_size, name="event_expert")
         grid_expert = SimpleExpert(self.hidden_size, name="grid_expert")
         hand_expert = SimpleExpert(self.hidden_size, name="hand_expert")
-        temporal_transformer = TemporalTransformer(
+        temporal_policy_transformer = TemporalTransformer(
             num_heads=4,
             key_size=32,
             hidden_size=self.hidden_size,
             num_blocks=1,
             seq_len=self.seq_len,
-            name="temporal_history_v4"
+            name="temporal_history_policy"
+        )
+        temporal_value_transformer = TemporalTransformer(
+            num_heads=4,
+            key_size=32,
+            hidden_size=self.hidden_size,
+            num_blocks=1,
+            seq_len=self.seq_len,
+            name="temporal_history_value"
         )
         policy_heads = [hk.Linear(self.num_actions, name=f"policy_head_{i}") for i in range(6)]
-        value_heads = [hk.Linear(1, name=f"value_head_{i}") for i in range(6)]
+        # Change value_heads to MLP
+        value_heads = [
+            hk.nets.MLP([self.hidden_size, self.hidden_size // 2, 1], name=f"value_head_mlp_{i}") 
+            for i in range(6)
+        ]
 
         def route_expert(st_idx, h_g, s_dict):
             bow_obs = {
@@ -437,10 +449,10 @@ class TransformerNet(hk.Module):
                 lambda: hand_expert(h_g, s_dict["event"], bow_obs, is_training)
             ])
 
-        def route_head(head_idx, feat):
+        def route_head(head_idx, feat_p, feat_v):
             # Using i=i to capture the value of i at definition time
             return jax.lax.switch(head_idx, [
-                lambda i=i: (policy_heads[i](feat), value_heads[i](feat)) for i in range(6)
+                lambda i=i: (policy_heads[i](feat_p), value_heads[i](feat_v)) for i in range(6)
             ])
 
         # Get T and B dimensions
@@ -465,13 +477,15 @@ class TransformerNet(hk.Module):
             _ = hand_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             
             # Ensure every head is called at least once during init
-            dummy_features = jnp.zeros(self.hidden_size)
+            dummy_features_p = jnp.zeros(self.hidden_size)
+            dummy_features_v = jnp.zeros(self.hidden_size * 2) # Due to skip connection Concat
             for i in range(6):
-                _ = policy_heads[i](dummy_features)
-                _ = value_heads[i](dummy_features)
+                _ = policy_heads[i](dummy_features_p)
+                _ = value_heads[i](dummy_features_v)
             
-            # Temporal transformer also needs to be called during init
-            _ = temporal_transformer(jnp.zeros((1, 1, self.hidden_size)), is_training)
+            # Temporal transformers also need to be called during init
+            _ = temporal_policy_transformer(jnp.zeros((1, 1, self.hidden_size)), is_training)
+            _ = temporal_value_transformer(jnp.zeros((1, 1, self.hidden_size)), is_training)
 
         # Flatten T and B for expert processing via vmap
         state_dict_flat = jax.tree_util.tree_map(lambda x: x.reshape(T * B, *x.shape[2:]), state_dict)
@@ -487,15 +501,21 @@ class TransformerNet(hk.Module):
             # Explicitly project to hidden_size if mismatch occurs as a fallback
             features = hk.Linear(self.hidden_size, name="features_fix_proj")(features)
             
-        # Apply temporal transformer
-        features = temporal_transformer(features, is_training)
+        # Apply temporal transformers (feature decoupling)
+        features_p = temporal_policy_transformer(features, is_training)
+        features_v_raw = temporal_value_transformer(features, is_training)
+        
+        # Absolute numeric skip connection: Concat h_global (temporal broadcast)
+        # h_g_batch is (T, B, hidden_size), features_v_raw is (T, B, hidden_size)
+        features_v = jnp.concatenate([features_v_raw, h_g_batch], axis=-1)
 
         # Apply multi-head Actor/Critic
         # Reshape for head routing
-        features_flat = features.reshape(T * B, -1)
+        features_p_flat = features_p.reshape(T * B, -1)
+        features_v_flat = features_v.reshape(T * B, -1)
         head_type_flat = state_dict["head_type"].reshape(T * B)
         
-        logits_flat, value_flat = hk.vmap(route_head, split_rng=False)(head_type_flat, features_flat)
+        logits_flat, value_flat = hk.vmap(route_head, split_rng=False)(head_type_flat, features_p_flat, features_v_flat)
         
         logits = logits_flat.reshape(T, B, self.num_actions)
         logits = jnp.where(mask.astype(bool), logits, -1e9)
