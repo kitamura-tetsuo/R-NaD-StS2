@@ -52,7 +52,7 @@ public class AiRewardsScreenHandler : IScreenHandler
                         MainFile.Logger.Info($"[AiRewardsScreenHandler] HP Loss Check: loss={hpLoss}, threshold={floorThreshold}. Triggering retry...");
                         
                         // Wait for a few seconds as requested
-                        await Task.Delay(3000, ct);
+                        await Task.Delay(750, ct); // Reduced from 3000ms
                         
                         // Call bridge to restore save
                         var restoreRes = await MainFile.Instance.CallBridgeSafe("trigger_restore");

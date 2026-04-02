@@ -109,7 +109,7 @@ public class AiSlayer
                 MainFile.Logger.Error($"[AiSlayer] Run iteration failed: {ex.Message}\n{ex.StackTrace}");
                 await Task.Delay(5000, ct); // Wait before retrying on error
             }
-            await Task.Delay(1000, ct);
+            await Task.Delay(250, ct); // Reduced from 1000ms
         }
         
         IsActive = false;

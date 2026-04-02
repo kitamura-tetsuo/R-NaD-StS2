@@ -2796,17 +2796,17 @@ def predict_action(state_json):
                     probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
         # ---------------------------
         # --- Turn End Override Logic ---
-        # If energy > 0 during training, scale End Turn (75) prob by 0.1 to encourage exploration
+        # If energy > 0 during training, scale End Turn (75) prob by 0.01 to encourage exploration
         if not inference_mode and state_type == "combat":
             player_info = state.get("player", {})
             energy = player_info.get("energy", 0)
             if energy > 0 and mask[75]:
                 # Action 75 is End Turn
-                probs = probs.at[75].multiply(0.1)
+                probs = probs.at[75].multiply(0.01)
                 sum_p = jnp.sum(probs)
                 if sum_p > 1e-9:
                     probs = probs / sum_p
-                log(f"[Python] TURN END OVERRIDE: Scaling prob for End Turn (75) by 0.1 due to energy={energy}. New prob: {probs[75]:.4f}")
+                log(f"[Python] TURN END OVERRIDE: Scaling prob for End Turn (75) by 0.01 due to energy={energy}. New prob: {probs[75]:.4f}")
         # ---------------------------
         # --- Search Features ---
         # Lethal Search: Harness to ensure we don't miss a deterministic kill-all sequence.

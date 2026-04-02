@@ -34,7 +34,7 @@ public class AiTimelineScreenHandler : IScreenHandler
         }
 
         // Wait a bit for animations or queued screens to start
-        await Task.Delay(2000, ct);
+        await Task.Delay(500, ct); // Reduced from 2000ms
 
         // NTimelineScreen manages a queue of unlock screens.
         // It will automatically open them one by one.
@@ -49,7 +49,7 @@ public class AiTimelineScreenHandler : IScreenHandler
             {
                 MainFile.Logger.Info("[AiTimelineScreenHandler] Unlock screen(s) are queued. Waiting for them to appear and be handled by AiUnlockScreenHandler.");
                 // We just wait here; DrainOverlayScreensAsync will see the new screen on top.
-                await Task.Delay(1000, ct);
+                await Task.Delay(250, ct); // Reduced from 1000ms
                 continue;
             }
 
@@ -64,7 +64,7 @@ public class AiTimelineScreenHandler : IScreenHandler
 
             // Fallback: If no back button, maybe wait a bit longer or exit the handler and let the slayer repeat.
             MainFile.Logger.Info("[AiTimelineScreenHandler] No more screens queued, but Back button not findable/enabled yet. Waiting...");
-            await Task.Delay(2000, ct);
+            await Task.Delay(500, ct); // Reduced from 2000ms
             
             // Re-check validity
             if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree()) break;

@@ -97,8 +97,8 @@ const App: React.FC = () => {
 
         // Handle Trajectory/Retry Reset
         if (vMinRef.current === Infinity || reset || terminal || (prevStateRef.current && newData.state.floor < prevStateRef.current.floor)) {
-          vMinRef.current = Math.min(predicted_v, newData.reward, newData.cum_reward) - 0.1;
-          vMaxRef.current = Math.max(predicted_v, newData.reward, newData.cum_reward) + 0.1;
+          vMinRef.current = Math.min(predicted_v, newData.cum_reward) - 0.1;
+          vMaxRef.current = Math.max(predicted_v, newData.cum_reward) + 0.1;
           if (reset) {
             setHistory([]);
             setEvents([]);
@@ -107,8 +107,8 @@ const App: React.FC = () => {
             prevStepIdRef.current = null;
           }
         } else {
-          vMinRef.current = Math.min(vMinRef.current, predicted_v, newData.reward, newData.cum_reward);
-          vMaxRef.current = Math.max(vMaxRef.current, predicted_v, newData.reward, newData.cum_reward);
+          vMinRef.current = Math.min(vMinRef.current, predicted_v, newData.cum_reward);
+          vMaxRef.current = Math.max(vMaxRef.current, predicted_v, newData.cum_reward);
         }
 
         if (newData.events) {
@@ -247,7 +247,7 @@ const App: React.FC = () => {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={history} syncId="sts2-charts">
                     <Line
-                      type="monotone"
+                      type="linear"
                       dataKey="v"
                       stroke="#00ffcc"
                       strokeWidth={2}
@@ -255,17 +255,9 @@ const App: React.FC = () => {
                       isAnimationActive={false}
                       name="Value (V)"
                     />
+
                     <Line
-                      type="stepAfter"
-                      dataKey="reward"
-                      stroke="#ff00ff"
-                      strokeWidth={2}
-                      dot={false}
-                      isAnimationActive={false}
-                      name="Step Reward"
-                    />
-                    <Line
-                      type="monotone"
+                      type="linear"
                       dataKey="cumReward"
                       stroke="#facc15"
                       strokeWidth={1.5}

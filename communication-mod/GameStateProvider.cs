@@ -167,7 +167,7 @@ public partial class MainFile : Node
                if (!hasRewards)
                {
                    Logger.Info("[AutoAI] Map Screen is open and no rewards pending. Reporting map state.");
-                   return GetMapJson(runState);
+                   return GetMapJson(runState, localPlayer);
                }
             }
         }
@@ -200,7 +200,7 @@ public partial class MainFile : Node
             if (!hasRewards && MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance != null && MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance.IsOpen)
             {
                 Logger.Info("[AutoAI] RewardsScreen is empty and Map is open. Reporting map state.");
-                return GetMapJson(runState);
+                return GetMapJson(runState, localPlayer);
             }
 
             var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
@@ -223,6 +223,7 @@ public partial class MainFile : Node
                 floor = runState.TotalFloor,
                 seed = currentSeed,
                 is_gym = _gymMode,
+                player = GetPlayerSummary(player),
                 rewards = rewards,
                 has_open_potion_slots = hasOpenPotionSlots,
                 relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
@@ -281,7 +282,16 @@ public partial class MainFile : Node
                 }
             }
 
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, cards = cards, buttons = buttons, room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None" }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { 
+                type = "card_reward", 
+                floor = runState.TotalFloor, 
+                seed = currentSeed, 
+                is_gym = _gymMode, 
+                player = GetPlayerSummary(localPlayer),
+                cards = cards, 
+                buttons = buttons, 
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None" 
+            }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen chooseScreen)
         {
@@ -310,6 +320,7 @@ public partial class MainFile : Node
                 floor = runState.TotalFloor,
                 seed = currentSeed,
                 is_gym = _gymMode,
+                player = GetPlayerSummary(localPlayer),
                 cards = cards,
                 can_skip = canSkip,
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
@@ -396,6 +407,7 @@ public partial class MainFile : Node
                 floor = runState.TotalFloor,
                 seed = currentSeed,
                 is_gym = _gymMode,
+                player = GetPlayerSummary(localPlayer),
                 cards = cards,
                 is_confirming = isConfirming,
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
@@ -429,6 +441,7 @@ public partial class MainFile : Node
                 {
                     type = "treasure_relics",
                     floor = runState.TotalFloor,
+                    player = GetPlayerSummary(localPlayer),
                     relics = relics
                 }, JsonOptions);
             }
@@ -775,7 +788,7 @@ public partial class MainFile : Node
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.MapRoom || (MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false))
         {
-            return GetMapJson(runState);
+            return GetMapJson(runState, localPlayer);
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.EventRoom er)
         {
@@ -823,6 +836,7 @@ public partial class MainFile : Node
                 floor = runState.TotalFloor,
                 id = ev.Id.Entry,
                 title = ev.Title.GetRawText(),
+                player = GetPlayerSummary(localPlayer),
                 options = options,
                 can_proceed = canProceed,
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
@@ -878,6 +892,7 @@ public partial class MainFile : Node
             {
                 type = "rest_site",
                 floor = runState.TotalFloor,
+                player = GetPlayerSummary(localPlayer),
                 options = optionsData,
                 can_proceed = canProceed
             }, JsonOptions);
@@ -914,6 +929,7 @@ public partial class MainFile : Node
             {
                 type = "shop",
                 floor = runState.TotalFloor,
+                player = GetPlayerSummary(localPlayer),
                 gold = gold,
                 items = items,
                 can_proceed = canProceed,
@@ -938,6 +954,7 @@ public partial class MainFile : Node
             {
                 type = "treasure",
                 floor = runState.TotalFloor,
+                player = GetPlayerSummary(localPlayer),
                 has_chest = hasChest,
                 can_proceed = canProceed,
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
@@ -948,7 +965,7 @@ public partial class MainFile : Node
         return System.Text.Json.JsonSerializer.Serialize(new { type = "unknown", floor = runState.TotalFloor, room = currentRoom.GetType().Name }, JsonOptions);
     }
 
-    private string GetMapJson(MegaCrit.Sts2.Core.Runs.RunState runState)
+    private string GetMapJson(MegaCrit.Sts2.Core.Runs.RunState runState, MegaCrit.Sts2.Core.Entities.Players.Player localPlayer)
     {
         var currentPos = runState.CurrentMapCoord;
         
@@ -1069,6 +1086,7 @@ public partial class MainFile : Node
             floor = runState.TotalFloor,
             seed = runState.Rng.StringSeed,
             is_gym = _gymMode,
+            player = GetPlayerSummary(localPlayer),
             current_pos = currentPos.HasValue ? new { row = currentPos.Value.row, col = currentPos.Value.col } : null,
             next_nodes = nextNodes,
             nodes = nodes,
@@ -1097,5 +1115,18 @@ public partial class MainFile : Node
             } catch {}
         }
         return defaultValue;
+    }
+
+    private object GetPlayerSummary(MegaCrit.Sts2.Core.Entities.Players.Player player)
+    {
+        if (player == null) return null;
+        return new
+        {
+            hp = player.Creature?.CurrentHp ?? 0,
+            maxHp = player.Creature?.MaxHp ?? 0,
+            block = player.Creature?.Block ?? 0,
+            energy = 0,
+            gold = player.Gold
+        };
     }
 }
