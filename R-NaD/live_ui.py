@@ -199,13 +199,26 @@ def main():
             st.bar_chart(prob_df)
 
         history = get_current_trajectory_history()
-        # Append latest live data point if available
-        v_history = [s.get("predicted_v", 0.0) for s in history]
-        if 'v_val' in locals():
-            v_history.append(v_val)
         
-        if v_history:
-            st.line_chart(pd.DataFrame({"V-Value": v_history}))
+        # Prepare data for Trend Chart
+        chart_data = []
+        for s in history:
+            chart_data.append({
+                "V-Value": s.get("predicted_v", 0.0),
+                "Reward": s.get("reward", 0.0)
+            })
+        
+        # Append latest live data point
+        if 'v_val' in locals():
+            chart_data.append({
+                "V-Value": v_val,
+                "Reward": live_data.get("reward", 0.0)
+            })
+        
+        if chart_data:
+            df_trend = pd.DataFrame(chart_data)
+            st.markdown("<div class='section-header'>V-Value & Reward Trend</div>", unsafe_allow_html=True)
+            st.line_chart(df_trend)
 
     # Polling logic
     time.sleep(1)

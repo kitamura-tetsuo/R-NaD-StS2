@@ -117,6 +117,12 @@ async def process_state(data: Dict) -> Dict:
     event_color = "#666"
     
     async with history_lock:
+        if data.get("reset"):
+            event_history = []
+            prev_state_type = None
+            prev_action_idx = None
+            turn_counter = 1
+            
         if prev_state_type and state_type != prev_state_type:
             if state_type == 'combat':
                 event_label = "COMBAT START"
@@ -148,21 +154,39 @@ async def process_state(data: Dict) -> Dict:
 
         prev_state_type = state_type
         prev_action_idx = action_idx
-    
-    data["events"] = event_history
+        data["events"] = list(event_history)
     
     if probs:
         import numpy as np
-        # Get top 10 actions
-        top_indices = np.argsort(probs)[-10:][::-1]
-        top_actions = []
-        for i in top_indices:
-            if probs[i] > 0.001: # Filter very low probabilities
+        probs_arr = np.array(probs)
+        
+        # Get executed action info
+        selected_prob = float(probs_arr[action_idx]) if action_idx < len(probs_arr) else 0.0
+        selected_action = {
+            "id": int(action_idx),
+            "name": get_action_name(int(action_idx), state),
+            "prob": selected_prob,
+            "isSelected": True
+        }
+        
+        # Get top 3 others (excluding selected)
+        # Create mask to hide selected action
+        probs_others = probs_arr.copy()
+        if action_idx < len(probs_others):
+            probs_others[action_idx] = -1.0
+            
+        top_other_indices = np.argsort(probs_others)[-3:][::-1]
+        top_actions = [selected_action]
+        
+        for i in top_other_indices:
+            if probs_others[i] > 0.0001: # Small threshold
                 top_actions.append({
                     "id": int(i),
                     "name": get_action_name(int(i), state),
-                    "prob": float(probs[i])
+                    "prob": float(probs_others[i]),
+                    "isSelected": False
                 })
+                
         data["top_actions"] = top_actions
         
     return data

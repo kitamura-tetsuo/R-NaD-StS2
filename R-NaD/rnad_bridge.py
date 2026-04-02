@@ -710,6 +710,8 @@ def trigger_restore():
     restored_reward = backup_manager.restore()
     if restored_reward is not None:
         is_restoring = True # Set flag so predict_action knows to wait for MainMenu
+        if raw_logger:
+            raw_logger.reset_ui = True
         reward_tracker.session_cumulative_reward = restored_reward
         # Mark combat not initialized to allow re-initialization in the next step
         reward_tracker.combat_initialized = False
@@ -1169,6 +1171,8 @@ class RawTrajectoryLogger:
     def __init__(self, trajectory_dir):
         self.trajectory_dir = trajectory_dir
         self.current_episode = []
+        self.reset_ui = False
+        self.step_id = 0
         self.lock = threading.Lock()
 
     def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, logits=None, terminal=False):
@@ -1184,6 +1188,7 @@ class RawTrajectoryLogger:
                 "predicted_v": float(predicted_v),
                 "terminal": terminal
             })
+            self.step_id += 1
             if terminal:
                 self.flush()
 
@@ -1198,8 +1203,11 @@ class RawTrajectoryLogger:
                     "reward": float(reward),
                     "terminal": terminal,
                     "timestamp": time.time(),
+                    "step_id": self.step_id,
                     "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
+                    "reset": self.reset_ui,
                 }
+                self.reset_ui = False
                 live_path = os.path.abspath(os.path.join(self.trajectory_dir, "../tmp/live_state.json"))
                 os.makedirs(os.path.dirname(live_path), exist_ok=True)
                 
