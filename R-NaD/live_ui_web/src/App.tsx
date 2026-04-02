@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  ResponsiveContainer, LineChart, Line, CartesianGrid, ReferenceLine, Label, Tooltip, XAxis, YAxis
+import {
+  ResponsiveContainer, LineChart, Line, CartesianGrid, ReferenceLine, Label, Tooltip, XAxis, YAxis, Legend
 } from 'recharts';
-import { 
+import {
   Heart, Zap, Layers, Shield,
   ChevronRight, Activity, TrendingUp
 } from 'lucide-react';
@@ -16,6 +16,7 @@ function cn(...inputs: ClassValue[]) {
 interface Card {
   id: string;
   name: string;
+  type?: string;
   cost: number;
   is_generated?: boolean;
 }
@@ -54,6 +55,8 @@ interface ActionProb {
 interface LiveData {
   state: GameState;
   predicted_v: number;
+  reward: number;
+  cum_reward: number;
   top_actions: ActionProb[];
   timestamp: number;
   action_idx: number;
@@ -69,7 +72,7 @@ const App: React.FC = () => {
   const [actionHistory, setActionHistory] = useState<ActionProb[][]>([]);
   const [events, setEvents] = useState<{ time: number; label: string; color: string }[]>([]);
   const [connected, setConnected] = useState(false);
-  
+
   const prevStateRef = useRef<GameState | null>(null);
   const prevActionIdxRef = useRef<number | null>(null);
   const prevStepIdRef = useRef<number | null>(null);
@@ -79,23 +82,23 @@ const App: React.FC = () => {
   useEffect(() => {
     const connect = () => {
       const ws = new WebSocket(`ws://${window.location.hostname}:8051/ws`);
-      
+
       ws.onopen = () => setConnected(true);
       ws.onclose = () => {
         setConnected(false);
         setTimeout(connect, 2000);
       };
-      
+
       ws.onmessage = (event) => {
         const newData: LiveData = JSON.parse(event.data);
         const { timestamp, predicted_v, terminal, state, reset } = newData;
-        
+
         setData(newData);
-        
+
         // Handle Trajectory/Retry Reset
         if (vMinRef.current === Infinity || reset || terminal || (prevStateRef.current && newData.state.floor < prevStateRef.current.floor)) {
-          vMinRef.current = predicted_v - 0.1;
-          vMaxRef.current = predicted_v + 0.1;
+          vMinRef.current = Math.min(predicted_v, newData.reward, newData.cum_reward) - 0.1;
+          vMaxRef.current = Math.max(predicted_v, newData.reward, newData.cum_reward) + 0.1;
           if (reset) {
             setHistory([]);
             setEvents([]);
@@ -104,19 +107,19 @@ const App: React.FC = () => {
             prevStepIdRef.current = null;
           }
         } else {
-          vMinRef.current = Math.min(vMinRef.current, predicted_v);
-          vMaxRef.current = Math.max(vMaxRef.current, predicted_v);
+          vMinRef.current = Math.min(vMinRef.current, predicted_v, newData.reward, newData.cum_reward);
+          vMaxRef.current = Math.max(vMaxRef.current, predicted_v, newData.reward, newData.cum_reward);
         }
-        
+
         if (newData.events) {
           setEvents(newData.events);
         }
-        
+
         if (newData.top_actions) {
           const isNewStep = newData.step_id !== undefined && newData.step_id !== prevStepIdRef.current;
           const isNewAction = newData.action_idx !== prevActionIdxRef.current;
           const isNewState = prevStateRef.current?.type !== newData.state.type || prevStateRef.current?.floor !== newData.state.floor;
-          
+
           if (isNewStep || isNewAction || isNewState || actionHistory.length === 0) {
             setActionHistory(prev => {
               const updated = [newData.top_actions, ...prev];
@@ -132,16 +135,18 @@ const App: React.FC = () => {
             });
           }
         }
-        
+
         setHistory(prev => {
-          const point: any = { 
-            time: timestamp, 
+          const point: any = {
+            time: timestamp,
             v: predicted_v,
+            reward: newData.reward,
+            cumReward: newData.cum_reward,
             playerHp: state.player?.hp || 0,
             playerBlock: state.player?.block || 0,
             incoming: (newData as any).state?.predicted_total_damage || 0
           };
-          
+
           state.enemies?.forEach((enemy, idx) => {
             point[`enemy${idx}`] = enemy.hp;
           });
@@ -149,7 +154,7 @@ const App: React.FC = () => {
           const updated = [...prev, point];
           return updated.slice(-50);
         });
-        
+
         prevStateRef.current = newData.state;
       };
     };
@@ -173,35 +178,35 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-bg-dark text-gray-100 p-4 font-sans selection:bg-brand-primary/30">
       {/* Header Stat Bar */}
       <header className="grid grid-cols-5 gap-4 mb-6">
-        <StatCard 
-          label="Floor" 
-          value={state.floor} 
-          icon={<ChevronRight className="w-4 h-4 text-brand-primary" />} 
-          variant="normal" 
+        <StatCard
+          label="Floor"
+          value={state.floor}
+          icon={<ChevronRight className="w-4 h-4 text-brand-primary" />}
+          variant="normal"
         />
-        <StatCard 
-          label="Health" 
-          value={`${state.player?.hp || 0}/${state.player?.maxHp || 0}`} 
-          icon={<Heart className="w-4 h-4 text-red-500" />} 
+        <StatCard
+          label="Health"
+          value={`${state.player?.hp || 0}/${state.player?.maxHp || 0}`}
+          icon={<Heart className="w-4 h-4 text-red-500" />}
           percent={state.player ? (state.player.hp / state.player.maxHp) * 100 : 0}
           variant="health"
         />
-        <StatCard 
-          label="Energy" 
-          value={state.player?.energy || 0} 
-          icon={<Zap className="w-4 h-4 text-yellow-400" />} 
+        <StatCard
+          label="Energy"
+          value={state.player?.energy || 0}
+          icon={<Zap className="w-4 h-4 text-yellow-400" />}
           variant="energy"
         />
-        <StatCard 
-          label="Block" 
-          value={state.player?.block || 0} 
-          icon={<Shield className="w-4 h-4 text-blue-400" />} 
+        <StatCard
+          label="Block"
+          value={state.player?.block || 0}
+          icon={<Shield className="w-4 h-4 text-blue-400" />}
           variant="block"
         />
-        <StatCard 
-          label="Value (V)" 
-          value={predicted_v.toFixed(3)} 
-          icon={<Activity className="w-4 h-4 text-brand-secondary" />} 
+        <StatCard
+          label="Value (V)"
+          value={predicted_v.toFixed(3)}
+          icon={<Activity className="w-4 h-4 text-brand-secondary" />}
           variant="vvalue"
         />
       </header>
@@ -209,22 +214,22 @@ const App: React.FC = () => {
       <main className="grid grid-cols-12 gap-6 items-start">
         {/* Left: Card Piles (Vertical) - Full height, no scroll */}
         <aside className="col-span-2 space-y-4 max-h-[calc(100vh-140px)] overflow-y-auto pr-2 custom-scrollbar">
-          <PileSection 
-            title="Hand" 
-            cards={state.hand || []} 
+          <PileSection
+            title="Hand"
+            cards={state.hand || []}
             icon={<Layers className="w-3 h-3 text-indigo-400" />}
             color="indigo"
             current
           />
-          <PileSection 
-            title="Draw" 
-            cards={state.drawPile || []} 
+          <PileSection
+            title="Draw"
+            cards={state.drawPile || []}
             icon={<ChevronRight className="rotate-270 w-3 h-3 text-gray-400" />}
             color="gray"
           />
-          <PileSection 
-            title="Discard" 
-            cards={state.discardPile || []} 
+          <PileSection
+            title="Discard"
+            cards={state.discardPile || []}
             icon={<ChevronRight className="rotate-90 w-3 h-3 text-gray-400" />}
             color="gray"
           />
@@ -235,32 +240,52 @@ const App: React.FC = () => {
           <div className="flex flex-col gap-6">
             {/* Top Chart: V-Value Trend */}
             <section className="glass p-4 min-h-[220px]">
-               <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2">
                 <TrendingUp className="w-3 h-3" /> V-Value Trend
               </h3>
               <div className="h-36 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={history} syncId="sts2-charts">
-                    <Line 
-                      type="monotone" 
-                      dataKey="v" 
-                      stroke="#00ffcc" 
-                      strokeWidth={2} 
+                    <Line
+                      type="monotone"
+                      dataKey="v"
+                      stroke="#00ffcc"
+                      strokeWidth={2}
                       dot={false}
-                      animationDuration={50}
+                      isAnimationActive={false}
+                      name="Value (V)"
                     />
-                    <XAxis dataKey="time" type="number" domain={['dataMin', 'dataMax']} hide />
+                    <Line
+                      type="stepAfter"
+                      dataKey="reward"
+                      stroke="#ff00ff"
+                      strokeWidth={2}
+                      dot={false}
+                      isAnimationActive={false}
+                      name="Step Reward"
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="cumReward"
+                      stroke="#facc15"
+                      strokeWidth={1.5}
+                      dot={false}
+                      isAnimationActive={false}
+                      name="Cum. Reward"
+                    />
+                    <XAxis dataKey="time" hide />
                     <YAxis domain={[vMinRef.current - 0.05, vMaxRef.current + 0.05]} hide />
                     <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-                    <Tooltip 
+                    <Tooltip
                       contentStyle={{ backgroundColor: '#1e202d', border: 'none', borderRadius: '8px', fontSize: '10px' }}
                       itemStyle={{ color: '#00ffcc' }}
                     />
+                    <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
-                      const inWindow = history.some(p => Math.abs(p.time - ev.time) < 0.001);
-                      if (!inWindow) return null;
+                      const matchedPoint = history.find(p => Math.abs(p.time - ev.time) < 0.001);
+                      if (!matchedPoint) return null;
                       return (
-                        <ReferenceLine key={idx} x={ev.time} stroke={ev.color} strokeDasharray="4 4">
+                        <ReferenceLine key={idx} x={matchedPoint.time} stroke={ev.color} strokeDasharray="4 4">
                           <Label value={ev.label} position="top" fill={ev.color} fontSize={8} fontWeight="bold" offset={5} />
                         </ReferenceLine>
                       );
@@ -272,43 +297,47 @@ const App: React.FC = () => {
 
             {/* Middle Chart: HP Trend */}
             <section className="glass p-4 min-h-[220px]">
-               <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2">
                 <Heart className="w-3 h-3 text-red-500" /> Player & Enemy Health
               </h3>
               <div className="h-36 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={history} syncId="sts2-charts">
-                    <XAxis dataKey="time" type="number" domain={['dataMin', 'dataMax']} hide />
+                    <XAxis dataKey="time" hide />
                     <YAxis domain={[0, 'auto']} hide />
                     <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-                    <Tooltip 
+                    <Tooltip
                       contentStyle={{ backgroundColor: '#1e202d', border: 'none', borderRadius: '8px', fontSize: '10px' }}
                     />
-                    <Line 
-                      type="stepAfter" 
-                      dataKey="playerHp" 
-                      stroke="#ef4444" 
-                      strokeWidth={2} 
+                    <Line
+                      type="stepAfter"
+                      dataKey="playerHp"
+                      stroke="#ef4444"
+                      strokeWidth={2}
                       dot={false}
-                      animationDuration={50}
+                      isAnimationActive={false}
+                      name="Player HP"
                     />
-                    {[0,1,2,3,4].map(idx => (
-                      <Line 
+                    {[0, 1, 2, 3, 4].map(idx => (
+                      <Line
                         key={idx}
-                        type="stepAfter" 
-                        dataKey={`enemy${idx}`} 
-                        stroke="#a855f7" 
-                        strokeWidth={1.5} 
+                        type="stepAfter"
+                        dataKey={`enemy${idx}`}
+                        stroke="#a855f7"
+                        strokeWidth={1.5}
                         dot={false}
                         connectNulls
-                        animationDuration={50}
+                        isAnimationActive={false}
+                        name="Enemy HP"
+                        legendType={idx === 0 ? 'line' : 'none'}
                       />
                     ))}
+                    <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
-                      const inWindow = history.some(p => Math.abs(p.time - ev.time) < 0.001);
-                      if (!inWindow) return null;
+                      const matchedPoint = history.find(p => Math.abs(p.time - ev.time) < 0.001);
+                      if (!matchedPoint) return null;
                       return (
-                        <ReferenceLine key={idx} x={ev.time} stroke={ev.color} strokeDasharray="4 4" />
+                        <ReferenceLine key={idx} x={matchedPoint.time} stroke={ev.color} strokeDasharray="4 4" />
                       );
                     })}
                   </LineChart>
@@ -318,40 +347,43 @@ const App: React.FC = () => {
 
             {/* Bottom Chart: Defense Trend */}
             <section className="glass p-4 min-h-[220px]">
-               <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2">
                 <Shield className="w-3 h-3 text-blue-400" /> Defense & Incoming Damage
               </h3>
               <div className="h-36 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={history} syncId="sts2-charts">
-                    <XAxis dataKey="time" type="number" domain={['dataMin', 'dataMax']} hide />
+                    <XAxis dataKey="time" hide />
                     <YAxis hide />
                     <CartesianGrid strokeDasharray="3 3" stroke="#222" />
-                    <Tooltip 
+                    <Tooltip
                       contentStyle={{ backgroundColor: '#1e202d', border: 'none', borderRadius: '8px', fontSize: '10px' }}
                     />
-                    <Line 
-                      type="stepAfter" 
-                      dataKey="playerBlock" 
-                      stroke="#3b82f6" 
-                      strokeWidth={2} 
+                    <Line
+                      type="stepAfter"
+                      dataKey="playerBlock"
+                      stroke="#3b82f6"
+                      strokeWidth={2}
                       dot={false}
-                      animationDuration={50}
+                      isAnimationActive={false}
+                      name="Player Block"
                     />
-                    <Line 
-                      type="stepAfter" 
-                      dataKey="incoming" 
-                      stroke="#f97316" 
-                      strokeWidth={2} 
+                    <Line
+                      type="stepAfter"
+                      dataKey="incoming"
+                      stroke="#f97316"
+                      strokeWidth={2}
                       strokeDasharray="5 5"
                       dot={false}
-                      animationDuration={50}
+                      isAnimationActive={false}
+                      name="Incoming Damage"
                     />
+                    <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
-                      const inWindow = history.some(p => Math.abs(p.time - ev.time) < 0.001);
-                      if (!inWindow) return null;
+                      const matchedPoint = history.find(p => Math.abs(p.time - ev.time) < 0.001);
+                      if (!matchedPoint) return null;
                       return (
-                        <ReferenceLine key={idx} x={ev.time} stroke={ev.color} strokeDasharray="4 4" />
+                        <ReferenceLine key={idx} x={matchedPoint.time} stroke={ev.color} strokeDasharray="4 4" />
                       );
                     })}
                   </LineChart>
@@ -388,20 +420,20 @@ const App: React.FC = () => {
                     )}>
                       <div className="flex justify-between items-end leading-none">
                         <span className={cn(
-                          "text-[10px] truncate max-w-[80%]",
+                          "text-xs truncate max-w-[80%]",
                           action.isSelected ? "text-brand-secondary font-bold" : "text-gray-200 font-medium"
                         )}>
                           {action.isSelected ? '▶ ' : ''}{action.name}
                         </span>
                         <span className={cn(
-                          "text-[9px] font-mono",
+                          "text-[10px] font-mono",
                           action.isSelected ? "text-brand-secondary font-bold" : "text-gray-400"
                         )}>
                           {(action.prob * 100).toFixed(0)}%
                         </span>
                       </div>
                       <div className="h-1 w-full bg-gray-800/50 rounded-full overflow-hidden">
-                        <div 
+                        <div
                           className={cn(
                             "h-full rounded-full",
                             action.isSelected ? "bg-brand-secondary shadow-[0_0_4px_rgba(0,255,204,0.3)]" : "bg-gray-600"
@@ -422,11 +454,11 @@ const App: React.FC = () => {
           </div>
         </aside>
       </main>
-      
+
       {!connected && (
-         <div className="fixed bottom-4 right-4 bg-red-900/80 text-white text-xs px-3 py-1.5 rounded-full border border-red-500 backdrop-blur-sm animate-pulse">
-            Connection Lost - Reconnecting...
-         </div>
+        <div className="fixed bottom-4 right-4 bg-red-900/80 text-white text-xs px-3 py-1.5 rounded-full border border-red-500 backdrop-blur-sm animate-pulse">
+          Connection Lost - Reconnecting...
+        </div>
       )}
     </div>
   );
@@ -455,6 +487,19 @@ const PileSection = ({ title, cards, icon, current }: any) => {
   // If it's a list of strings, convert to objects
   const processedCards = cards.map((c: any) => typeof c === 'string' ? { name: c, id: c } : c);
 
+  const typeOrder: Record<string, number> = {
+    'Attack': 1,
+    'Skill': 2,
+    'Power': 3
+  };
+
+  const sortedCards = [...processedCards].sort((a, b) => {
+    const orderA = typeOrder[a.type] || 99;
+    const orderB = typeOrder[b.type] || 99;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.name.localeCompare(b.name);
+  });
+
   return (
     <div className={cn(
       "glass overflow-hidden flex flex-col transition-all duration-300",
@@ -466,16 +511,16 @@ const PileSection = ({ title, cards, icon, current }: any) => {
         </h4>
       </div>
       <div className="p-2 space-y-1.5 overflow-visible">
-        {processedCards.length === 0 ? (
+        {sortedCards.length === 0 ? (
           <div className="text-[10px] text-gray-600 italic py-2 text-center">Empty</div>
         ) : (
-          processedCards.map((card: any, idx: number) => (
+          sortedCards.map((card: any, idx: number) => (
             <div key={`${card.id}-${idx}`} className={cn(
-              "text-[10px] px-1 py-0.5 flex justify-between group hover:bg-white/5 transition-colors border-b border-white/5 last:border-0",
+              "text-xs px-1 py-1 flex justify-between group hover:bg-white/5 transition-colors border-b border-white/5 last:border-0",
               card.is_generated && "text-brand-secondary/80 font-medium"
             )}>
               <span className="font-medium truncate pr-2">{card.name}</span>
-              <span className="opacity-40 font-mono text-[9px] shrink-0">{card.cost}E</span>
+              <span className="opacity-40 font-mono text-[10px] shrink-0">{card.cost}E</span>
             </div>
           ))
         )}

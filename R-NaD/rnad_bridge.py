@@ -1201,6 +1201,7 @@ class RawTrajectoryLogger:
                     "probs": probs.tolist() if hasattr(probs, "tolist") else list(probs),
                     "predicted_v": float(predicted_v),
                     "reward": float(reward),
+                    "cum_reward": float(reward_tracker.session_cumulative_reward),
                     "terminal": terminal,
                     "timestamp": time.time(),
                     "step_id": self.step_id,

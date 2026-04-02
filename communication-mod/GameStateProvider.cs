@@ -583,9 +583,9 @@ public partial class MainFile : Node
                     stars = pState?.Stars ?? 0,
                     powers = player?.Creature.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>()
                 },
-                drawPile = pState?.DrawPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
-                discardPile = pState?.DiscardPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
-                exhaustPile = pState?.ExhaustPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
+                drawPile = pState?.DrawPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, type = c.Type.ToString(), is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
+                discardPile = pState?.DiscardPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, type = c.Type.ToString(), is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
+                exhaustPile = pState?.ExhaustPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, type = c.Type.ToString(), is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
                 hand = pState?.Hand.Cards.Select(c => {
                     var dynamicVars = c.DynamicVars;
                     var firstEnemy = combatRoom.Enemies.FirstOrDefault(e => e.IsAlive);
@@ -616,6 +616,7 @@ public partial class MainFile : Node
                     {
                         id = c.Id.Entry,
                         name = c.Title,
+                        type = c.Type.ToString(),
                         isPlayable = c.CanPlay(),
                         is_generated = GetPropValue<object>(c, "DeckVersion", null) == null,
                         targetType = c.TargetType.ToString(),
