@@ -708,10 +708,11 @@ def trigger_restore():
 
     restored_reward = backup_manager.restore()
     if restored_reward is not None:
+        is_restoring = True # Set flag so predict_action knows to wait for MainMenu
         reward_tracker.session_cumulative_reward = restored_reward
         # Mark combat not initialized to allow re-initialization in the next step
         reward_tracker.combat_initialized = False
-        log(f"[Python] /restore: Restored reward tracker to {restored_reward:.2f}")
+        log(f"[Python] /restore: Restored reward tracker to {restored_reward:.2f}. is_restoring set to True.")
         return True
     return False
 
@@ -2244,7 +2245,6 @@ def compute_intermediate_reward(state, state_type, action_idx):
     current_floor = state.get("floor", 0)
     player_data = state.get("player", {}) or {}
     current_hp = int(player_data.get("hp", state.get("hp", 0)) or 0)
-    current_energy = int(player_data.get("energy", state.get("energy", 0)) or 0)
     enemies = state.get("enemies", []) or []
     current_enemy_hp = int(sum(e.get("hp", 0) for e in enemies if e.get("hp", 0) > 0 and not e.get("isMinion", False)) or 0)
 
@@ -2290,12 +2290,6 @@ def compute_intermediate_reward(state, state_type, action_idx):
         # Update trackers for next step
         reward_tracker.last_player_hp = current_hp
         reward_tracker.last_total_enemy_hp = current_enemy_hp
-
-    # Task 3: Energy efficiency reward (鼓励节省能量或尽早结束回合)
-    # 奖励值极小，仅作为打破僵局的 tie-breaker
-    if current_energy > 0:
-        energy_reward = current_energy * 1e-8
-        intermediate_reward += energy_reward
 
     # Battle Clear Reward
     if reward_tracker.last_state_type == "combat" and (state_type == "rewards" or state_type == "map"):

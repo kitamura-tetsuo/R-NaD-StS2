@@ -22,6 +22,29 @@ public class AiGameOverScreenHandler : IScreenHandler
         
         try 
         {
+            // NEW: Check for restoration availability before anything else.
+            // If the AI is active, we attempt to retry the run by restoring the latest backup.
+            if (AiSlayer.IsActive)
+            {
+                MainFile.Logger.Info("[AiGameOverScreenHandler] AI active. Checking for restoration/retry capability...");
+                
+                // Call bridge to restore save. This flushes the current trajectory as terminal first.
+                var restoreRes = await MainFile.Instance.CallBridgeSafe("trigger_restore");
+                if (restoreRes.VariantType == Variant.Type.Bool && (bool)restoreRes)
+                {
+                    MainFile.Logger.Info("[AiGameOverScreenHandler] Restoration successful. Forcing Return to Main Menu for retry.");
+                    await Task.Delay(2000, ct); // Brief pause to ensure state is settled
+
+                    var dict = new Godot.Collections.Dictionary { ["action"] = "return_to_main_menu" };
+                    await MainFile.Instance.ExecuteUniversalAction(dict);
+                    return;
+                }
+                else
+                {
+                    MainFile.Logger.Warn("[AiGameOverScreenHandler] Restoration failed or no backups available. Proceeding with regular Game Over flow.");
+                }
+            }
+
             // Notify AI of game over state. Execute the returned action (e.g. return_to_main_menu).
             bool stepped = await MainFile.Instance.StepAI(MainFile.Instance.ExecuteGameOverAction);
             
