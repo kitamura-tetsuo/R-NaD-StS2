@@ -594,7 +594,8 @@ public partial class MainFile : Node
                     energy = pState?.Energy ?? 0,
                     maxEnergy = pState?.MaxEnergy ?? 0,
                     stars = pState?.Stars ?? 0,
-                    powers = player?.Creature.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>()
+                    powers = player?.Creature.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>(),
+                    relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>()
                 },
                 drawPile = pState?.DrawPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, type = c.Type.ToString(), is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
                 discardPile = pState?.DiscardPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, type = c.Type.ToString(), is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
@@ -1125,6 +1126,7 @@ public partial class MainFile : Node
             hp = player.Creature?.CurrentHp ?? 0,
             maxHp = player.Creature?.MaxHp ?? 0,
             block = player.Creature?.Block ?? 0,
+            relics = player.Relics?.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
             energy = 0,
             gold = player.Gold
         };
