@@ -352,7 +352,7 @@ public partial class MainFile : Node
 
         // Even if AiSlayer is running its own loop, we poll StepAI periodically
         long currentTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-        if (currentTime - _lastPollTime > 500) // Poll every 500ms
+        if (currentTime - _lastPollTime > 125) // Poll every 125ms (Reduced from 500ms)
         {
             _lastPollTime = currentTime;
             var sw = System.Diagnostics.Stopwatch.StartNew();

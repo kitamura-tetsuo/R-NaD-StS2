@@ -128,8 +128,8 @@ async def process_state(data: Dict) -> Dict:
                 event_label = "COMBAT START"
                 event_color = "#ef4444"
                 turn_counter = 1
-            elif state_type == 'rewards' and prev_state_type == 'combat':
-                event_label = "VICTORY"
+            elif state_type == 'rewards' and prev_state_type != 'rewards':
+                event_label = "VICTORY / REWARDS" if prev_state_type == 'combat' else "REWARDS"
                 event_color = "#22c55e"
             elif state_type == 'map':
                 event_label = "MAP"

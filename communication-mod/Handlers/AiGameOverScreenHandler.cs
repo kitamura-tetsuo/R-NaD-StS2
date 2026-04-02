@@ -33,7 +33,7 @@ public class AiGameOverScreenHandler : IScreenHandler
                 if (restoreRes.VariantType == Variant.Type.Bool && (bool)restoreRes)
                 {
                     MainFile.Logger.Info("[AiGameOverScreenHandler] Restoration successful. Forcing Return to Main Menu for retry.");
-                    await Task.Delay(500, ct); // Brief pause to ensure state is settled (Reduced from 2000ms)
+                    await Task.Delay(125, ct); // Brief pause to ensure state is settled (Reduced from 500ms, originally 2000ms)
 
                     var dict = new Godot.Collections.Dictionary { ["action"] = "return_to_main_menu" };
                     await MainFile.Instance.ExecuteUniversalAction(dict);

@@ -3,7 +3,7 @@ import {
   ResponsiveContainer, LineChart, Line, CartesianGrid, ReferenceLine, Label, Tooltip, XAxis, YAxis, Legend
 } from 'recharts';
 import {
-  Heart, Zap, Layers, Shield,
+  Heart, Layers, Shield,
   ChevronRight, Activity, TrendingUp
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
@@ -78,6 +78,7 @@ const App: React.FC = () => {
   const prevStepIdRef = useRef<number | null>(null);
   const vMinRef = useRef<number>(Infinity);
   const vMaxRef = useRef<number>(-Infinity);
+  const globalCounterRef = useRef<number>(0);
 
   useEffect(() => {
     const connect = () => {
@@ -105,6 +106,7 @@ const App: React.FC = () => {
             setActionHistory([]);
             prevActionIdxRef.current = null;
             prevStepIdRef.current = null;
+            globalCounterRef.current = 0;
           }
         } else {
           vMinRef.current = Math.min(vMinRef.current, predicted_v, newData.cum_reward);
@@ -120,7 +122,7 @@ const App: React.FC = () => {
           const isNewAction = newData.action_idx !== prevActionIdxRef.current;
           const isNewState = prevStateRef.current?.type !== newData.state.type || prevStateRef.current?.floor !== newData.state.floor;
 
-          if (isNewStep || isNewAction || isNewState || actionHistory.length === 0) {
+          if (isNewStep || isNewAction || isNewState) {
             setActionHistory(prev => {
               const updated = [newData.top_actions, ...prev];
               return updated.slice(0, 5);
@@ -137,8 +139,10 @@ const App: React.FC = () => {
         }
 
         setHistory(prev => {
+          globalCounterRef.current += 1;
           const point: any = {
             time: timestamp,
+            idx: globalCounterRef.current,
             v: predicted_v,
             reward: newData.reward,
             cumReward: newData.cum_reward,
@@ -172,74 +176,16 @@ const App: React.FC = () => {
     </div>
   );
 
-  const { state, predicted_v } = data;
+  const { state } = data;
 
   return (
     <div className="min-h-screen bg-bg-dark text-gray-100 p-4 font-sans selection:bg-brand-primary/30">
-      {/* Header Stat Bar */}
-      <header className="grid grid-cols-5 gap-4 mb-6">
-        <StatCard
-          label="Floor"
-          value={state.floor}
-          icon={<ChevronRight className="w-4 h-4 text-brand-primary" />}
-          variant="normal"
-        />
-        <StatCard
-          label="Health"
-          value={`${state.player?.hp || 0}/${state.player?.maxHp || 0}`}
-          icon={<Heart className="w-4 h-4 text-red-500" />}
-          percent={state.player ? (state.player.hp / state.player.maxHp) * 100 : 0}
-          variant="health"
-        />
-        <StatCard
-          label="Energy"
-          value={state.player?.energy || 0}
-          icon={<Zap className="w-4 h-4 text-yellow-400" />}
-          variant="energy"
-        />
-        <StatCard
-          label="Block"
-          value={state.player?.block || 0}
-          icon={<Shield className="w-4 h-4 text-blue-400" />}
-          variant="block"
-        />
-        <StatCard
-          label="Value (V)"
-          value={predicted_v.toFixed(3)}
-          icon={<Activity className="w-4 h-4 text-brand-secondary" />}
-          variant="vvalue"
-        />
-      </header>
-
-      <main className="grid grid-cols-12 gap-6 items-start">
-        {/* Left: Card Piles (Vertical) - Full height, no scroll */}
-        <aside className="col-span-2 space-y-4 max-h-[calc(100vh-140px)] overflow-y-auto pr-2 custom-scrollbar">
-          <PileSection
-            title="Hand"
-            cards={state.hand || []}
-            icon={<Layers className="w-3 h-3 text-indigo-400" />}
-            color="indigo"
-            current
-          />
-          <PileSection
-            title="Draw"
-            cards={state.drawPile || []}
-            icon={<ChevronRight className="rotate-270 w-3 h-3 text-gray-400" />}
-            color="gray"
-          />
-          <PileSection
-            title="Discard"
-            cards={state.discardPile || []}
-            icon={<ChevronRight className="rotate-90 w-3 h-3 text-gray-400" />}
-            color="gray"
-          />
-        </aside>
-
-        {/* Center: Trend Charts - 7 columns */}
-        <div className="col-span-7 space-y-6">
+      <main className="grid grid-cols-10 gap-2 items-start">
+        {/* Left: Trend Charts - 8 columns (2/3) */}
+        <div className="col-span-6 space-y-6">
           <div className="flex flex-col gap-6">
             {/* Top Chart: V-Value Trend */}
-            <section className="glass p-4 min-h-[220px]">
+            <section className="glass p-4 min-h-[260px]">
               <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2">
                 <TrendingUp className="w-3 h-3" /> V-Value Trend
               </h3>
@@ -265,7 +211,7 @@ const App: React.FC = () => {
                       isAnimationActive={false}
                       name="Cum. Reward"
                     />
-                    <XAxis dataKey="time" hide />
+                    <XAxis dataKey="idx" hide />
                     <YAxis domain={[vMinRef.current - 0.05, vMaxRef.current + 0.05]} hide />
                     <CartesianGrid strokeDasharray="3 3" stroke="#222" />
                     <Tooltip
@@ -274,10 +220,11 @@ const App: React.FC = () => {
                     />
                     <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
-                      const matchedPoint = history.find(p => Math.abs(p.time - ev.time) < 0.001);
+                      // Find the first point that occurs at or after the event time
+                      const matchedPoint = history.find(p => p.time >= ev.time);
                       if (!matchedPoint) return null;
                       return (
-                        <ReferenceLine key={idx} x={matchedPoint.time} stroke={ev.color} strokeDasharray="4 4">
+                        <ReferenceLine key={idx} x={matchedPoint.idx} stroke={ev.color} strokeDasharray="4 4">
                           <Label value={ev.label} position="top" fill={ev.color} fontSize={8} fontWeight="bold" offset={5} />
                         </ReferenceLine>
                       );
@@ -295,7 +242,7 @@ const App: React.FC = () => {
               <div className="h-36 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={history} syncId="sts2-charts">
-                    <XAxis dataKey="time" hide />
+                    <XAxis dataKey="idx" hide />
                     <YAxis domain={[0, 'auto']} hide />
                     <CartesianGrid strokeDasharray="3 3" stroke="#222" />
                     <Tooltip
@@ -326,10 +273,12 @@ const App: React.FC = () => {
                     ))}
                     <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
-                      const matchedPoint = history.find(p => Math.abs(p.time - ev.time) < 0.001);
+                      const matchedPoint = history.find(p => p.time >= ev.time);
                       if (!matchedPoint) return null;
                       return (
-                        <ReferenceLine key={idx} x={matchedPoint.time} stroke={ev.color} strokeDasharray="4 4" />
+                        <ReferenceLine key={idx} x={matchedPoint.idx} stroke={ev.color} strokeDasharray="4 4">
+                           <Label value={ev.label} position="top" fill={ev.color} fontSize={8} fontWeight="bold" offset={5} />
+                        </ReferenceLine>
                       );
                     })}
                   </LineChart>
@@ -345,7 +294,7 @@ const App: React.FC = () => {
               <div className="h-36 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={history} syncId="sts2-charts">
-                    <XAxis dataKey="time" hide />
+                    <XAxis dataKey="idx" hide />
                     <YAxis hide />
                     <CartesianGrid strokeDasharray="3 3" stroke="#222" />
                     <Tooltip
@@ -365,17 +314,18 @@ const App: React.FC = () => {
                       dataKey="incoming"
                       stroke="#f97316"
                       strokeWidth={2}
-                      strokeDasharray="5 5"
                       dot={false}
                       isAnimationActive={false}
                       name="Incoming Damage"
                     />
                     <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
-                      const matchedPoint = history.find(p => Math.abs(p.time - ev.time) < 0.001);
+                      const matchedPoint = history.find(p => p.time >= ev.time);
                       if (!matchedPoint) return null;
                       return (
-                        <ReferenceLine key={idx} x={matchedPoint.time} stroke={ev.color} strokeDasharray="4 4" />
+                        <ReferenceLine key={idx} x={matchedPoint.idx} stroke={ev.color} strokeDasharray="4 4">
+                           <Label value={ev.label} position="top" fill={ev.color} fontSize={8} fontWeight="bold" offset={5} />
+                        </ReferenceLine>
                       );
                     })}
                   </LineChart>
@@ -385,9 +335,32 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Sidebar: AI Action History Pipeline - 3 columns */}
-        <aside className="col-span-3 space-y-4">
-          <h3 className="text-sm font-bold uppercase tracking-wider text-gray-500 mb-4 flex items-center gap-2 px-2">
+        {/* Right: Card Piles (Vertical) - 2 columns */}
+        <aside className="col-span-2 space-y-4 max-h-[calc(100vh-140px)] overflow-y-auto pr-2 custom-scrollbar">
+          <PileSection
+            title="Hand"
+            cards={state.hand || []}
+            icon={<Layers className="w-3 h-3 text-indigo-400" />}
+            color="indigo"
+            current
+          />
+          <PileSection
+            title="Draw"
+            cards={state.drawPile || []}
+            icon={<ChevronRight className="rotate-270 w-3 h-3 text-gray-400" />}
+            color="gray"
+          />
+          <PileSection
+            title="Discard"
+            cards={state.discardPile || []}
+            icon={<ChevronRight className="rotate-90 w-3 h-3 text-gray-400" />}
+            color="gray"
+          />
+        </aside>
+
+        {/* Far Right: AI Action History Pipeline - 2 columns */}
+        <aside className="col-span-2 space-y-4">
+          <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2 px-2">
             <Activity className="w-4 h-4 text-brand-secondary" /> Action Timeline
           </h3>
           <div className="space-y-4">
@@ -412,13 +385,13 @@ const App: React.FC = () => {
                     )}>
                       <div className="flex justify-between items-end leading-none">
                         <span className={cn(
-                          "text-xs truncate max-w-[80%]",
+                          "text-[10px] truncate max-w-[80%]",
                           action.isSelected ? "text-brand-secondary font-bold" : "text-gray-200 font-medium"
                         )}>
                           {action.isSelected ? '▶ ' : ''}{action.name}
                         </span>
                         <span className={cn(
-                          "text-[10px] font-mono",
+                          "text-[8px] font-mono",
                           action.isSelected ? "text-brand-secondary font-bold" : "text-gray-400"
                         )}>
                           {(action.prob * 100).toFixed(0)}%
@@ -456,24 +429,6 @@ const App: React.FC = () => {
   );
 };
 
-const StatCard = ({ label, value, icon, percent }: any) => {
-  return (
-    <div className="glass p-4 relative overflow-hidden group">
-      <div className="flex items-center gap-3 mb-1">
-        <div className="p-2 bg-white/5 rounded-lg group-hover:bg-white/10 transition-colors">
-          {icon}
-        </div>
-        <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">{label}</span>
-      </div>
-      <div className="text-2xl font-mono tracking-tight font-semibold">
-        {value}
-      </div>
-      {percent !== undefined && (
-        <div className="absolute bottom-0 left-0 h-[2px] bg-red-600 transition-all duration-100" style={{ width: `${percent}%` }} />
-      )}
-    </div>
-  );
-};
 
 const PileSection = ({ title, cards, icon, current }: any) => {
   // If it's a list of strings, convert to objects

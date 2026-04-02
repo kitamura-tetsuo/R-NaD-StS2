@@ -2302,13 +2302,13 @@ def compute_intermediate_reward(state, state_type, action_idx):
         last_hp = reward_tracker.last_player_hp
         last_enemy_hp = reward_tracker.last_total_enemy_hp
         
-        # Task 2: Fix combat reward logic (damage dealt/taken clamping)
-        # Prevent negative rewards for enemy heals/summons or player heals
+        # Combat delta reward: Reward damage dealt and HP changes
+        # Enemy HP: Only reward damage dealt (don't penalize enemy heals/summons)
         damage_dealt = max(0.0, float(last_enemy_hp - current_enemy_hp))
-        damage_taken = max(0.0, float(last_hp - current_hp))
+        # Player HP: Reward both damage taken (penalty) and healing (reward) at the same ratio (0.015)
+        hp_delta = float(current_hp - last_hp)
         
-        # Reward for damage dealt (0.002) and PENALTY for damage taken (-0.015, tripled per request)
-        combat_reward = (damage_dealt * 0.002) - (damage_taken * 0.015)
+        combat_reward = (damage_dealt * 0.002) + (hp_delta * 0.015)
         
         if abs(combat_reward) > 1e-6:
             intermediate_reward += combat_reward

@@ -109,7 +109,7 @@ public class AiSlayer
                 MainFile.Logger.Error($"[AiSlayer] Run iteration failed: {ex.Message}\n{ex.StackTrace}");
                 await Task.Delay(5000, ct); // Wait before retrying on error
             }
-            await Task.Delay(250, ct); // Reduced from 1000ms
+            await Task.Delay(60, ct); // Reduced from 250ms (originally 1000ms)
         }
         
         IsActive = false;
@@ -227,7 +227,7 @@ public class AiSlayer
                 MainFile.Logger.Info($"[AiSlayer] Skipping map navigation because floor already advanced from {floorAtStart} to {currentFloor}.");
             }
             
-            await Task.Delay(500, ct);
+            await Task.Delay(125, ct); // Reduced from 500ms
         }
     }
 
@@ -292,7 +292,7 @@ public class AiSlayer
         
         MainFile.Logger.Info($"[AiSlayer] Selecting character: {charBtn.Character.Id}");
         charBtn.Select();
-        await Task.Delay(100, ct);
+        await Task.Delay(25, ct); // Reduced from 100ms
 
         NButton confirmBtn = await WaitHelper.ForNode<NButton>(charSelectScreen, "ConfirmButton", ct, TimeSpan.FromSeconds(5));
         await UiHelper.Click(confirmBtn);
@@ -333,7 +333,7 @@ public class AiSlayer
             }
             await handler.HandleAsync(_random, ct);
             
-            await Task.Delay(200, ct);
+            await Task.Delay(50, ct); // Reduced from 200ms
             
             // Re-check validity after await
             if (instance == null || !GodotObject.IsInstanceValid(instance)) break;
