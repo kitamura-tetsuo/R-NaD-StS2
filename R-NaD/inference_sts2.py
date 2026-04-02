@@ -15,6 +15,21 @@ def cleanup_processes():
     except Exception:
         pass
 
+def launch_ui():
+    print("[Inference] Launching Live Inference UI (Streamlit)...")
+    ui_script = os.path.join(os.path.dirname(__file__), "live_ui.py")
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Launch streamlit in the background using the project's venv
+    streamlit_path = os.path.join(os.path.dirname(__file__), "venv/bin/streamlit")
+    ui_process = subprocess.Popen(
+        [streamlit_path, "run", ui_script, "--server.port", "8502", "--server.headless", "true"],
+        stdout=open(os.path.join(log_dir, "ui_inference_stdout.log"), "w"),
+        stderr=open(os.path.join(log_dir, "ui_inference_stderr.log"), "w")
+    )
+    return ui_process
+
 def play_game(seed=None, route=False, multiple_move=True):
     print(f"=== Starting R-NaD Inference (Headed) Seed={seed} Route={route} MultipleMove={multiple_move} ===")
     cleanup_processes()
@@ -158,10 +173,21 @@ if __name__ == "__main__":
     parser.add_argument("--route", action="store_true", help="Always choose the map room with the smallest index")
     parser.add_argument("--one-move", action="store_true", help="Use standard single-move decision making")
     parser.add_argument("--multiple-move", action="store_true", help="Use lookahead-based multiple-move decision making (default)")
+    parser.add_argument("--ui", action="store_true", help="Launch the Live Inference Monitor (Streamlit)")
     args = parser.parse_args()
     
+    ui_proc = None
+    if args.ui:
+        ui_proc = launch_ui()
+        print("[Inference] Live UI started at http://localhost:8502")
+
     if args.seed is None:
         args.seed = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
     
     multiple_move = not args.one_move
-    play_game(seed=args.seed, route=args.route, multiple_move=multiple_move)
+    try:
+        play_game(seed=args.seed, route=args.route, multiple_move=multiple_move)
+    finally:
+        if ui_proc:
+            print("[Inference] Stopping Live UI...")
+            ui_proc.terminate()

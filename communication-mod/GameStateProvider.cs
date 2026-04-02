@@ -79,7 +79,14 @@ public partial class MainFile : Node
         if (runState == null) {
             // If runState is null, it means we are likely in the main menu or transitioning.
             // For the AI bridge, reporting this as game_over allows for a clean reset of trajectories.
-            return "{\"type\":\"game_over\", \"floor\": 0, \"victory\": false, \"reason\": \"main_menu\"}";
+            bool canContinue = MegaCrit.Sts2.Core.Saves.SaveManager.Instance.HasRunSave;
+            return System.Text.Json.JsonSerializer.Serialize(new { 
+                type = "game_over", 
+                floor = 0, 
+                victory = false, 
+                reason = "main_menu",
+                can_continue = canContinue 
+            }, JsonOptions);
         }
 
         string currentSeed = runState.Rng.StringSeed;
@@ -333,7 +340,8 @@ public partial class MainFile : Node
                         id = model?.Id.Entry ?? "unknown",
                         upgraded = model != null && (GetPropValue(model, "IsUpgraded", false) || GetPropValue(model, "TimesUpgraded", 0) > 0),
                         cost = model != null ? GetPropValue(model, "BaseCost", 0) : 0,
-                        selected = isSelected
+                        selected = isSelected,
+                        is_generated = model != null && GetPropValue<object>(model, "DeckVersion", null) == null
                     });
                 }
             }
@@ -464,7 +472,8 @@ public partial class MainFile : Node
                             cards.Add(new { 
                                 index = i, 
                                 name = model?.Title ?? "Unknown",
-                                selected = selectedCards != null && selectedCards.Contains(model)
+                                selected = selectedCards != null && selectedCards.Contains(model),
+                                is_generated = model != null && GetPropValue<object>(model, "DeckVersion", null) == null
                             });
                         }
                     }
@@ -574,9 +583,9 @@ public partial class MainFile : Node
                     stars = pState?.Stars ?? 0,
                     powers = player?.Creature.Powers.Select(p => (object)new { id = p.Id.Entry, amount = p.Amount }).ToList() ?? new List<object>()
                 },
-                drawPile = pState?.DrawPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
-                discardPile = pState?.DiscardPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
-                exhaustPile = pState?.ExhaustPile.Cards.Select(c => c.Id.Entry).ToList() ?? new List<string>(),
+                drawPile = pState?.DrawPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
+                discardPile = pState?.DiscardPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
+                exhaustPile = pState?.ExhaustPile.Cards.Select(c => (object)new { id = c.Id.Entry, name = c.Title, is_generated = GetPropValue<object>(c, "DeckVersion", null) == null }).ToList() ?? new List<object>(),
                 hand = pState?.Hand.Cards.Select(c => {
                     var dynamicVars = c.DynamicVars;
                     var firstEnemy = combatRoom.Enemies.FirstOrDefault(e => e.IsAlive);
@@ -608,6 +617,7 @@ public partial class MainFile : Node
                         id = c.Id.Entry,
                         name = c.Title,
                         isPlayable = c.CanPlay(),
+                        is_generated = GetPropValue<object>(c, "DeckVersion", null) == null,
                         targetType = c.TargetType.ToString(),
                         baseDamage = bDmg,
                         baseBlock = bBlk,

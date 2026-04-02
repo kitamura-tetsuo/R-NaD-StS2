@@ -416,6 +416,10 @@ public partial class MainFile : Node
                 string seed = dict.ContainsKey("seed") ? dict["seed"].AsString() : "";
                 StartSts2Run(seed);
             }
+            else if (command == "continue_game")
+            {
+                ContinueSts2Run();
+            }
         }
     }
 
@@ -486,6 +490,67 @@ public partial class MainFile : Node
         catch (Exception ex)
         {
             Logger.Error($"[AutoAI] StartSts2RunDeferred error: {ex.Message}");
+        }
+        finally
+        {
+            _isStartingRun = false;
+        }
+    }
+
+    public void ContinueSts2Run()
+    {
+        var ngame = NGame.Instance;
+        if (ngame != null)
+        {
+            CallDeferred(nameof(ContinueSts2RunDeferred));
+        }
+    }
+
+    private async void ContinueSts2RunDeferred()
+    {
+        try
+        {
+            if (_isStartingRun)
+            {
+                Logger.Info("[AutoAI] ContinueSts2RunDeferred: Already starting a run, skipping duplicate request.");
+                return;
+            }
+
+            _aiSlayer?.Stop();
+
+            var ngame = NGame.Instance;
+            if (ngame == null) return;
+
+            if (!SaveManager.Instance.HasRunSave)
+            {
+                Logger.Error("[AutoAI] ContinueSts2RunDeferred: No save file found.");
+                return;
+            }
+
+            _isStartingRun = true;
+
+            var saveData = SaveManager.Instance.LoadRunSave();
+            if (saveData == null || !saveData.Success || saveData.SaveData == null)
+            {
+                Logger.Error("[AutoAI] ContinueSts2RunDeferred: Failed to load save.");
+                return;
+            }
+
+            var serializableRun = saveData.SaveData;
+            var runState = RunState.FromSerializable(serializableRun);
+            RunManager.Instance.SetUpSavedSinglePlayer(runState, serializableRun);
+
+            Logger.Info($"[AutoAI] Continuing run with character: {serializableRun.Players[0].CharacterId}");
+
+            NGame.Instance.ReactionContainer.InitializeNetworking(new MegaCrit.Sts2.Core.Multiplayer.NetSingleplayerGameService());
+            await NGame.Instance.LoadRun(runState, serializableRun.PreFinishedRoom);
+
+            Logger.Info("[AutoAI] Run resumed. Starting AI loop.");
+            _aiSlayer?.Start("");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[AutoAI] ContinueSts2RunDeferred error: {ex.Message}");
         }
         finally
         {

@@ -560,6 +560,7 @@ def do_deferred_imports():
 # Global state
 log(f"--- RNAD_BRIDGE MODULE IMPORTED --- PID: {os.getpid()}")
 learning_active = False
+can_continue_status = None
 
 # Trajectory and Training Worker globals (need to be defined before preservation logic)
 experience_queue = queue.Queue()
@@ -1185,6 +1186,29 @@ class RawTrajectoryLogger:
             })
             if terminal:
                 self.flush()
+
+            # NEW: Write to live_state.json for real-time monitoring
+            try:
+                import json as json_lib
+                live_data = {
+                    "state": json_lib.loads(state_json) if isinstance(state_json, str) else state_json,
+                    "action_idx": int(action_idx),
+                    "probs": probs.tolist() if hasattr(probs, "tolist") else list(probs),
+                    "predicted_v": float(predicted_v),
+                    "reward": float(reward),
+                    "terminal": terminal,
+                    "timestamp": time.time(),
+                    "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
+                }
+                live_path = os.path.abspath(os.path.join(self.trajectory_dir, "../tmp/live_state.json"))
+                os.makedirs(os.path.dirname(live_path), exist_ok=True)
+                
+                tmp_live_path = live_path + ".tmp"
+                with open(tmp_live_path, "w") as f:
+                    json_lib.dump(live_data, f)
+                os.replace(tmp_live_path, live_path)
+            except Exception:
+                pass
 
     def flush(self, force_terminal=False):
         if not self.current_episode:
@@ -2545,6 +2569,7 @@ def check_commands():
     return json.dumps({"action": "wait"})
 
 def predict_action(state_json):
+    global can_continue_status
     global is_restoring
     t0 = time.time()
     do_deferred_imports()
@@ -2558,6 +2583,8 @@ def predict_action(state_json):
     try:
         t_json_start = time.time()
         state = json.loads(state_json)
+        if "can_continue" in state:
+            can_continue_status = state["can_continue"]
         t_json = time.time() - t_json_start
         state_type = state.get("type", "unknown")
         
@@ -3137,6 +3164,7 @@ class CommandHandler(BaseHTTPRequestHandler):
                 
             self.wfile.write(json.dumps({
                 "learning_active": learning_active,
+                "can_continue": can_continue_status,
                 "queue_size": total_queue_size,
                 "has_deferred": deferred_chunk is not None,
                 "traj_size": len(current_trajectory),
@@ -3387,6 +3415,14 @@ class CommandHandler(BaseHTTPRequestHandler):
                 log(f"Updated current_seed to: {current_seed}")
             
             cmd = f"start_game:{current_seed}" if current_seed else "start_game"
+            command_queue.put(cmd)
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "queued", "command": cmd}).encode())
+            
+        elif parsed_path.path == "/continue_game":
+            cmd = "continue_game"
             command_queue.put(cmd)
             self.send_response(200)
             self.send_header("Content-type", "application/json")

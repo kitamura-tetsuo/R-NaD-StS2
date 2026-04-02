@@ -84,6 +84,33 @@ def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headl
     )
     return process
 
+def launch_ui():
+    logging.info("Launching Real-time Inference UI (FastAPI + React)...")
+    base_dir = os.path.dirname(__file__)
+    server_script = os.path.join(base_dir, "live_ui_server.py")
+    web_dir = os.path.join(base_dir, "live_ui_web")
+    log_dir = os.path.join(base_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # 1. Launch FastAPI Backend
+    python_path = os.path.join(base_dir, "venv/bin/python")
+    backend_process = subprocess.Popen(
+        [python_path, server_script],
+        stdout=open(os.path.join(log_dir, "ui_backend_stdout.log"), "w"),
+        stderr=open(os.path.join(log_dir, "ui_backend_stderr.log"), "w")
+    )
+    
+    # 2. Launch Vite Frontend
+    # Use npm run dev and specify the port to be sure
+    frontend_process = subprocess.Popen(
+        ["npm", "run", "dev", "--", "--port", "5173", "--host"],
+        cwd=web_dir,
+        stdout=open(os.path.join(log_dir, "ui_frontend_stdout.log"), "w"),
+        stderr=open(os.path.join(log_dir, "ui_frontend_stderr.log"), "w")
+    )
+    
+    return [backend_process, frontend_process]
+
 def wait_for_server(url, timeout=60):
     logging.info(f"Waiting for server at {url} to become available...")
     start_time = time.time()
@@ -513,8 +540,8 @@ def main():
     parser.add_argument("--headless", action="store_true", help="Run the game in headless mode")
     parser.add_argument("--offline", action="store_true", help="Enable offline training from trajectories/replays on first launch")
     parser.add_argument("--mask-card-skip", action="store_true", help="Mask Skip in post-combat card rewards")
+    parser.add_argument("--ui", action="store_true", help="Launch the Live Inference Monitor (Streamlit)")
     args = parser.parse_args()
-    
     
     cleanup_processes()
     
@@ -551,6 +578,11 @@ def main():
                     logging.info("No MLflow run found, starting fresh.")
             else:
                 logging.info("No MLflow run found, starting fresh.")
+
+    ui_procs = None
+    if args.ui:
+        ui_procs = launch_ui()
+        logging.info("Real-time UI started at http://localhost:5173")
 
     process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless, offline=args.offline, mask_card_skip=args.mask_card_skip)
 
@@ -608,11 +640,31 @@ def main():
             process, checkpoint = perform_restart(process, checkpoint, args)
             # Re-enter the loop after restart
             
-        logging.info(f"Starting new game{' with seed ' + args.seed if args.seed else ''}...")
-        new_game_url = "http://127.0.0.1:8081/new_game"
-        if args.seed:
-            new_game_url += f"?seed={args.seed}"
-        requests.get(new_game_url)
+        # Wait for game client to report continuation status
+        logging.info("Waiting for game client to report continuation status...")
+        can_continue = None
+        status_wait_start = time.time()
+        while time.time() - status_wait_start < 60: # 60 second timeout
+            try:
+                status_resp = requests.get("http://127.0.0.1:8081/status", timeout=5).json()
+                can_continue = status_resp.get("can_continue")
+                if can_continue is not None:
+                    break
+            except Exception as e:
+                pass
+            time.sleep(2)
+            
+        if can_continue:
+            logging.info("Continue-able run found. Resuming existing run...")
+            requests.get("http://127.0.0.1:8081/continue_game")
+        else:
+            if can_continue is None:
+                logging.warning("Timed out waiting for continuation status. Defaulting to new game.")
+            logging.info(f"Starting new game{' with seed ' + args.seed if args.seed else ''}...")
+            new_game_url = "http://127.0.0.1:8081/new_game"
+            if args.seed:
+                new_game_url += f"?seed={args.seed}"
+            requests.get(new_game_url)
 
         # Wait for the first game to actually start and generate a seed
         logging.info("Waiting 60 seconds for first game to initialize...")
@@ -727,6 +779,9 @@ def main():
             requests.get("http://127.0.0.1:8081/stop")
         except Exception:
             pass
+        if ui_procs:
+            for p in ui_procs:
+                p.terminate()
         process.terminate()
         try:
             process.wait(timeout=5)
