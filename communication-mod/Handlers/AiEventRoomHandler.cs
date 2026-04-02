@@ -192,7 +192,7 @@ public class AiEventRoomHandler : IRoomHandler
         await WaitHelper.Until(() => {
             room = UiHelper.FindFirst<NEventRoom>(root);
             return room != null;
-        }, ct, TimeSpan.FromSeconds(30), "Event room not found");
+        }, ct, TimeSpan.FromSeconds(5), "Event room not found"); // Reduced from 30s to 5s
         return room;
     }
 
@@ -214,7 +214,7 @@ public class AiEventRoomHandler : IRoomHandler
         }
 
         await WaitHelper.Until(() => UiHelper.FindAll<NEventOptionButton>(eventRoom).Count > 0 || CombatManager.Instance.IsInProgress, 
-            ct, TimeSpan.FromSeconds(30), "Event options not loaded");
+            ct, TimeSpan.FromSeconds(2), "Event room options or combat did not appear"); // Reduced from 15s to 2s
         
         return false;
     }

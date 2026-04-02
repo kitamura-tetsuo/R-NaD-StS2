@@ -41,7 +41,7 @@ public class AiMapScreenHandler : IHandler
             }
             
             return false;
-        }, ct, TimeSpan.FromSeconds(15), "Map screen not open");
+        }, ct, TimeSpan.FromSeconds(2), "Map screen not open"); // Reduced from 15s to 2s for 18s -> 2s wait reduction target
 
         // Extra check: if we broke out of Until because of an overlay, drain it now
         if (!(MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false))

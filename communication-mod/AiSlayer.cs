@@ -107,7 +107,7 @@ public class AiSlayer
             catch (Exception ex)
             {
                 MainFile.Logger.Error($"[AiSlayer] Run iteration failed: {ex.Message}\n{ex.StackTrace}");
-                await Task.Delay(5000, ct); // Wait before retrying on error
+                await Task.Delay(500, ct); // Reduced from 5000ms for faster retry after error (originally 20000ms)
             }
             await Task.Delay(60, ct); // Reduced from 250ms (originally 1000ms)
         }
@@ -125,13 +125,12 @@ public class AiSlayer
         _watchdog = new Watchdog();
         
         // Wait for EITHER Main Menu OR Run state to appear (handling race condition with programmatic start)
-        MainFile.Logger.Info("[AiSlayer] Stage: Waiting for MainMenu or active Run...");
         await WaitHelper.Until(() => {
             var root = ((Node)(object)((SceneTree)Engine.GetMainLoop()).Root);
             bool hasMenu = root.GetNodeOrNull("Game/RootSceneContainer/MainMenu") != null;
             bool inRun = RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom != null;
             return hasMenu || inRun;
-        }, ct, TimeSpan.FromSeconds(15), "Neither MainMenu nor Run state appeared");
+        }, ct, TimeSpan.FromSeconds(2), "Neither MainMenu nor Run state appeared"); // Reduced from 15s to 2s to minimize 18s wait target
 
         bool runActive = RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom != null;
         if (!runActive)
@@ -155,7 +154,7 @@ public class AiSlayer
         }
 
         MainFile.Logger.Info("[AiSlayer] Stage: Wait for Run state");
-        await WaitHelper.Until(() => RunManager.Instance?.DebugOnlyGetState() != null, ct, TimeSpan.FromSeconds(30), "Run state not initialized");
+        await WaitHelper.Until(() => RunManager.Instance?.DebugOnlyGetState() != null, ct, TimeSpan.FromSeconds(5), "Run state not initialized"); // Reduced from 30s to 5s
         
         MainFile.Logger.Info("[AiSlayer] Stage: Wait for room/intro");
         await WaitHelper.Until(() => {
@@ -235,7 +234,7 @@ public class AiSlayer
     {
         MainFile.Logger.Info("[AiSlayer] Playing main menu...");
         Node root = (Node)(object)((SceneTree)Engine.GetMainLoop()).Root;
-        Control mainMenu = await WaitHelper.ForNode<Control>(root, "/root/Game/RootSceneContainer/MainMenu", ct, TimeSpan.FromSeconds(30));
+        Control mainMenu = await WaitHelper.ForNode<Control>(root, "/root/Game/RootSceneContainer/MainMenu", ct, TimeSpan.FromSeconds(5)); // Reduced from 30s to 5s
         
         // Preference order: Continue > Start seeded > Standard
         NButton continueBtn = mainMenu.GetNodeOrNull<NButton>(new NodePath("MainMenuTextButtons/ContinueButton"));
@@ -292,7 +291,7 @@ public class AiSlayer
         
         MainFile.Logger.Info($"[AiSlayer] Selecting character: {charBtn.Character.Id}");
         charBtn.Select();
-        await Task.Delay(25, ct); // Reduced from 100ms
+        await Task.Delay(25, ct);
 
         NButton confirmBtn = await WaitHelper.ForNode<NButton>(charSelectScreen, "ConfirmButton", ct, TimeSpan.FromSeconds(5));
         await UiHelper.Click(confirmBtn);
@@ -333,7 +332,7 @@ public class AiSlayer
             }
             await handler.HandleAsync(_random, ct);
             
-            await Task.Delay(50, ct); // Reduced from 200ms
+            await Task.Delay(50, ct);
             
             // Re-check validity after await
             if (instance == null || !GodotObject.IsInstanceValid(instance)) break;

@@ -36,7 +36,7 @@ public class AiCombatRoomHandler : IRoomHandler
             }
             
             return false;
-        }, ct, TimeSpan.FromSeconds(30), "Combat not started");
+        }, ct, TimeSpan.FromSeconds(5), "Event room not found"); // Reduced from 30s to 5s
         
         int turnCount = 0;
         while (CombatManager.Instance.IsInProgress && turnCount < 100)
@@ -50,7 +50,7 @@ public class AiCombatRoomHandler : IRoomHandler
                 !CombatManager.Instance.IsInProgress ||
                 (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0) ||
                 (NPlayerHand.Instance != null && NPlayerHand.Instance.IsInCardSelection), 
-                ct, TimeSpan.FromSeconds(30), "Play phase not started");
+                ct, TimeSpan.FromSeconds(5), "Play phase not started"); // Reduced from 30s to 5s
             
             if (!CombatManager.Instance.IsInProgress) break;
 
@@ -94,7 +94,7 @@ public class AiCombatRoomHandler : IRoomHandler
             }
         }
 
-        await WaitHelper.Until(() => !CombatManager.Instance.IsInProgress, ct, TimeSpan.FromSeconds(30), "Combat did not end");
+        await WaitHelper.Until(() => !CombatManager.Instance.IsInProgress, ct, TimeSpan.FromSeconds(5), "Combat did not end"); // Reduced from 30s to 5s
         MainFile.Logger.Info("[AiSlayer] Combat finished");
     }
 }

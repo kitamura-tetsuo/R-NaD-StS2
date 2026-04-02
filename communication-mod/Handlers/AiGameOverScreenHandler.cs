@@ -69,7 +69,7 @@ public class AiGameOverScreenHandler : IScreenHandler
                     if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree()) return true;
                     continueButton = UiHelper.FindFirst<NGameOverContinueButton>(screen);
                     return continueButton != null && continueButton.IsEnabled;
-                }, ct, TimeSpan.FromSeconds(30), "Continue button did not become ready");
+                }, ct, TimeSpan.FromSeconds(2), "Continue button did not become ready"); // Reduced from 30s to 2s
             } catch (Exception ex) {
                 MainFile.Logger.Warn($"[AiGameOverScreenHandler] Continue button wait failed: {ex.Message}. Screen might be auto-closed.");
             }
@@ -92,7 +92,7 @@ public class AiGameOverScreenHandler : IScreenHandler
                     }
                     mainMenuButton = UiHelper.FindFirst<NReturnToMainMenuButton>(screen);
                     return mainMenuButton != null && mainMenuButton.Visible && mainMenuButton.IsEnabled;
-                }, ct, TimeSpan.FromSeconds(30), "Main menu button did not become enabled");
+                }, ct, TimeSpan.FromSeconds(2), "Main menu button did not become enabled"); // Reduced from 30s to 2s
             } catch (Exception ex) {
                 MainFile.Logger.Warn($"[AiGameOverScreenHandler] Main menu button wait failed: {ex.Message}");
             }
@@ -109,7 +109,7 @@ public class AiGameOverScreenHandler : IScreenHandler
                 await UiHelper.Click(mainMenuButton);
             }
 
-            await WaitHelper.Until(() => !GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree(), ct, TimeSpan.FromSeconds(15), "Game over screen did not close");
+            await WaitHelper.Until(() => !GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree(), ct, TimeSpan.FromSeconds(2), "Game over screen did not close"); // Reduced from 15s to 2s
             MainFile.Logger.Info("[AiGameOverScreenHandler] Game Over screen closed normally.");
         }
         catch (Exception ex)
