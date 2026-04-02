@@ -19,6 +19,7 @@ public class AiCombatRoomHandler : IRoomHandler
 {
     public RoomType[] HandledTypes => new[] { RoomType.Monster, RoomType.Elite, RoomType.Boss };
     public TimeSpan Timeout => TimeSpan.FromMinutes(10);
+    private bool _hasValidBackup = false;
 
     public async Task HandleAsync(Rng random, CancellationToken ct)
     {
@@ -39,6 +40,7 @@ public class AiCombatRoomHandler : IRoomHandler
         }, ct, TimeSpan.FromSeconds(5), "Event room not found"); // Reduced from 30s to 5s
         
         int turnCount = 0;
+        _hasValidBackup = false;
         while (CombatManager.Instance.IsInProgress && turnCount < 100)
         {
             ct.ThrowIfCancellationRequested();
@@ -87,10 +89,15 @@ public class AiCombatRoomHandler : IRoomHandler
                 actionsInTurn++;
             }
 
-            if (turnCount == 1)
+            if (!_hasValidBackup)
             {
-                MainFile.Logger.Info("[AiCombatRoomHandler] End of Turn 1. Requesting save backup via Rust bridge...");
-                await MainFile.Instance.CallBridgeSafe("trigger_backup");
+                MainFile.Logger.Info($"[AiCombatRoomHandler] End of Turn {turnCount}. Requesting save backup...");
+                var result = await MainFile.Instance.CallBridgeSafe("trigger_backup");
+                if (result.AsBool())
+                {
+                    MainFile.Logger.Info($"[AiCombatRoomHandler] Combat backup verified successfully on Turn {turnCount}.");
+                    _hasValidBackup = true;
+                }
             }
         }
 

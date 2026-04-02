@@ -610,9 +610,10 @@ class BackupManager:
         """Create a backup if the state has changed."""
         if self.stack:
             last_backup = self.stack[-1]["path"]
-            if self._are_saves_identical(last_backup):
-                log(f"[BackupManager] Saves are identical to latest backup ({os.path.basename(last_backup)}). Skipping.")
-                return False
+            if (self._are_saves_identical(last_backup)):
+                log(f"[BackupManager] Saves identical to latest backup. Checking combat status.")
+                # Return True only if the last one was already a combat save.
+                return self._is_combat_save(last_backup)
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_dir = os.path.join(self.backup_root, f"backup_{timestamp}")
@@ -639,15 +640,55 @@ class BackupManager:
                 "reward": current_reward
             })
             log(f"[BackupManager] Created new backup at {backup_dir}. Stack size: {len(self.stack)}")
-            return True
+            # Verify if the new backup is a combat save
+            is_combat = self._is_combat_save(backup_dir)
+            if not is_combat:
+                log(f"[BackupManager] Warning: Created backup is not a combat save. Will retry next turn.")
+            return is_combat
         except Exception as e:
             log(f"[BackupManager] ERROR during backup: {e}")
+            return False
+
+    def _is_combat_save(self, backup_dir):
+        """Check if the backup contains an active combat state."""
+        # The saves are directly under AppData or UserData in our backup structure
+        save_path = os.path.join(backup_dir, "AppData", "current_run.save")
+        if not os.path.exists(save_path):
+            save_path = os.path.join(backup_dir, "UserData", "current_run.save")
+            if not os.path.exists(save_path):
+                return False
+        
+        try:
+            with open(save_path, "r") as f:
+                data = json.load(f)
+                pfr = data.get("pre_finished_room")
+                if pfr is None:
+                    return False
+                
+                # is_pre_finished: true means rewards are showing or battle is over.
+                # We want active battle (false).
+                return not pfr.get("is_pre_finished", True)
+        except Exception as e:
+            log(f"[BackupManager] _is_combat_save: Error checking {save_path}: {e}")
             return False
 
     def restore(self):
         """Restore the latest valid backup, backtracking if necessary."""
         while self.stack:
             latest = self.stack[-1]
+            
+            # Check if this backup is a valid combat save.
+            # If not, it means we took a backup at a reward screen or map by mistake.
+            if not self._is_combat_save(latest["path"]):
+                log(f"[BackupManager] Skipping non-combat/finished backup: {os.path.basename(latest['path'])}. Backtracking...")
+                self.stack.pop()
+                if os.path.exists(latest["path"]):
+                    try:
+                        shutil.rmtree(latest["path"])
+                    except Exception as e:
+                        log(f"[BackupManager] Warning: failed to delete skipped backup: {e}")
+                continue
+
             if latest["retry_count"] < self.max_retries:
                 # Perform restoration
                 log(f"[BackupManager] Restoring {os.path.basename(latest['path'])} (Retry {latest['retry_count']+1}/{self.max_retries})")
