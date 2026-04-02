@@ -137,6 +137,9 @@ async def process_state(data: Dict) -> Dict:
             elif state_type == 'event':
                 event_label = "EVENT"
                 event_color = "#a855f7"
+            elif state_type == 'game_over':
+                event_label = "GAME OVER"
+                event_color = "#f87171" # Light red
         elif state_type == 'combat':
             if prev_action_idx == 75:
                 turn_counter += 1

@@ -2257,7 +2257,7 @@ def compute_reward(state, state_type=None):
     """Compute the reward for the current state.
     This is now a final reward: returns 0.0 unless the state is game_over.
     """
-    if state_type != "game_over":
+    if state_type != "game_over" or reward_tracker.episode_end_recorded:
         return 0.0
     
     # Final reward: Victory or Defeat
@@ -2624,8 +2624,12 @@ def predict_action(state_json):
                     experience_queue.put(list(current_trajectory))
                     current_trajectory = []
                 
-                # Reset reward for next episode
-                reward_tracker.reset_for_next_episode()
+                # Apply penalty to session cumulative reward for UI visibility
+                reward_tracker.session_cumulative_reward += terminal_reward
+                log(f"Applied terminal penalty {terminal_reward:.2f} to session_cumulative_reward. New total: {reward_tracker.session_cumulative_reward:.2f}")
+
+                # Reset reward for next episode (moved to next run start or main menu to allow UI to see final result)
+                # reward_tracker.reset_for_next_episode()
             
             # Clear history on episode end
             history = []

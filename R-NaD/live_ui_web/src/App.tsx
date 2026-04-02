@@ -92,12 +92,12 @@ const App: React.FC = () => {
 
       ws.onmessage = (event) => {
         const newData: LiveData = JSON.parse(event.data);
-        const { timestamp, predicted_v, terminal, state, reset } = newData;
+        const { timestamp, predicted_v, state, reset } = newData;
 
         setData(newData);
 
         // Handle Trajectory/Retry Reset
-        if (vMinRef.current === Infinity || reset || terminal || (prevStateRef.current && newData.state.floor < prevStateRef.current.floor)) {
+        if (vMinRef.current === Infinity || reset || (prevStateRef.current && newData.state.floor < prevStateRef.current.floor)) {
           vMinRef.current = Math.min(predicted_v, newData.cum_reward) - 0.1;
           vMaxRef.current = Math.max(predicted_v, newData.cum_reward) + 0.1;
           if (reset) {
