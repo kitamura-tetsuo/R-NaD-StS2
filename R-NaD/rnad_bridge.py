@@ -347,11 +347,9 @@ class CombatValidator:
                     screenshot_done_event.clear()
                     log(f"  [DISCREPANCY] Requesting screenshot: {screenshot_path}")
                     
-                    # We don't block the main loop here to avoid freezing the game too long,
-                    # but we wait a short while if possible. 
-                    # Actually, since this is in predict_action, it's safer to wait a bit
-                    # so the screenshot is definitely taken before the next state change.
-                    screenshot_done_event.wait(timeout=5.0)
+                    # We don't block the main loop here to avoid freezing the game too long.
+                    # The Godot mod will pick up the screenshot request in its next poll.
+                    # screenshot_done_event.wait(timeout=5.0)
                     
                 except Exception as log_e:
                     log(f"  [DISCREPANCY LOG ERROR] {log_e}")
@@ -438,7 +436,7 @@ import struct
 class SimulatorManager:
     def __init__(self, bridge_dir):
         self.bridge_dir = bridge_dir
-        self.shm_path = "/tmp/sts2_sim_shm"
+        self.shm_path = os.path.join(self.bridge_dir, "tmp/sts2_sim_shm")
         self.shm_size = 10 * 1024 * 1024 # 10MB
         self.shm = None
         self.tensor_size = 512 + 384 + 600 * 4 + 2
@@ -447,6 +445,7 @@ class SimulatorManager:
         # Sync vocab
         sim.set_vocabulary(CARD_VOCAB, MONSTER_VOCAB, POWER_VOCAB, BOSS_VOCAB)
         # Init SHM
+        os.makedirs(os.path.dirname(self.shm_path), exist_ok=True)
         sim.init_shm(self.shm_path, self.shm_size)
         # Map in Python
         if os.path.exists(self.shm_path):

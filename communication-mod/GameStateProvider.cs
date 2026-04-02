@@ -90,31 +90,42 @@ public partial class MainFile : Node
 
         // 1.0 Manual HP Check for Death Detection (Prioritize this for GYM mode and fast death detection)
         var localPlayer = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
-        if (localPlayer != null && localPlayer.Creature != null && localPlayer.Creature.CurrentHp <= 0)
-        {
-            Logger.Info("[AutoAI] Manual HP check: Player HP is 0. Reporting game_over state.");
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, victory = false }, JsonOptions);
-        }
+        bool isDead = localPlayer != null && localPlayer.Creature != null && localPlayer.Creature.CurrentHp <= 0;
 
         // 1. Game Over Check (Screen or State)
         if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen gos)
         {
+            // Only report game_over if the Continue button is actually ready, or some time has passed.
+            // This prevents the AI from trying to act before the animation is finished.
+            var continueBtn = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverContinueButton>(gos);
+            bool isReady = continueBtn != null && (continueBtn.Visible || continueBtn.IsEnabled);
+            
+            if (!isReady)
+            {
+                MainFile.Logger.Info("[GameStateProvider] Game Over screen present but Continue button not ready. Waiting...");
+                return null; 
+            }
+
             bool isVictory = (currentRoom?.IsVictoryRoom ?? false) || !runState.IsGameOver;
-            Logger.Info($"[AutoAI] GameOverScreen detected. Victory: {isVictory}");
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "game_over",
+                victory = isVictory,
                 floor = runState.TotalFloor,
-                seed = currentSeed,
-                is_gym = _gymMode,
-                victory = isVictory
+                seed = currentSeed
             }, JsonOptions);
         }
 
-        if (runState.IsGameOver)
+        if (runState.IsGameOver || (isDead && MegaCrit.Sts2.Core.Combat.CombatManager.Instance != null && !MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress))
         {
-            Logger.Info("[AutoAI] RunState.IsGameOver is true (Death). Reporting game_over state.");
+            Logger.Info("[AutoAI] RunState.IsGameOver or player dead with combat ended. Reporting game_over state.");
             return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, victory = false }, JsonOptions);
+        }
+
+        // If dead but combat is still in progress (death animation playing), return wait state
+        if (isDead)
+        {
+             return null; // Return null to indicate 'wait' state while death effect plays
         }
 
         // Prioritize Map if Screen is actually open OR if we are in a run but have no room yet (initial act start)
@@ -384,9 +395,8 @@ public partial class MainFile : Node
         }
 
         // 1.5. Check for global screens that aren't on overlay stack
-        // Optimized: Instead of searching all nodes from GetTree().Root, find specific room node if it exists
         MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection? relicCollection = null;
-        var treasureRoomNodeForRelics = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom>(GetTree().Root).FirstOrDefault();
+        var treasureRoomNodeForRelics = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Rooms.NTreasureRoom>(GetTree().Root);
         if (treasureRoomNodeForRelics != null)
         {
             relicCollection = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection>(treasureRoomNodeForRelics).FirstOrDefault(c => ((CanvasItem)c).Visible);
@@ -519,20 +529,20 @@ public partial class MainFile : Node
             
             // Check for proceed button or dialogue hitboxes that block combat
             bool canProceed = combatNode?.ProceedButton?.IsEnabled ?? false;
-            if (!canProceed)
+            if (!canProceed && combatNode != null)
             {
-                // 1. Check for Ancient Dialogue Hitbox
-                var ancientHitbox = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NAncientDialogueHitbox>(GetTree().Root);
+                // 1. Check for Ancient Dialogue Hitbox (Local to combat room)
+                var ancientHitbox = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NAncientDialogueHitbox>(combatNode);
                 if (ancientHitbox != null && ancientHitbox.IsVisibleInTree() && ancientHitbox.IsEnabled)
                 {
                     Logger.Info("[AutoAI] Detected active AncientDialogueHitbox in CombatRoom. Setting can_proceed=true.");
                     canProceed = true;
                 }
 
-                // 2. Check for Event Option Buttons (e.g. "FIGHT!" in a combat event)
+                // 2. Check for Event Option Buttons (e.g. "FIGHT!" in a combat event, Local to combat room)
                 if (!canProceed)
                 {
-                    var eventOption = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(GetTree().Root);
+                    var eventOption = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(combatNode);
                     if (eventOption != null && eventOption.IsVisibleInTree() && eventOption.IsEnabled)
                     {
                         Logger.Info("[AutoAI] Detected active EventOptionButton in CombatRoom. Setting can_proceed=true.");
@@ -540,10 +550,10 @@ public partial class MainFile : Node
                     }
                 }
 
-                // 3. Check for generic NDivinationButton (e.g. Wheel of Change)
+                // 3. Check for generic NDivinationButton (e.g. Wheel of Change, Local to combat room)
                 if (!canProceed)
                 {
-                    var divButton = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NDivinationButton>(GetTree().Root);
+                    var divButton = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NDivinationButton>(combatNode);
                     if (divButton != null && divButton.IsVisibleInTree() && divButton.IsEnabled)
                     {
                         Logger.Info("[AutoAI] Detected active DivinationButton in CombatRoom. Setting can_proceed=true.");

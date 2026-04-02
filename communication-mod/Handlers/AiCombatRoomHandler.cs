@@ -66,9 +66,12 @@ public class AiCombatRoomHandler : IRoomHandler
                 bool hasOverlay = NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0;
                 bool isHandSelecting = NPlayerHand.Instance != null && NPlayerHand.Instance.IsInCardSelection;
 
-                if (NOverlayStack.Instance?.Peek() is NGameOverScreen)
+                var localPlayer = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState());
+                bool isDead = localPlayer != null && localPlayer.Creature != null && localPlayer.Creature.CurrentHp <= 0;
+
+                if (isDead || NOverlayStack.Instance?.Peek() is NGameOverScreen)
                 {
-                    MainFile.Logger.Info("[AiCombatRoomHandler] Game Over screen detected. Exiting combat handler.");
+                    MainFile.Logger.Info("[AiCombatRoomHandler] Player is dead or Game Over screen detected. Exiting combat loop.");
                     return;
                 }
 

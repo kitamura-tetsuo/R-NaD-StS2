@@ -110,6 +110,36 @@ def check_disk_space(path, threshold=0.1):
         logging.warning(f"Failed to check disk space on {path}: {e}")
         return False
 
+def cleanup_mlflow_tmp_dirs(threshold_hours=2):
+    """
+    Scan /tmp for orphaned MLflow temporary directories (tmpXXXXXX)
+    and remove those older than threshold_hours.
+    """
+    tmp_base = "/tmp"
+    now = time.time()
+    threshold = threshold_hours * 3600
+    count = 0
+    try:
+        if not os.path.exists(tmp_base):
+            return
+        for item in os.listdir(tmp_base):
+            # MLflow uses tempfile.mkdtemp which typically creates 'tmpXXXXXXXX'
+            if item.startswith("tmp") and len(item) >= 8:
+                item_path = os.path.join(tmp_base, item)
+                try:
+                    if os.path.isdir(item_path):
+                        mtime = os.path.getmtime(item_path)
+                        if now - mtime > threshold:
+                            logging.info(f"Cleaning up orphaned MLflow directory: {item_path} (age: {(now-mtime)/3600:.1f}h)")
+                            shutil.rmtree(item_path, ignore_errors=True)
+                            count += 1
+                except (OSError, PermissionError):
+                    continue
+        if count > 0:
+            logging.info(f"Cleanup finished. Removed {count} orphaned directories.")
+    except Exception as e:
+        logging.warning(f"Error during MLflow temp directory cleanup: {e}")
+
 def wait_for_bridge_initialization(timeout=300):
     logging.info("Waiting for R-NaD bridge to initialize (pre-warm JAX)...")
     start_time = time.time()
@@ -595,8 +625,14 @@ def main():
         
         last_traj_size = -1
         last_traj_progress_time = time.time()
+        last_cleanup_time = 0
         
         while True:
+            # Periodically cleanup MLflow tmp dirs (every 1 hour)
+            if time.time() - last_cleanup_time > 3600:
+                cleanup_mlflow_tmp_dirs()
+                last_cleanup_time = time.time()
+
             # Check if process is still running
             if process.poll() is not None:
                 exit_code = process.poll()

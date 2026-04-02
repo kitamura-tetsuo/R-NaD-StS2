@@ -53,6 +53,7 @@ public partial class MainFile : Node
             case "confirm_selection": await HandleConfirmSelection(dict); break;
             case "select_grid_card": await HandleSelectGridCard(dict); break;
             case "proceed": await HandleProceed(dict); break;
+            case "return_to_main_menu": await HandleReturnToMainMenu(dict); break;
             default: Logger.Warn($"[AutoAI] Unhandled combat action: {action}"); break;
         }
     }

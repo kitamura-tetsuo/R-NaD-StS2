@@ -30,7 +30,9 @@ def test_hand_extraction(headless=False):
     cleanup_processes()
     
     # Path to the last state file
-    last_state_path = "/tmp/rnad_last_state.json"
+    log_dir = os.path.join(os.path.dirname(__file__), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    last_state_path = os.path.join(log_dir, "rnad_last_state.json")
     if os.path.exists(last_state_path):
         os.remove(last_state_path)
 
@@ -44,8 +46,8 @@ def test_hand_extraction(headless=False):
     process = subprocess.Popen(
         cmd,
         cwd=game_dir,
-        stdout=open("/tmp/sts2_stdout.log", "w"),
-        stderr=open("/tmp/sts2_stderr.log", "w")
+        stdout=open(os.path.join(log_dir, "sts2_stdout.log"), "w"),
+        stderr=open(os.path.join(log_dir, "sts2_stderr.log"), "w")
     )
     
     try:

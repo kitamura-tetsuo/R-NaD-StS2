@@ -249,12 +249,11 @@ public partial class MainFile : Node
                                $"Seed: {defaultSeed}\n" +
                                $"UserDataDir: {OS.GetUserDataDir()}\n" +
                                $"ExecPath: {OS.GetExecutablePath()}\n";
-            File.WriteAllText("/tmp/sts2_mod_debug.txt", debugInfo);
             
             string userDebugPath = Path.Combine(OS.GetUserDataDir(), "mod_debug.txt");
             if (!Directory.Exists(OS.GetUserDataDir())) Directory.CreateDirectory(OS.GetUserDataDir());
             File.WriteAllText(userDebugPath, debugInfo);
-            Logger.Info($"[AutoAI] Debug file saved to {userDebugPath} and /tmp/sts2_mod_debug.txt");
+            Logger.Info($"[AutoAI] Debug file saved to {userDebugPath}");
         } catch (Exception e) {
             Logger.Error($"[AutoAI] Failed to save debug file: {e.Message}");
         }
