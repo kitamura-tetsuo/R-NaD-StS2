@@ -20,15 +20,24 @@ public class AiMapScreenHandler : IHandler
     public async Task HandleAsync(Rng random, CancellationToken ct)
     {
         int initialFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? -1;
+        
+        // Safety check: if run is not active, return immediately
+        if (RunManager.Instance?.DebugOnlyGetState() == null || RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom == null)
+        {
+            MainFile.Logger.Info("[AiMapScreenHandler] Run not active. Skipping map navigation.");
+            return;
+        }
 
         // Wait for map screen to be open (not necessarily visible in tree, as animations might delay visibility)
         // OR if the floor already advanced (handling race condition where map was handled prematurely)
         await WaitHelper.Until(delegate {
             var mapScreen = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance;
-            int currentFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? -1;
+            var runState = RunManager.Instance?.DebugOnlyGetState();
+            int currentFloor = runState?.TotalFloor ?? -1;
             bool floorAdvanced = initialFloor != -1 && currentFloor > initialFloor;
+            bool runReset = runState == null || runState.CurrentRoom == null;
             
-            if ((mapScreen != null && mapScreen.IsOpen) || floorAdvanced) return true;
+            if ((mapScreen != null && mapScreen.IsOpen) || floorAdvanced || runReset) return true;
             
             // If map is NOT open, check if there's an overlay blocking it and drain it
             if (MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance != null && 

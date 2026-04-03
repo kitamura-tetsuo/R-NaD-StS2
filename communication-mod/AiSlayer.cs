@@ -214,6 +214,13 @@ public class AiSlayer
             
             _watchdog.Reset("Navigating map");
             
+            // Re-check if run is still active (might have been reset to main menu during rewards/drain)
+            if (RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom == null)
+            {
+                MainFile.Logger.Info("[AiSlayer] Run no longer active (reset or ended). Skipping map and breaking room loop.");
+                break;
+            }
+
             // Re-check floor to see if it already advanced (e.g. via premature AI step during transition)
             int currentFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? floorAtStart;
             

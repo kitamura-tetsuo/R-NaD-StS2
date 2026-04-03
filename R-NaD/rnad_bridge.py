@@ -708,7 +708,8 @@ class BackupManager:
                 data = json.load(f)
                 pfr = data.get("pre_finished_room")
                 if pfr is None:
-                    return False
+                    # In StS2, pre_finished_room: null means middle of a room (active combat)
+                    return True
                 
                 # is_pre_finished: true means rewards are showing or battle is over.
                 # We want active battle (false).
@@ -756,7 +757,7 @@ class BackupManager:
                 log(f"[BackupManager] Backup {os.path.basename(latest['path'])} exhausted (tried {self.max_retries} times). Backtracking...")
                 self.stack.pop()
         
-        log("[BackupManager] All backups exhausted or stack empty. Starting fresh.")
+        log(f"[BackupManager] All backups exhausted or stack empty (stack size: {len(self.stack)}). Starting fresh.")
         return None
 
 # Initialize BackupManager

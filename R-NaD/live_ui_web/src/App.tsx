@@ -220,9 +220,8 @@ const App: React.FC = () => {
                     />
                     <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
-                      // Find the first point that occurs at or after the event time
                       const matchedPoint = history.find(p => p.time >= ev.time);
-                      if (!matchedPoint) return null;
+                      if (!matchedPoint || ev.time < history[0].time) return null;
                       return (
                         <ReferenceLine key={idx} x={matchedPoint.idx} stroke={ev.color} strokeDasharray="4 4">
                           <Label value={ev.label} position="top" fill={ev.color} fontSize={8} fontWeight="bold" offset={5} />
@@ -274,7 +273,7 @@ const App: React.FC = () => {
                     <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
                       const matchedPoint = history.find(p => p.time >= ev.time);
-                      if (!matchedPoint) return null;
+                      if (!matchedPoint || ev.time < history[0].time) return null;
                       return (
                         <ReferenceLine key={idx} x={matchedPoint.idx} stroke={ev.color} strokeDasharray="4 4">
                            <Label value={ev.label} position="top" fill={ev.color} fontSize={8} fontWeight="bold" offset={5} />
@@ -321,7 +320,7 @@ const App: React.FC = () => {
                     <Legend verticalAlign="top" align="right" iconSize={10} wrapperStyle={{ fontSize: '10px', paddingBottom: '30px' }} />
                     {events.map((ev, idx) => {
                       const matchedPoint = history.find(p => p.time >= ev.time);
-                      if (!matchedPoint) return null;
+                      if (!matchedPoint || ev.time < history[0].time) return null;
                       return (
                         <ReferenceLine key={idx} x={matchedPoint.idx} stroke={ev.color} strokeDasharray="4 4">
                            <Label value={ev.label} position="top" fill={ev.color} fontSize={8} fontWeight="bold" offset={5} />
