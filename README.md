@@ -4,12 +4,13 @@
 **R-NaD-StS2** is a Godot mod for **Slay the Spire 2** that integrates the Regularized Nash Dynamics (R-NaD) Reinforcement Learning algorithm. It establishes a robust, cross-language bridge to train an AI agent using python-based reinforcement learning from within the Unity/Godot ecosystem of StS2.
 
 ## Architecture
-This project is composed of three interconnected modules running inside the game process and one external control panel:
+This project is composed of three interconnected modules running inside the game process and two external control panels:
 
 1. **`communication-mod` (C#)**: The entry point of the Slay the Spire 2 Godot mod. It intercepts game state using Harmony patches, serializes it, and sends it to the AI bridge. It handles applying the AI's chosen actions back to the game.
 2. **`GDExtension` (Rust + PyO3)**: Acts as the Godot node (`AiBridge`) bridging the C# Mod and the Python ecosystem. It spins up an embedded Python interpreter configured to process game state asynchronously.
 3. **`R-NaD` (Python)**: The core logic (`rnad_bridge.py`). It receives the `state_json` from the game, runs inference/training, and returns the next action. It also spawns a lightweight local HTTP server on port 8081 to accept external control commands.
 4. **`Streamlit UI` (Python)**: A web-based control panel (`ui.py`) running in a separate python process. Used to toggle the learning process on and off dynamically while the game is running.
+5. **Live Dashboard** (React + FastAPI): A real-time visualization dashboard. It consists of a FastAPI backend (`live_ui_server.py`) and a React frontend (`live_ui_web/`).
 
 ## Prerequisites
 - **Godot 4.x** (Depending on Slay the Spire 2's specific version)
@@ -42,7 +43,22 @@ streamlit run ui.py
 ```
 *The UI will run on `http://localhost:8501`.*
 
-### 4. Running R-NaD Training (Optional)
+### 4. Run the Live Dashboard (Optional)
+To use the real-time React dashboard:
+```bash
+# Start the Backend
+cd R-NaD
+source venv/bin/activate
+pip install fastapi uvicorn watchfiles
+python3 live_ui_server.py
+
+# Start the Frontend (New Terminal)
+cd R-NaD/live_ui_web
+npm run dev
+```
+*The dashboard will be available at `http://localhost:5173`.*
+
+### 5. Running R-NaD Training (Optional)
 You can run or verify the R-NaD training process independently:
 ```bash
 # Launch the JAX-based training loop
@@ -51,7 +67,7 @@ python3 R-NaD/train_sts2.py --max_steps 1000
 ```
 *Trained checkpoints will be saved in the `checkpoints/` directory.*
 
-### 5. Launch Slay the Spire 2
+### 6. Launch Slay the Spire 2
 Start the game with the Mod Loader enabled. The `communication-mod` will attach the `AiBridge` Godot node, start the Python daemon, and begin streaming state/receiving actions from R-NaD. Using the Streamlit UI, you can toggle the "Learning ACTIVE/INACTIVE" state.
 
 ## License

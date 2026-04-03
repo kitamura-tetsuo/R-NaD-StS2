@@ -22,7 +22,12 @@ pub struct Card {
     pub target: TargetType,
     pub is_upgraded: bool,
     #[serde(rename = "isPlayable")]
+    #[serde(default = "default_true")]
     pub is_playable: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Card {
