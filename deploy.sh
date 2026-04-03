@@ -24,6 +24,12 @@ echo "2868840" > "$GAME_DIR/steam_appid.txt"
 
 echo "=== Building and Deploying R-NaD StS2 Mod ==="
 
+# --- 1.5. Build libpython_fixer ---
+echo "Building libpython_fixer..."
+cd "$SRC_ROOT/R-NaD"
+./venv/bin/python setup.py build_ext --inplace
+cd "$SRC_ROOT"
+
 # --- 2. Build and Copy communication-mod files ---
 echo "Building communication_mod..."
 cd "$SRC_ROOT/communication-mod"

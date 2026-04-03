@@ -5,4 +5,4 @@ set -e
 
 set +e
 ./reload_sim.sh
-python3 R-NaD/inference_sts2.py --seed 1 --route
+./R-NaD/venv/bin/python R-NaD/inference_sts2.py --seed 1 --route

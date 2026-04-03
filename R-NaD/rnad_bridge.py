@@ -105,8 +105,8 @@ if BRIDGE_DIR not in sys.path:
 
 VENV_PATH = "/home/ubuntu/src/R-NaD-StS2/R-NaD/venv/lib/python3.12/site-packages"
 if VENV_PATH not in sys.path:
-    # Append the virtualenv AFTER the local directory so local modules take precedence
-    sys.path.append(VENV_PATH)
+    # Insert the virtualenv right after the local directory so it takes precedence over system packages
+    sys.path.insert(1, VENV_PATH)
     print(f"[Python] Added venv to sys.path: {VENV_PATH}")
 
 # Fix for "undefined symbol: PyObject_SelfIter" and similar dynamic loading issues in embedded environments

@@ -6,5 +6,5 @@ set -e
 
 set +e
 ./reload_sim.sh
-python3 R-NaD/train_sts2.py --seed 1 --no-speedup --mask-card-skip --ui
+./R-NaD/venv/bin/python R-NaD/train_sts2.py --seed 1 --no-speedup --mask-card-skip --ui
 
