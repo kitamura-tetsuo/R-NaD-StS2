@@ -42,3 +42,5 @@ tqdm
 mlflow
 optuna
 watchfiles
+websockets
+fastapi

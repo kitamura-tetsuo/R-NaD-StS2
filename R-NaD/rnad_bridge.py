@@ -172,6 +172,8 @@ class CombatValidator:
             }
 
         def convert_card(c):
+            if isinstance(c, str):
+                c = {"id": c}
             # TargetType mapping
             tt_map = {
                 "AnyEnemy": "Single", "SingleEnemy": "Single", 
@@ -187,16 +189,17 @@ class CombatValidator:
                 "currentBlock": c.get("currentBlock", 0),
                 "magic_number": c.get("magicNumber", 0),
                 "target": tt_map.get(c.get("targetType", "None"), "None"),
-                "is_upgraded": c.get("upgraded", False)
+                "is_upgraded": c.get("upgraded", False),
+                "isPlayable": c.get("isPlayable", True)
             }
 
         sim_state = {
             "player": convert_creature(player_data, is_player=True),
             "enemies": [convert_creature(e) for e in cs_state.get("enemies", [])],
             "hand": [convert_card(c) for c in cs_state.get("hand", [])],
-            "draw_pile": [convert_card({"id": id}) for id in cs_state.get("drawPile", [])],
-            "discard_pile": [convert_card({"id": id}) for id in cs_state.get("discardPile", [])],
-            "exhaust_pile": [convert_card({"id": id}) for id in cs_state.get("exhaustPile", [])],
+            "draw_pile": [convert_card(c) for c in cs_state.get("drawPile", [])],
+            "discard_pile": [convert_card(c) for c in cs_state.get("discardPile", [])],
+            "exhaust_pile": [convert_card(c) for c in cs_state.get("exhaustPile", [])],
             "potions": [
                 {
                     "id": p.get("id", "empty"),
