@@ -34,6 +34,7 @@ pub struct Creature {
     pub max_hp: i32,
     pub cur_hp: i32,
     pub block: i32,
+    pub is_minion: bool,
     pub powers: Vec<Power>,
     pub intents: Vec<Intent>,
 }
@@ -48,6 +49,7 @@ impl Creature {
             max_hp,
             cur_hp: max_hp,
             block: 0,
+            is_minion: false,
             powers: Vec::new(),
             intents: Vec::new(),
         }

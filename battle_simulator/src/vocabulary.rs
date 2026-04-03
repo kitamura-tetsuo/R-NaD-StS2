@@ -7,6 +7,7 @@ pub struct Vocabulary {
     pub monsters: HashMap<String, i32>,
     pub powers: HashMap<String, i32>,
     pub bosses: HashMap<String, i32>,
+    pub potions: HashMap<String, i32>,
 }
 
 impl Vocabulary {
@@ -21,5 +22,8 @@ impl Vocabulary {
     }
     pub fn get_boss_idx(&self, id: &str) -> i32 {
         self.bosses.get(id).copied().unwrap_or(0)
+    }
+    pub fn get_potion_idx(&self, id: &str) -> i32 {
+        self.potions.get(id).copied().unwrap_or(0)
     }
 }

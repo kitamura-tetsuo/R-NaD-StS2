@@ -38,11 +38,12 @@ impl Simulator {
         sim
     }
 
-    pub fn set_vocabulary(&mut self, cards: HashMap<String, i32>, monsters: HashMap<String, i32>, powers: HashMap<String, i32>, bosses: HashMap<String, i32>) {
+    pub fn set_vocabulary(&mut self, cards: HashMap<String, i32>, monsters: HashMap<String, i32>, powers: HashMap<String, i32>, bosses: HashMap<String, i32>, potions: HashMap<String, i32>) {
         self.vocab.cards = cards;
         self.vocab.monsters = monsters;
         self.vocab.powers = powers;
         self.vocab.bosses = bosses;
+        self.vocab.potions = potions;
     }
 
     pub fn init_shm(&mut self, path: String, size: usize) -> PyResult<()> {
@@ -105,7 +106,7 @@ impl Simulator {
         self.state.enemies.push(enemy);
     }
 
-    pub fn add_card_to_hand(&mut self, id: String, cost: i32, damage: i32, block: i32, magic: i32) {
+    pub fn add_card_to_hand(&mut self, id: String, cost: i32, damage: i32, block: i32, magic: i32, is_playable: bool) {
         let target = if id.contains("STRIKE") || id == "BASH" || id == "IRON_WAVE" || id == "HEMOKINESIS" {
             TargetType::Single
         } else if id.contains("DEFEND") {
@@ -115,7 +116,8 @@ impl Simulator {
         } else {
             TargetType::None
         };
-        self.state.hand.push(Card::new(id, cost, damage, block, magic, target));
+        let card = Card::new(id, cost, damage, block, magic, target, is_playable);
+        self.state.hand.push(card);
     }
 
     pub fn add_power(&mut self, creature_idx: i32, power_id: String, amount: i32) {

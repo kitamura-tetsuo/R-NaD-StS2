@@ -6,6 +6,8 @@ import datetime
 import glob
 import shutil
 import filecmp
+import importlib
+import importlib.util
 
 # Set XLA environment variables before JAX/other imports to prevent GPU OOM
 # Godot game and JAX both need GPU memory.
@@ -164,6 +166,7 @@ class CombatValidator:
                 "max_hp": c.get("maxHp", 100),
                 "cur_hp": c.get("hp", 100),
                 "block": c.get("block", 0),
+                "is_minion": c.get("isMinion", False),
                 "powers": convert_powers(c.get("powers", [])),
                 "intents": c.get("intents", [])
             }
@@ -175,19 +178,13 @@ class CombatValidator:
                 "AllEnemies": "All", "AllEnemy": "All", 
                 "Self": "SelfTarget", "None": "None"
             }
-            # Use currentDamage as fallback for baseDamage if baseDamage is 0
-            base_dmg = c.get("baseDamage", 0)
-            if base_dmg == 0:
-                base_dmg = c.get("currentDamage", 0)
-            base_blk = c.get("baseBlock", 0)
-            if base_blk == 0:
-                base_blk = c.get("currentBlock", 0)
-                
             return {
                 "id": c.get("id", "Unknown"),
                 "cost": c.get("cost", 0),
-                "base_damage": base_dmg,
-                "base_block": base_blk,
+                "base_damage": c.get("baseDamage", 0),
+                "base_block": c.get("baseBlock", 0),
+                "currentDamage": c.get("currentDamage", 0),
+                "currentBlock": c.get("currentBlock", 0),
                 "magic_number": c.get("magicNumber", 0),
                 "target": tt_map.get(c.get("targetType", "None"), "None"),
                 "is_upgraded": c.get("upgraded", False)
@@ -200,8 +197,18 @@ class CombatValidator:
             "draw_pile": [convert_card({"id": id}) for id in cs_state.get("drawPile", [])],
             "discard_pile": [convert_card({"id": id}) for id in cs_state.get("discardPile", [])],
             "exhaust_pile": [convert_card({"id": id}) for id in cs_state.get("exhaustPile", [])],
+            "potions": [
+                {
+                    "id": p.get("id", "empty"),
+                    "name": p.get("name", "Empty Slot"),
+                    "can_use": p.get("canUse", False),
+                    "targetType": p.get("targetType", "None")
+                } for p in cs_state.get("potions", [])
+            ],
             "energy": player_data.get("energy", 0),
+            "max_energy": player_data.get("maxEnergy", 0),
             "stars": player_data.get("stars", 0),
+            "retains_block": cs_state.get("retains_block", False),
             "floor": cs_state.get("floor", 1)
         }
         return json.dumps(sim_state)
@@ -367,6 +374,7 @@ validator = CombatValidator()
 def reload_battle_simulator(v_name=None):
     """Dynamically reload the battle_simulator module."""
     global battle_simulator, validator
+    import importlib.util
     
     try:
         if v_name:
@@ -439,11 +447,13 @@ class SimulatorManager:
         self.shm_path = os.path.join(self.bridge_dir, "tmp/sts2_sim_shm")
         self.shm_size = 10 * 1024 * 1024 # 10MB
         self.shm = None
-        self.tensor_size = 512 + 384 + 600 * 4 + 2
+        # Must match Rust encoder: GLOBAL_SIZE + COMBAT_SIZE + BOW_SIZE * 4 + 2
+        # 512 + 384 + 611 * 4 + 2 = 3342
+        self.tensor_size = 512 + 384 + 611 * 4 + 2
         
     def init_simulator(self, sim):
         # Sync vocab
-        sim.set_vocabulary(CARD_VOCAB, MONSTER_VOCAB, POWER_VOCAB, BOSS_VOCAB)
+        sim.set_vocabulary(CARD_VOCAB, MONSTER_VOCAB, POWER_VOCAB, BOSS_VOCAB, POTION_VOCAB)
         # Init SHM
         os.makedirs(os.path.dirname(self.shm_path), exist_ok=True)
         sim.init_shm(self.shm_path, self.shm_size)
@@ -568,6 +578,38 @@ current_trajectory = []
 training_worker = None
 deferred_chunk = None
 history = []
+
+# Potion Vocabulary Mapping
+POTION_VOCAB = {
+    "UNKNOWN": 0,
+    "empty": 0,
+    "Fire Potion": 1,
+    "Explosive Potion": 2,
+    "FearPotion": 3,
+    "Strength Potion": 4,
+    "Dexterity Potion": 5,
+    "Block Potion": 6,
+    "Speed Potion": 7,
+    "LiquidBronze": 8,
+    "BottledCloud": 9,
+    "Regen Potion": 10,
+    "Swift Potion": 11,
+    "Poison Potion": 12,
+    "Weak Potion": 13,
+    "ColorlessPotion": 14,
+    "CultistPotion": 15,
+    "FruitJuice": 16,
+    "BloodPotion": 17,
+    "ElixirPotion": 18,
+    "HeartOfIron": 19,
+    "GhostInAJar": 20,
+    "Ambrosia": 21,
+    "BlessingOfTheForge": 22,
+    "DuplicationPotion": 23,
+    "EssenceOfSteel": 24,
+    "LiquidMemories": 25,
+    "PotionOfCapacity": 26,
+}
 
 # --- Save Data Backup & Restoration Logic ---
 SOURCE_A = "/home/ubuntu/.local/share/SlayTheSpire2/steam/76561198725031675/modded/profile1/saves"

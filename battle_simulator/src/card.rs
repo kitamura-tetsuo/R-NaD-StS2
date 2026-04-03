@@ -14,21 +14,30 @@ pub struct Card {
     pub cost: i32,
     pub base_damage: i32,
     pub base_block: i32,
+    #[serde(rename = "currentDamage")]
+    pub current_damage: i32,
+    #[serde(rename = "currentBlock")]
+    pub current_block: i32,
     pub magic_number: i32,
     pub target: TargetType,
     pub is_upgraded: bool,
+    #[serde(rename = "isPlayable")]
+    pub is_playable: bool,
 }
 
 impl Card {
-    pub fn new(id: String, cost: i32, damage: i32, block: i32, magic: i32, target: TargetType) -> Self {
+    pub fn new(id: String, cost: i32, damage: i32, block: i32, magic: i32, target: TargetType, is_playable: bool) -> Self {
         Self {
             id,
             cost,
             base_damage: damage,
             base_block: block,
+            current_damage: damage,
+            current_block: block,
             magic_number: magic,
             target,
             is_upgraded: false,
+            is_playable,
         }
     }
 

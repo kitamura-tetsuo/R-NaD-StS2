@@ -16,12 +16,31 @@ pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32>
     tensor[offset + 3] = state.player.max_hp as f32 / 100.0;
     tensor[offset + 4] = state.player.block as f32 / 50.0;
     tensor[offset + 5] = state.energy as f32 / 5.0;
+    tensor[offset + 6] = state.max_energy as f32 / 5.0;
+    tensor[offset + 7] = state.stars as f32 / 5.0;
+    tensor[offset + 8] = if state.retains_block { 1.0 } else { 0.0 };
 
     // Boss ID (index 20)
     // tensor[offset + 20] = vocab.get_boss_idx(&state.boss) as f32 / 100.0;
 
     // Relics (index 30+)
     // TODO: if GameState gains relics field
+
+    // Potions (index 50-69, 5 slots * 4 indices)
+    for i in 0..state.potions.len().min(5) {
+        let potion = &state.potions[i];
+        let p_idx = offset + 50 + i * 4;
+        tensor[p_idx] = vocab.get_potion_idx(&potion.id) as f32;
+        tensor[p_idx + 1] = if potion.can_use { 1.0 } else { 0.0 };
+        
+        // targetType mapping (None=0, Single=0.1, All=0.2, SelfTarget=0.3)
+        tensor[p_idx + 2] = match potion.target_type.as_str() {
+            "Single" | "SingleEnemy" | "AnyEnemy" => 0.1,
+            "All" | "AllEnemies" | "AllEnemy" => 0.2,
+            "Self" | "SelfTarget" => 0.3,
+            _ => 0.0,
+        };
+    }
 
     offset += GLOBAL_SIZE;
 
@@ -35,7 +54,7 @@ pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32>
         let card = &state.hand[i];
         let card_idx = offset + 10 + i * 10;
         tensor[card_idx] = vocab.get_card_idx(&card.id) as f32;
-        tensor[card_idx + 1] = 1.0; // playability check simplified for now
+        tensor[card_idx + 1] = if card.is_playable { 1.0 } else { 0.0 };
         
         // targetType mapping
         let tt_val = match card.target {
@@ -50,7 +69,8 @@ pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32>
         tensor[card_idx + 5] = card.base_block as f32 / 20.0;
         tensor[card_idx + 6] = card.magic_number as f32 / 10.0;
         tensor[card_idx + 7] = if card.is_upgraded { 1.0 } else { 0.0 };
-        // currentDamage/Block calculation? Simplified
+        tensor[card_idx + 8] = card.current_damage as f32 / 20.0;
+        tensor[card_idx + 9] = card.current_block as f32 / 20.0;
     }
 
     // Enemies (index 110-189)
@@ -60,6 +80,7 @@ pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32>
         if enemy.is_alive() {
             tensor[enemy_idx] = 1.0;
             tensor[enemy_idx + 1] = vocab.get_monster_idx(&enemy.id) as f32;
+            tensor[enemy_idx + 2] = if enemy.is_minion { 1.0 } else { 0.0 };
             tensor[enemy_idx + 3] = enemy.cur_hp as f32 / 200.0;
             tensor[enemy_idx + 4] = enemy.max_hp as f32 / 200.0;
             tensor[enemy_idx + 5] = enemy.block as f32 / 50.0;

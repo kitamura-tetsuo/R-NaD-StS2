@@ -32,6 +32,7 @@ struct CsPlayer {
     max_hp: i32,
     block: i32,
     energy: i32,
+    max_energy: i32,
     stars: i32,
     powers: Vec<CsPower>,
 }
@@ -48,6 +49,7 @@ struct CsCard {
     target_type: Option<String>,
     upgraded: Option<bool>,
     cost: Option<i32>,
+    is_playable: Option<bool>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -57,7 +59,17 @@ struct CsEnemy {
     hp: i32,
     max_hp: i32,
     block: i32,
+    is_minion: bool,
     powers: Vec<CsPower>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CsPotion {
+    id: String,
+    name: String,
+    can_use: bool,
+    target_type: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -69,6 +81,8 @@ struct CsState {
     draw_pile: Vec<serde_json::Value>,
     discard_pile: Vec<serde_json::Value>,
     exhaust_pile: Vec<serde_json::Value>,
+    potions: Vec<CsPotion>,
+    retains_block: bool,
     floor: i32,
 }
 
@@ -107,9 +121,12 @@ fn convert_card(c: CsCard) -> Card {
         cost: c.cost.unwrap_or(0),
         base_damage: base_dmg,
         base_block: base_blk,
+        current_damage: c.current_damage.unwrap_or(base_dmg),
+        current_block: c.current_block.unwrap_or(base_blk),
         magic_number: c.magic_number.unwrap_or(0),
         target: tt,
         is_upgraded: c.upgraded.unwrap_or(false),
+        is_playable: c.is_playable.unwrap_or(true),
     }
 }
 
@@ -131,9 +148,12 @@ fn convert_pile(pile: Vec<serde_json::Value>) -> Vec<Card> {
             cost: v.get("cost").and_then(|i| i.as_i64()).map(|i| i as i32).unwrap_or(0),
             base_damage: v.get("baseDamage").and_then(|i| i.as_i64()).map(|i| i as i32).unwrap_or(0),
             base_block: v.get("baseBlock").and_then(|i| i.as_i64()).map(|i| i as i32).unwrap_or(0),
+            current_damage: v.get("currentDamage").and_then(|i| i.as_i64()).map(|i| i as i32).unwrap_or(0),
+            current_block: v.get("currentBlock").and_then(|i| i.as_i64()).map(|i| i as i32).unwrap_or(0),
             magic_number: v.get("magicNumber").and_then(|i| i.as_i64()).map(|i| i as i32).unwrap_or(0),
             target: TargetType::None,
             is_upgraded: v.get("upgraded").and_then(|b| b.as_bool()).unwrap_or(false),
+            is_playable: v.get("isPlayable").and_then(|b| b.as_bool()).unwrap_or(true),
         })
     }).collect()
 }
@@ -148,6 +168,7 @@ fn convert_to_internal(cs: CsState) -> GameState {
         let mut en = Creature::new(e.id, e.max_hp);
         en.cur_hp = e.hp;
         en.block = e.block;
+        en.is_minion = e.is_minion;
         en.powers = convert_powers(e.powers);
         en
     }).collect();
@@ -157,6 +178,12 @@ fn convert_to_internal(cs: CsState) -> GameState {
     let draw_pile = convert_pile(cs.draw_pile);
     let discard_pile = convert_pile(cs.discard_pile);
     let exhaust_pile = convert_pile(cs.exhaust_pile);
+    let potions = cs.potions.into_iter().map(|p| battle_simulator::state::Potion {
+        id: p.id,
+        name: p.name,
+        can_use: p.can_use,
+        target_type: p.target_type,
+    }).collect();
 
     GameState {
         player,
@@ -165,8 +192,11 @@ fn convert_to_internal(cs: CsState) -> GameState {
         draw_pile,
         discard_pile,
         exhaust_pile,
+        potions,
         energy: cs.player.energy,
+        max_energy: cs.player.max_energy,
         stars: cs.player.stars,
+        retains_block: cs.retains_block,
         floor: cs.floor,
     }
 }

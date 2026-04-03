@@ -3,6 +3,15 @@ use crate::card::Card;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Potion {
+    pub id: String,
+    pub name: String,
+    pub can_use: bool,
+    #[serde(rename = "targetType")]
+    pub target_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub player: Creature,
     pub enemies: Vec<Creature>,
@@ -10,8 +19,11 @@ pub struct GameState {
     pub draw_pile: Vec<Card>,
     pub discard_pile: Vec<Card>,
     pub exhaust_pile: Vec<Card>,
+    pub potions: Vec<Potion>,
     pub energy: i32,
+    pub max_energy: i32,
     pub stars: i32,
+    pub retains_block: bool,
     pub floor: i32,
 }
 
@@ -24,8 +36,11 @@ impl GameState {
             draw_pile: Vec::new(),
             discard_pile: Vec::new(),
             exhaust_pile: Vec::new(),
+            potions: Vec::new(),
             energy,
+            max_energy: energy, // Default to current energy if not specified
             stars,
+            retains_block: false,
             floor: 1,
         }
     }
