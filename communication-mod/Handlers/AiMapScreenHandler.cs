@@ -22,7 +22,7 @@ public class AiMapScreenHandler : IHandler
         int initialFloor = RunManager.Instance?.DebugOnlyGetState()?.TotalFloor ?? -1;
         
         // Safety check: if run is not active, return immediately
-        if (RunManager.Instance?.DebugOnlyGetState() == null || RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom == null)
+        if (RunManager.Instance?.DebugOnlyGetState() == null)
         {
             MainFile.Logger.Info("[AiMapScreenHandler] Run not active. Skipping map navigation.");
             return;
@@ -35,7 +35,7 @@ public class AiMapScreenHandler : IHandler
             var runState = RunManager.Instance?.DebugOnlyGetState();
             int currentFloor = runState?.TotalFloor ?? -1;
             bool floorAdvanced = initialFloor != -1 && currentFloor > initialFloor;
-            bool runReset = runState == null || runState.CurrentRoom == null;
+            bool runReset = runState == null;
             
             if ((mapScreen != null && mapScreen.IsOpen) || floorAdvanced || runReset) return true;
             

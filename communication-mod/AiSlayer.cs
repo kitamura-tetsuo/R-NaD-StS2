@@ -125,12 +125,35 @@ public class AiSlayer
         _watchdog = new Watchdog();
         
         // Wait for EITHER Main Menu OR Run state to appear (handling race condition with programmatic start)
-        await WaitHelper.Until(() => {
-            var root = ((Node)(object)((SceneTree)Engine.GetMainLoop()).Root);
-            bool hasMenu = root.GetNodeOrNull("Game/RootSceneContainer/MainMenu") != null;
-            bool inRun = RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom != null;
-            return hasMenu || inRun;
-        }, ct, TimeSpan.FromSeconds(2), "Neither MainMenu nor Run state appeared"); // Reduced from 15s to 2s to minimize 18s wait target
+        // Retry every 2 seconds for a total of 15 seconds as requested.
+        var startTime = DateTime.UtcNow;
+        var maxWaitTime = TimeSpan.FromSeconds(15);
+        var retryInterval = TimeSpan.FromSeconds(2);
+        
+        while (true)
+        {
+            try
+            {
+                await WaitHelper.Until(() => {
+                    var root = ((Node)(object)((SceneTree)Engine.GetMainLoop()).Root);
+                    bool hasMenu = root.GetNodeOrNull("Game/RootSceneContainer/MainMenu") != null;
+                    bool inRun = RunManager.Instance?.DebugOnlyGetState() != null;
+                    bool hasMap = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance?.IsOpen ?? false;
+                    return hasMenu || inRun || hasMap;
+                }, ct, retryInterval, "Waiting for game state...");
+                break;
+            }
+            catch (Exception)
+            {
+                if (ct.IsCancellationRequested) throw;
+                if (DateTime.UtcNow - startTime >= maxWaitTime)
+                {
+                    MainFile.Logger.Error("[AiSlayer] Neither MainMenu nor Run state appeared after 15s.");
+                    throw;
+                }
+                MainFile.Logger.Info("[AiSlayer] Still waiting for game state (MainMenu, Run, or Map)... retrying in 2s");
+            }
+        }
 
         bool runActive = RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom != null;
         if (!runActive)
@@ -215,7 +238,7 @@ public class AiSlayer
             _watchdog.Reset("Navigating map");
             
             // Re-check if run is still active (might have been reset to main menu during rewards/drain)
-            if (RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom == null)
+            if (RunManager.Instance?.DebugOnlyGetState() == null)
             {
                 MainFile.Logger.Info("[AiSlayer] Run no longer active (reset or ended). Skipping map and breaking room loop.");
                 break;

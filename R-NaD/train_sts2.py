@@ -167,6 +167,93 @@ def cleanup_mlflow_tmp_dirs(threshold_hours=2):
     except Exception as e:
         logging.warning(f"Error during MLflow temp directory cleanup: {e}")
 
+def cleanup_checkpoints(keep_n=5):
+    """
+    Clean up old local checkpoint files and MLflow checkpoint artifacts.
+    Keeps only the keep_n most recent checkpoints per run.
+    """
+    base_dir = os.path.dirname(__file__)
+    
+    # 1. Local checkpoints
+    checkpoint_base = os.path.join(base_dir, "checkpoints")
+    if os.path.exists(checkpoint_base):
+        count = 0
+        try:
+            for run_id in os.listdir(checkpoint_base):
+                run_path = os.path.join(checkpoint_base, run_id)
+                if not os.path.isdir(run_path):
+                    continue
+                    
+                pkl_files = glob.glob(os.path.join(run_path, "checkpoint_*.pkl"))
+                if not pkl_files:
+                    if not os.listdir(run_path):
+                        try:
+                            os.rmdir(run_path)
+                            logging.info(f"Removed empty checkpoint directory: {run_path}")
+                        except Exception:
+                            pass
+                    continue
+                    
+                def get_step_local(path):
+                    match = re.search(r"checkpoint_(\d+)\.pkl", os.path.basename(path))
+                    return int(match.group(1)) if match else -1
+                    
+                pkl_files.sort(key=get_step_local, reverse=True)
+                to_delete = pkl_files[keep_n:]
+                for f in to_delete:
+                    try:
+                        os.remove(f)
+                        logging.info(f"Cleaned up old local checkpoint: {f}")
+                        count += 1
+                    except Exception as e:
+                        logging.warning(f"Failed to delete {f}: {e}")
+            if count > 0:
+                logging.info(f"Local checkpoint cleanup finished. Removed {count} files.")
+        except Exception as e:
+            logging.warning(f"Error during local checkpoint cleanup: {e}")
+
+    # 2. MLflow checkpoints (mlruns/*/*/artifacts/checkpoints/step_*)
+    mlruns_base = os.path.join(os.path.dirname(base_dir), "mlruns")
+    if os.path.exists(mlruns_base):
+        count = 0
+        try:
+            for exp_id in os.listdir(mlruns_base):
+                exp_path = os.path.join(mlruns_base, exp_id)
+                if not os.path.isdir(exp_path) or exp_id == ".trash":
+                    continue
+                
+                for run_id in os.listdir(exp_path):
+                    run_path = os.path.join(exp_path, run_id)
+                    if not os.path.isdir(run_path):
+                        continue
+                    
+                    artifacts_ckpt_path = os.path.join(run_path, "artifacts", "checkpoints")
+                    if not os.path.exists(artifacts_ckpt_path):
+                        continue
+                    
+                    step_dirs = [d for d in os.listdir(artifacts_ckpt_path) if os.path.isdir(os.path.join(artifacts_ckpt_path, d)) and d.startswith("step_")]
+                    if not step_dirs:
+                        continue
+                    
+                    def get_step_mlflow(dirname):
+                        match = re.search(r"step_(\d+)", dirname)
+                        return int(match.group(1)) if match else -1
+                    
+                    step_dirs.sort(key=get_step_mlflow, reverse=True)
+                    to_delete = step_dirs[keep_n:]
+                    for d in to_delete:
+                        dir_path = os.path.join(artifacts_ckpt_path, d)
+                        try:
+                            shutil.rmtree(dir_path)
+                            logging.info(f"Cleaned up old MLflow checkpoint artifact: {dir_path}")
+                            count += 1
+                        except Exception as e:
+                            logging.warning(f"Failed to delete MLflow artifact {dir_path}: {e}")
+            if count > 0:
+                logging.info(f"MLflow checkpoint cleanup finished. Removed {count} artifacts.")
+        except Exception as e:
+            logging.warning(f"Error during MLflow checkpoint cleanup: {e}")
+
 def wait_for_bridge_initialization(timeout=300):
     logging.info("Waiting for R-NaD bridge to initialize (pre-warm JAX)...")
     start_time = time.time()
@@ -544,6 +631,7 @@ def main():
     args = parser.parse_args()
     
     cleanup_processes()
+    cleanup_checkpoints()
     
     checkpoint = args.checkpoint
     run_id = os.environ.get("RNAD_RUN_ID")
@@ -680,9 +768,10 @@ def main():
         last_cleanup_time = 0
         
         while True:
-            # Periodically cleanup MLflow tmp dirs (every 1 hour)
+            # Periodically cleanup MLflow tmp dirs and local checkpoints (every 1 hour)
             if time.time() - last_cleanup_time > 3600:
                 cleanup_mlflow_tmp_dirs()
+                cleanup_checkpoints()
                 last_cleanup_time = time.time()
 
             # Check if process is still running
