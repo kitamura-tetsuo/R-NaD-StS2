@@ -2395,7 +2395,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
         # Player HP: Reward both damage taken (penalty) and healing (reward) at the same ratio (0.015)
         hp_delta = float(current_hp - last_hp)
         
-        combat_reward = (damage_dealt * 0.002) + (hp_delta * 0.015)
+        combat_reward = (damage_dealt * 0.002) + (hp_delta * 0.03)
         
         if abs(combat_reward) > 1e-6:
             intermediate_reward += combat_reward
@@ -2428,10 +2428,15 @@ def compute_intermediate_reward(state, state_type, action_idx):
     # Potions Count
     potions = state.get("potions", [])
     current_potion_count = sum(1 for p in potions if p.get("id") != "empty")
-    if reward_tracker.last_potion_count != -1 and current_potion_count > reward_tracker.last_potion_count:
-        if state_type in ["rewards", "shop", "treasure"]: # After battle reward, shop buy, or treasure
-            intermediate_reward += 0.01
-            log(f"Reward for potion acquisition: +0.01")
+    if reward_tracker.last_potion_count != -1:
+        if current_potion_count > reward_tracker.last_potion_count:
+            if state_type in ["rewards", "shop", "treasure"]: # After battle reward, shop buy, or treasure
+                intermediate_reward += 0.01
+                log(f"Reward for potion acquisition: +0.01")
+        elif current_potion_count < reward_tracker.last_potion_count:
+            # 0.001 penalty for using/losing a potion to prevent wasteful use
+            intermediate_reward -= 0.001
+            log(f"Penalty for potion use: -0.001")
     reward_tracker.last_potion_count = current_potion_count
 
     # Card Acquisition Count (Using piles in combat or reward list in selection)
