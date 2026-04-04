@@ -50,6 +50,7 @@ struct CsCard {
     upgraded: Option<bool>,
     cost: Option<i32>,
     is_playable: Option<bool>,
+    is_generated: Option<bool>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -84,6 +85,8 @@ struct CsState {
     potions: Vec<CsPotion>,
     retains_block: bool,
     floor: i32,
+    predicted_total_damage: Option<i32>,
+    predicted_end_block: Option<i32>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -127,6 +130,7 @@ fn convert_card(c: CsCard) -> Card {
         target: tt,
         is_upgraded: c.upgraded.unwrap_or(false),
         is_playable: c.is_playable.unwrap_or(true),
+        is_generated: c.is_generated.unwrap_or(false),
     }
 }
 
@@ -154,6 +158,7 @@ fn convert_pile(pile: Vec<serde_json::Value>) -> Vec<Card> {
             target: TargetType::None,
             is_upgraded: v.get("upgraded").and_then(|b| b.as_bool()).unwrap_or(false),
             is_playable: v.get("isPlayable").and_then(|b| b.as_bool()).unwrap_or(true),
+            is_generated: v.get("is_generated").and_then(|b| b.as_bool()).unwrap_or(false),
         })
     }).collect()
 }
@@ -198,6 +203,8 @@ fn convert_to_internal(cs: CsState) -> GameState {
         stars: cs.player.stars,
         retains_block: cs.retains_block,
         floor: cs.floor,
+        predicted_total_damage: cs.predicted_total_damage.unwrap_or(0),
+        predicted_end_block: cs.predicted_end_block.unwrap_or(0),
     }
 }
 

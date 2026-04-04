@@ -26,6 +26,7 @@ pub struct Intent {
     pub intent_type: String,
     pub damage: i32,
     pub repeats: i32,
+    pub count: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

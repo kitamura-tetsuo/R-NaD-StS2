@@ -25,6 +25,10 @@ pub struct GameState {
     pub stars: i32,
     pub retains_block: bool,
     pub floor: i32,
+    #[serde(default)]
+    pub predicted_total_damage: i32,
+    #[serde(default)]
+    pub predicted_end_block: i32,
 }
 
 impl GameState {
@@ -42,6 +46,8 @@ impl GameState {
             stars,
             retains_block: false,
             floor: 1,
+            predicted_total_damage: 0,
+            predicted_end_block: 0,
         }
     }
 

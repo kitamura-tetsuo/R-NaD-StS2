@@ -24,6 +24,8 @@ pub struct Card {
     #[serde(rename = "isPlayable")]
     #[serde(default = "default_true")]
     pub is_playable: bool,
+    #[serde(default)]
+    pub is_generated: bool,
 }
 
 fn default_true() -> bool {
@@ -43,6 +45,7 @@ impl Card {
             target,
             is_upgraded: false,
             is_playable,
+            is_generated: false,
         }
     }
 

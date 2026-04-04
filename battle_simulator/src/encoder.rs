@@ -19,6 +19,11 @@ pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32>
     tensor[offset + 6] = state.max_energy as f32 / 5.0;
     tensor[offset + 7] = state.stars as f32 / 5.0;
     tensor[offset + 8] = if state.retains_block { 1.0 } else { 0.0 };
+    
+    // Predicted damage/block
+    tensor[offset + 10] = state.predicted_total_damage as f32 / 50.0;
+    tensor[offset + 11] = state.predicted_end_block as f32 / 50.0;
+    tensor[offset + 12] = (state.predicted_total_damage - state.predicted_end_block).max(0) as f32 / 50.0;
 
     // Boss ID (index 20)
     // tensor[offset + 20] = vocab.get_boss_idx(&state.boss) as f32 / 100.0;
@@ -49,10 +54,10 @@ pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32>
     tensor[offset + 1] = state.discard_pile.len() as f32 / 30.0;
     tensor[offset + 2] = state.exhaust_pile.len() as f32 / 30.0;
 
-    // Hand cards (index 10-109)
+    // Hand cards (index 10-119, stride 11)
     for i in 0..state.hand.len().min(10) {
         let card = &state.hand[i];
-        let card_idx = offset + 10 + i * 10;
+        let card_idx = offset + 10 + i * 11;
         tensor[card_idx] = vocab.get_card_idx(&card.id) as f32;
         tensor[card_idx + 1] = if card.is_playable { 1.0 } else { 0.0 };
         
@@ -71,12 +76,13 @@ pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32>
         tensor[card_idx + 7] = if card.is_upgraded { 1.0 } else { 0.0 };
         tensor[card_idx + 8] = card.current_damage as f32 / 20.0;
         tensor[card_idx + 9] = card.current_block as f32 / 20.0;
+        tensor[card_idx + 10] = if card.is_generated { 1.0 } else { 0.0 };
     }
 
-    // Enemies (index 110-189)
+    // Enemies (index 120-199)
     for i in 0..state.enemies.len().min(5) {
         let enemy = &state.enemies[i];
-        let enemy_idx = offset + 110 + i * 16;
+        let enemy_idx = offset + 120 + i * 16;
         if enemy.is_alive() {
             tensor[enemy_idx] = 1.0;
             tensor[enemy_idx + 1] = vocab.get_monster_idx(&enemy.id) as f32;
@@ -84,7 +90,23 @@ pub fn encode_state_to_tensor(state: &GameState, vocab: &Vocabulary) -> Vec<f32>
             tensor[enemy_idx + 3] = enemy.cur_hp as f32 / 200.0;
             tensor[enemy_idx + 4] = enemy.max_hp as f32 / 200.0;
             tensor[enemy_idx + 5] = enemy.block as f32 / 50.0;
-            // intents? 
+            
+            // Encode intents (Indices 6-13, 8 slots)
+            // Primary intent
+            if let Some(primary) = enemy.intents.get(0) {
+                tensor[enemy_idx + 6] = map_intent_type_to_float(&primary.intent_type);
+                tensor[enemy_idx + 7] = primary.damage as f32 / 20.0;
+                tensor[enemy_idx + 8] = primary.repeats as f32 / 5.0;
+                tensor[enemy_idx + 9] = primary.count as f32 / 5.0;
+            }
+            
+            // Secondary intent (if any) - common in BOSS fights or some elites
+            if let Some(secondary) = enemy.intents.get(1) {
+                tensor[enemy_idx + 10] = map_intent_type_to_float(&secondary.intent_type);
+                tensor[enemy_idx + 11] = secondary.damage as f32 / 20.0;
+                tensor[enemy_idx + 12] = secondary.repeats as f32 / 5.0;
+                tensor[enemy_idx + 13] = secondary.count as f32 / 5.0;
+            }
         }
     }
 
@@ -135,5 +157,21 @@ fn encode_bow(pile: &[crate::card::Card], buffer: &mut [f32], vocab: &Vocabulary
         if idx < BOW_SIZE {
             buffer[idx] += 1.0;
         }
+    }
+}
+
+fn map_intent_type_to_float(intent_type: &str) -> f32 {
+    match intent_type {
+        "Attack" => 0.1,
+        "Defend" => 0.2,
+        "Buff" => 0.3,
+        "Debuff" => 0.4,
+        "StrongDebuff" => 0.5,
+        "AttackDefend" => 0.6,
+        "AttackBuff" => 0.7,
+        "AttackDebuff" => 0.8,
+        "Stun" | "Sleep" => 0.9,
+        "Escape" => 1.0,
+        _ => 0.0,
     }
 }
