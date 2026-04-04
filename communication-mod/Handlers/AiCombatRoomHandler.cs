@@ -41,6 +41,17 @@ public class AiCombatRoomHandler : IRoomHandler
         
         int turnCount = 0;
         _hasValidBackup = false;
+        
+        // Record HP at the start of combat for retry thresholding
+        var slayer = MainFile.Instance.GetAiSlayer();
+        var runState = MegaCrit.Sts2.Core.Runs.RunManager.Instance?.DebugOnlyGetState();
+        var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
+        if (player != null && slayer != null)
+        {
+            slayer.HpBeforeCombat = (int)player.Creature.CurrentHp;
+            MainFile.Logger.Info($"[AiCombatRoomHandler] Recorded HP before combat: {slayer.HpBeforeCombat}");
+        }
+
         while (CombatManager.Instance.IsInProgress && turnCount < 100)
         {
             ct.ThrowIfCancellationRequested();

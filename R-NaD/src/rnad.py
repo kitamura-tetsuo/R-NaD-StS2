@@ -6,7 +6,7 @@ import logging
 import traceback
 import time
 import numpy as np
-from typing import NamedTuple, Tuple, List, Dict, Any, Optional
+from typing import NamedTuple, Tuple, List, Dict, Any, Optional, Mapping
 from functools import partial
 
 # Configure logging
@@ -559,7 +559,7 @@ def partial_load_params(target_params, source_params):
             logging.info(f"[R-NaD] Mapping {source_key} -> {key}")
             
         source_val = source_params[source_key]
-        if isinstance(target_val, dict) and isinstance(source_val, dict):
+        if isinstance(target_val, Mapping) and isinstance(source_val, Mapping):
             new_params[key] = partial_load_params(target_val, source_val)
         elif isinstance(target_val, (jnp.ndarray, np.ndarray)) and isinstance(source_val, (jnp.ndarray, np.ndarray)):
             if target_val.shape == source_val.shape:

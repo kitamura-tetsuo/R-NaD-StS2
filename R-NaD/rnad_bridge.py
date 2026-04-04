@@ -626,6 +626,11 @@ class BackupManager:
         self.max_retries = 3
         if not os.path.exists(self.backup_root):
             os.makedirs(self.backup_root, exist_ok=True)
+            
+    def clear(self):
+        """Clear all backups in the stack."""
+        log(f"[BackupManager] Clearing stack of size {len(self.stack)}")
+        self.stack = []
 
     def _are_saves_identical(self, backup_dir):
         """Compare current saves with a backup directory."""
@@ -757,7 +762,7 @@ class BackupManager:
                 log(f"[BackupManager] Backup {os.path.basename(latest['path'])} exhausted (tried {self.max_retries} times). Backtracking...")
                 self.stack.pop()
         
-        log(f"[BackupManager] All backups exhausted or stack empty (stack size: {len(self.stack)}). Starting fresh.")
+        log(f"[BackupManager] FAILED: All backups exhausted or stack empty (stack size: {len(self.stack)}). Proceeding.")
         return None
 
 # Initialize BackupManager
@@ -843,6 +848,7 @@ class RewardTracker:
         self.last_potion_count = -1
         self.was_elite = False
         self.was_boss = False
+        backup_manager.clear()
         log("RewardTracker: Full reset for new run.")
 
     def reset_for_next_episode(self):
@@ -3375,9 +3381,11 @@ class CommandHandler(BaseHTTPRequestHandler):
             saved_trajs = len(data_to_save["experience_queue"]) + len(data_to_save["batch_buffer"])
             
             try:
-                with open(traj_checkpoint_path, "wb") as f:
+                temp_path = traj_checkpoint_path + ".tmp"
+                with open(temp_path, "wb") as f:
                     pickle.dump(data_to_save, f)
-                log(f"/save_trajectory: Saved {saved_steps} steps and {saved_trajs} queued trajectories to {traj_checkpoint_path}")
+                os.replace(temp_path, traj_checkpoint_path)
+                log(f"/save_trajectory: Saved {saved_steps} steps and {saved_trajs} queued trajectories to {traj_checkpoint_path} (atomic)")
             except Exception as e:
                 log(f"/save_trajectory: Error saving trajectory: {e}")
                 
@@ -3397,51 +3405,57 @@ class CommandHandler(BaseHTTPRequestHandler):
             loaded_trajs = 0
             try:
                 if os.path.exists(traj_checkpoint_path):
-                    with open(traj_checkpoint_path, "rb") as f:
-                        data = pickle.load(f)
-                    
-                    if isinstance(data, dict):
-                        # Restore current trajectory
-                        current_trajectory = data.get("current_trajectory", [])
-                        
-                        # Restore experience queue
-                        q_items = data.get("experience_queue", [])
-                        for item in q_items:
-                            experience_queue.put(item)
-                        
-                        # Restore batch buffer
-                        b_items = data.get("batch_buffer", [])
-                        if training_worker:
-                            with training_worker.buffer_lock:
-                                training_worker.batch_buffer.extend(b_items)
-                        else:
-                            # If worker doesn't exist yet, put them in the queue
-                            for item in b_items:
+                    try:
+                        with open(traj_checkpoint_path, "rb") as f:
+                            data = pickle.load(f)
+                    except (EOFError, pickle.UnpicklingError, AttributeError, ImportError) as pe:
+                        log(f"/load_trajectory: Corrupted checkpoint file detected! Deleting {traj_checkpoint_path}. Error: {pe}")
+                        os.remove(traj_checkpoint_path)
+                        data = None
+
+                    if data is not None:
+                        if isinstance(data, dict):
+                            # Restore current trajectory
+                            current_trajectory = data.get("current_trajectory", [])
+                            
+                            # Restore experience queue
+                            q_items = data.get("experience_queue", [])
+                            for item in q_items:
                                 experience_queue.put(item)
-                        
-                        loaded_steps = len(current_trajectory)
-                        loaded_trajs = len(q_items) + len(b_items)
-                        
-                        # Restore learner state if available
-                        if learner:
-                            if "learner_params" in data and data["learner_params"] is not None:
-                                log("/load_trajectory: Restoring learner parameters.")
-                                learner.params = data["learner_params"]
-                            if "learner_fixed_params" in data and data["learner_fixed_params"] is not None:
-                                log("/load_trajectory: Restoring learner fixed parameters.")
-                                learner.fixed_params = data["learner_fixed_params"]
-                            if "learner_opt_state" in data and data["learner_opt_state"] is not None:
-                                log("/load_trajectory: Restoring learner optimizer state.")
-                                learner.opt_state = data["learner_opt_state"]
+                            
+                            # Restore batch buffer
+                            b_items = data.get("batch_buffer", [])
+                            if training_worker:
+                                with training_worker.buffer_lock:
+                                    training_worker.batch_buffer.extend(b_items)
+                            else:
+                                # If worker doesn't exist yet, put them in the queue
+                                for item in b_items:
+                                    experience_queue.put(item)
+                            
+                            loaded_steps = len(current_trajectory)
+                            loaded_trajs = len(q_items) + len(b_items)
+                            
+                            # Restore learner state if available
+                            if learner:
+                                if "learner_params" in data and data["learner_params"] is not None:
+                                    log("/load_trajectory: Restoring learner parameters.")
+                                    learner.params = data["learner_params"]
+                                if "learner_fixed_params" in data and data["learner_fixed_params"] is not None:
+                                    log("/load_trajectory: Restoring learner fixed parameters.")
+                                    learner.fixed_params = data["learner_fixed_params"]
+                                if "learner_opt_state" in data and data["learner_opt_state"] is not None:
+                                    log("/load_trajectory: Restoring learner optimizer state.")
+                                    learner.opt_state = data["learner_opt_state"]
+                            else:
+                                log("/load_trajectory: Warning: learner NOT initialized, skipping optimizer state restoration.")
                         else:
-                            log("/load_trajectory: Warning: learner NOT initialized, skipping optimizer state restoration.")
-                    else:
-                        # Fallback for old list-only format
-                        current_trajectory = data
-                        loaded_steps = len(current_trajectory)
-                        
-                    os.remove(traj_checkpoint_path)
-                    log(f"/load_trajectory: Restored {loaded_steps} steps and {loaded_trajs} queued trajectories.")
+                            # Fallback for old list-only format
+                            current_trajectory = data
+                            loaded_steps = len(current_trajectory)
+                            
+                        os.remove(traj_checkpoint_path)
+                        log(f"/load_trajectory: Restored {loaded_steps} steps and {loaded_trajs} queued trajectories.")
                 else:
                     log("/load_trajectory: No trajectory checkpoint file found.")
             except Exception as e:

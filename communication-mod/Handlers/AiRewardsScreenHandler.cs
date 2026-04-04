@@ -49,7 +49,7 @@ public class AiRewardsScreenHandler : IScreenHandler
                     
                     if (hpLoss >= floorThreshold && slayer.HpBeforeCombat > 0)
                     {
-                        MainFile.Logger.Info($"[AiRewardsScreenHandler] HP Loss Check: loss={hpLoss}, threshold={floorThreshold}. Triggering retry...");
+                        MainFile.Logger.Info($"[AiRewardsScreenHandler] HP Loss Check: current={currentHp}, before={slayer.HpBeforeCombat}, loss={hpLoss}, threshold={floorThreshold}. TRIGGERING RETRY.");
                         
                         // Wait for a few seconds as requested
                         await Task.Delay(180, ct); // Reduced from 750ms (originally 3000ms)
