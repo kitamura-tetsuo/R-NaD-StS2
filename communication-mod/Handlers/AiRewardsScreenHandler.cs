@@ -65,8 +65,8 @@ public class AiRewardsScreenHandler : IScreenHandler
                         {
                             var data = json.Data.AsGodotDictionary();
                             isTop50 = data.ContainsKey("is_top_50") ? data["is_top_50"].AsBool() : true;
-                            retryCount = data.ContainsKey("retry_count") ? (int)data["retry_count"].AsInt() : 0;
-                            maxRetries = data.ContainsKey("max_retries") ? (int)data["max_retries"].AsInt() : 3;
+                            retryCount = data.ContainsKey("retry_count") ? (int)data["retry_count"].AsInt64() : 0;
+                            maxRetries = data.ContainsKey("max_retries") ? (int)data["max_retries"].AsInt64() : 3;
                         }
                     }
 
