@@ -330,4 +330,8 @@ impl GameState {
         }
         self.enemies.retain(|e| e.is_alive());
     }
+
+    pub fn all_enemies_dead(&self) -> bool {
+        self.enemies.iter().all(|e| !e.is_alive())
+    }
 }

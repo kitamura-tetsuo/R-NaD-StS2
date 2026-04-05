@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct EnumerateResult {
     pub actions: Vec<i32>, // Sequence of action indices
     pub outcomes: Vec<(f32, Vec<f32>)>, // (Probability, Encoded Tensor)
+    pub is_lethal: bool, // NEW: Deterministic kill flag
 }
 
 pub struct StateEnumerator<'a> {
@@ -42,6 +43,7 @@ impl<'a> StateEnumerator<'a> {
                 final_actions.push(75);
                 results.push(EnumerateResult {
                     actions: final_actions,
+                    is_lethal: state.all_enemies_dead(),
                     outcomes: vec![(1.0, encode_state_to_tensor(&state, self.vocab))],
                 });
                 continue;
@@ -57,9 +59,10 @@ impl<'a> StateEnumerator<'a> {
                     let mut final_actions = actions.clone();
                     final_actions.push(action_idx);
                     
-                    let outcomes = self.get_random_outcomes(&state, card_idx, target_idx);
+                    let (outcomes, is_lethal) = self.get_random_outcomes(&state, card_idx, target_idx);
                     results.push(EnumerateResult {
                         actions: final_actions,
+                        is_lethal,
                         outcomes,
                     });
                 } else {
@@ -97,9 +100,10 @@ impl<'a> StateEnumerator<'a> {
         actions
     }
 
-    fn get_random_outcomes(&self, state: &GameState, card_idx: usize, target_idx: usize) -> Vec<(f32, Vec<f32>)> {
+    fn get_random_outcomes(&self, state: &GameState, card_idx: usize, target_idx: usize) -> (Vec<(f32, Vec<f32>)>, bool) {
         let card = &state.hand[card_idx];
         let mut outcomes = Vec::new();
+        let mut is_lethal = true;
 
         if card.id == "HAVOC" {
             // Draw top card and play it for free
@@ -110,6 +114,7 @@ impl<'a> StateEnumerator<'a> {
                     let next_state = state.clone();
                     // Simplified: Havoc play logic
                     // next_state.play_card_from_draw(i); 
+                    is_lethal &= next_state.all_enemies_dead();
                     outcomes.push((prob, encode_state_to_tensor(&next_state, self.vocab)));
                 }
             } else if !state.discard_pile.is_empty() {
@@ -118,22 +123,25 @@ impl<'a> StateEnumerator<'a> {
                 let prob = 1.0 / state.discard_pile.len() as f32;
                 for _i in 0..state.discard_pile.len() {
                     let next_state = state.clone();
+                    is_lethal &= next_state.all_enemies_dead();
                     outcomes.push((prob, encode_state_to_tensor(&next_state, self.vocab)));
                 }
             } else {
                 // Nothing happens
                 let mut next_state = state.clone();
                 next_state.play_card(card_idx, Some(target_idx));
+                is_lethal &= next_state.all_enemies_dead();
                 outcomes.push((1.0, encode_state_to_tensor(&next_state, self.vocab)));
             }
         } else {
             // Default: treat as deterministic for now if unknown random card
             let mut next_state = state.clone();
             next_state.play_card(card_idx, Some(target_idx));
+            is_lethal &= next_state.all_enemies_dead();
             outcomes.push((1.0, encode_state_to_tensor(&next_state, self.vocab)));
         }
 
-        outcomes
+        (outcomes, is_lethal)
     }
 
     fn get_state_hash(&self, state: &GameState) -> String {

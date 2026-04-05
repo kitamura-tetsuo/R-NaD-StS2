@@ -3031,17 +3031,7 @@ def predict_action(state_json):
                         log(f"[Python] Combat Search: No deterministic sequences found (raw={num_res}).")
                     
                     # 1. Lethal Search (Always prioritize kill-all if enabled)
-                    ka_seqs = []
-                    for res in results:
-                        is_ka = True
-                        for prob, tens in res["outcomes"]:
-                            # tens[622] is Enemy 0 Alive flag. We need to check all 5 possible enemy slots.
-                            # Each enemy has 16 features. Offsets: 622, 638, 654, 670, 686
-                            enemy_alive_flags = [tens[622 + i * 16] for i in range(5)]
-                            if any(flag > 0.5 for flag in enemy_alive_flags):
-                                is_ka = False
-                                break
-                        if is_ka: ka_seqs.append(res)
+                    ka_seqs = [res for res in results if res.get("is_lethal")]
                     
                     if ka_seqs and lethal_search_mode:
                         # Prioritize Kill-all by player HP (tensor[2])
