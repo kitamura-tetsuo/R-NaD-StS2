@@ -3067,7 +3067,9 @@ def predict_action(state_json):
                                 "state_type": jnp.array(t_batch[:, b_off + 4*v_sz], dtype=jnp.int32)[:, None],
                                 "head_type": jnp.array(t_batch[:, b_off + 4*v_sz + 1], dtype=jnp.int32)[:, None],
                             }
-                            m_batch = jnp.ones((len(t_batch), 1, 100))
+                            # Use the actual mask for evaluation during search instead of all ones
+                            m_batch = jnp.expand_dims(jnp.array(mask, dtype=jnp.float32), axis=(0, 1))
+                            m_batch = jnp.broadcast_to(m_batch, (len(t_batch), 1, 100))
                             s_key, predict_key = jax_local.random.split(predict_key)
                             _, v_out = learner.network.apply(learner.params, s_key, obs_batch, m_batch, is_training=False)
                             
@@ -3089,6 +3091,28 @@ def predict_action(state_json):
                 log(f"[Python] Multiple Move Search ERROR: {e}")
                 traceback.print_exc()
         
+        # --- FINAL STAMP: STRICT MASKING ---
+        # Ensure we ONLY pick from the mask right before the final decision.
+        # This prevents picking index 99 (Wait) if 75 (End Turn) is enabled.
+        final_probs = probs * mask
+        sum_fp = jnp.sum(final_probs)
+        
+        if sum_fp > 1e-12:
+            # Re-normalize over the mask
+            probs = final_probs / sum_fp
+        else:
+            # FALLBACK: If all valid actions ended up with 0 probability (e.g. after scaling),
+            # Distribute probability uniformly over the mask to ensure we pick SOME valid action.
+            log(f"[Python] WARNING: All valid actions have zero probability in {state_type}. Falling back to uniform over mask.")
+            num_valid = np.sum(mask)
+            if num_valid > 0:
+                probs = jnp.array(mask, dtype=jnp.float32) / num_valid
+            else:
+                # Should not happen as get_action_mask forces WAIT if empty, 
+                # but handle it gracefully just in case.
+                probs = jnp.zeros_like(probs).at[99].set(1.0)
+        # -----------------------------------
+
         # Sample or Argmax action
         if search_action_idx is not None and mask[search_action_idx]:
             action_idx = search_action_idx
@@ -3172,6 +3196,13 @@ def predict_action(state_json):
                             else:
                                 ident_action += f" on target_{target_idx}"
                 elif action_idx == 75: ident_action = "end_turn"
+                elif action_idx == 86: ident_action = "proceed"
+                elif action_idx == 87: ident_action = "main_menu"
+                elif action_idx == 90: ident_action = "confirm_selection"
+                elif action_idx == 91: ident_action = "open_chest"
+                elif 94 <= action_idx <= 98:
+                    potion_idx = action_idx - 94
+                    ident_action = f"discard_potion:{potion_idx}"
             
             log_decision(f"Selected Action ID: {ident_action}")
             
@@ -3195,6 +3226,17 @@ def predict_action(state_json):
         
         if action_idx == 99:
             pass # already wait
+        
+        elif action_idx == 90:
+            # confirm_selection / skip / click_proceed_button
+            # Used in grid_selection, hand_selection, card_reward, etc.
+            action = {"action": "confirm_selection"}
+            
+        elif action_idx == 91:
+            action = {"action": "open_chest"}
+            
+        elif 94 <= action_idx <= 98:
+            action = {"action": "discard_potion", "index": action_idx - 94}
         
         elif state_type == "combat":
             hand = state.get("hand") or []
@@ -3258,9 +3300,7 @@ def predict_action(state_json):
                 action = {"action": "shop_proceed"}
         
         elif state_type == "treasure":
-            if action_idx == 91:
-                action = {"action": "open_chest"}
-            elif action_idx == 86:
+            if action_idx == 86:
                 action = {"action": "proceed"}
         
         elif state_type == "treasure_relics":
@@ -3287,12 +3327,7 @@ def predict_action(state_json):
                         action = {"action": "select_grid_card", "index": cards[action_idx].get("index")}
                     else:
                         action = {"action": "select_hand_card", "index": cards[action_idx].get("index")}
-            elif action_idx == 90:
-                action = {"action": "confirm_selection"}
         
-        elif 94 <= action_idx < 99:
-            potion_idx = action_idx - 94
-            action = {"action": "discard_potion", "index": potion_idx}
         
         elif state_type == "game_over":
             if action_idx == 86:
@@ -3307,6 +3342,17 @@ def predict_action(state_json):
                     else:
                         log("[Python] Game Over: Restoration failed (no backups). Returning to main menu for fresh start.")
                 action = {"action": "return_to_main_menu"}
+
+        # -----------------------------
+        # Safety Guard: If action is still "wait" but it was EXPLICITLY enabled in the mask,
+        # it means we have a mapping bug.
+        if action.get("action") == "wait" and action_idx != 99:
+            if mask[action_idx]:
+                log(f"CRITICAL ERROR: AI selected masked action index {action_idx} in state {state_type}, but NO HANDLER WAS DEFINED! Mapping to 'wait' to avoid crash, but game will likely stall.")
+            else:
+                # Should not happen due to strict masking above, but for completeness:
+                log(f"WARNING: AI selected action index {action_idx} which was NOT in the mask.")
+        # -----------------------------
 
         # Trajectory collection
         if learning_active:

@@ -173,17 +173,17 @@ async def process_state(data: Dict) -> Dict:
             "searchType": data.get("search_type")
         }
         
-        # Get top 3 others (excluding selected)
+        # Get top 5 others (excluding selected)
         # Create mask to hide selected action
         probs_others = probs_arr.copy()
         if action_idx < len(probs_others):
             probs_others[action_idx] = -1.0
             
-        top_other_indices = np.argsort(probs_others)[-3:][::-1]
+        top_other_indices = np.argsort(probs_others)[-5:][::-1]
         top_actions = [selected_action]
         
         for i in top_other_indices:
-            if i < len(probs_others) and probs_others[i] > 0.0001: # Small threshold
+            if i < len(probs_others) and probs_others[i] > 0.00001: # Small threshold (0.001%)
                 top_actions.append({
                     "id": int(i),
                     "name": get_action_name(int(i), state),

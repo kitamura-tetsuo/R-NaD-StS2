@@ -71,6 +71,7 @@ public class AiCombatRoomHandler : IRoomHandler
             MainFile.Logger.Info($"[AiSlayer] Turn {turnCount}: Handling play phase/selection via AI");
             
             int actionsInTurn = 0;
+            int consecutiveWaits = 0;
             while (CombatManager.Instance.IsInProgress && actionsInTurn < 100)
             {
                 ct.ThrowIfCancellationRequested();
@@ -94,8 +95,28 @@ public class AiCombatRoomHandler : IRoomHandler
                     break;
                 }
 
+                bool actionsDisabled = CombatManager.Instance.PlayerActionsDisabled;
+                if (actionsInTurn % 5 == 0) // Log state every 5 actions to avoid spam, but keep informed
+                {
+                    MainFile.Logger.Info($"[AiCombatRoomHandler] Turn {turnCount} Step {actionsInTurn}: PlayPhase={isPlayPhase}, Overlay={hasOverlay}, HandSel={isHandSelecting}, ActionsDisabled={actionsDisabled}");
+                }
 
-                await MainFile.Instance.StepAI(MainFile.Instance.ExecuteCombatAction);
+                bool actionTaken = await MainFile.Instance.StepAI(MainFile.Instance.ExecuteCombatAction);
+                
+                if (!actionTaken)
+                {
+                    consecutiveWaits++;
+                    if (consecutiveWaits >= 20)
+                    {
+                        MainFile.Logger.Warn($"[AiCombatRoomHandler] STALL DETECTED: AI has returned 'wait' 20 times consecutively in PlayPhase. ActionsDisabled={actionsDisabled}");
+                        consecutiveWaits = 0; // Reset after warning to avoid spamming every frame thereafter
+                    }
+                }
+                else
+                {
+                    consecutiveWaits = 0;
+                }
+
                 await Task.Delay(500, ct);
                 actionsInTurn++;
             }

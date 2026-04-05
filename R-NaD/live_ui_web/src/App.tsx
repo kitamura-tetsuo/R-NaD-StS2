@@ -402,7 +402,12 @@ const App: React.FC = () => {
                           "text-[8px] font-mono",
                           action.isSelected ? "text-brand-secondary font-bold" : "text-gray-400"
                         )}>
-                          {(action.prob * 100).toFixed(0)}%
+                          {(() => {
+                            const p = action.prob * 100;
+                            if (p > 0 && p < 0.1) return '<0.1%';
+                            if (p > 99.9 && p < 100) return '>99.9%';
+                            return p.toFixed(1) + '%';
+                          })()}
                         </span>
                       </div>
                       <div className="h-1 w-full bg-gray-800/50 rounded-full overflow-hidden">
