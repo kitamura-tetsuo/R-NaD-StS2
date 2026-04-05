@@ -619,9 +619,10 @@ BACKUP_ROOT = os.path.expanduser("~/sts2_backups")
 class BackupManager:
     def __init__(self, backup_root):
         self.backup_root = backup_root
-        self.stack = [] # List of {path: str, retry_count: int, reward: float}
+        self.stack = [] # List of {path: str, retry_count: int, reward: float, trials: list}
         self.max_retries = 3
         self.hp_loss_history = [] # Track HP loss for each trial in the current encounter
+        self.current_trial_actions = [] # Actions taken since the last backup or restore
         if not os.path.exists(self.backup_root):
             os.makedirs(self.backup_root, exist_ok=True)
             
@@ -630,6 +631,7 @@ class BackupManager:
         log(f"[BackupManager] Clearing stack of size {len(self.stack)}")
         self.stack = []
         self.hp_loss_history = []
+        self.current_trial_actions = []
 
     def _are_saves_identical(self, backup_dir):
         """Compare current saves with a backup directory."""
@@ -686,9 +688,12 @@ class BackupManager:
             self.stack.append({
                 "path": backup_dir,
                 "retry_count": 0,
-                "reward": current_reward
+                "reward": current_reward,
+                "trials": []
             })
             log(f"[BackupManager] Created new backup at {backup_dir}. Stack size: {len(self.stack)}")
+            # New backup point: clear path history so we diversify from this point onwards
+            self.current_trial_actions = []
             # Verify if the new backup is a combat save
             is_combat = self._is_combat_save(backup_dir)
             if not is_combat:
@@ -747,6 +752,37 @@ class BackupManager:
             
         log(f"[BackupManager] HP Performance Check: loss={hp_loss}, median={median_val}, is_top_50={is_top_50}, retries={retry_count}/{self.max_retries}")
         return is_top_50, retry_count, self.max_retries
+
+    def record_action(self, action_idx):
+        """Record an action in the current trial."""
+        self.current_trial_actions.append(int(action_idx))
+
+    def save_trial_and_reset(self):
+        """Save the current sequence of actions as a completed trial for the top backup."""
+        if self.stack and self.current_trial_actions:
+            latest = self.stack[-1]
+            latest["trials"].append(list(self.current_trial_actions))
+            log(f"[BackupManager] Saved trial of length {len(self.current_trial_actions)} to backup {os.path.basename(latest['path'])}. Total trials: {len(latest['trials'])}")
+        self.current_trial_actions = []
+
+    def get_penalized_actions(self):
+        """Return a set of actions that have been taken in past trials for the current situation."""
+        if not self.stack:
+            return set()
+        
+        latest = self.stack[-1]
+        trials = latest.get("trials", [])
+        if not trials:
+            return set()
+        
+        current_len = len(self.current_trial_actions)
+        penalized = set()
+        for trial in trials:
+            # Check if this trial matches our current path so far
+            if len(trial) > current_len and trial[:current_len] == self.current_trial_actions:
+                penalized.add(trial[current_len])
+        
+        return penalized
 
     def restore(self, force=False):
         """Restore the latest valid backup, backtracking if necessary."""
@@ -837,6 +873,9 @@ def trigger_restore(force=False):
     # NEW: Flush raw trajectory logger as well
     if raw_logger:
         raw_logger.flush(force_terminal=True)
+
+    # NEW: Save current trial actions for diversification before restoration
+    backup_manager.save_trial_and_reset()
 
     restored_reward = backup_manager.restore(force=force)
     if restored_reward is not None:
@@ -2909,6 +2948,25 @@ def predict_action(state_json):
         
         # Probs are calculated from logits which are already masked in the network
         probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
+
+        # --- Retry Probability Adjustment ---
+        # Reduce probability for actions taken in past trials of the same retry point
+        penalized_actions = backup_manager.get_penalized_actions()
+        if penalized_actions:
+            for act in penalized_actions:
+                if act < len(probs) and mask[act]:
+                    orig_p = float(probs[act])
+                    probs = probs.at[act].multiply(0.75)
+                    new_p = float(probs[act])
+                    log(f"[Python] Retry Probability Adjustment: Penalizing action {act} (orig={orig_p:.4f}, new={new_p:.4f})")
+            
+            # Renormalize
+            sum_p = jnp.sum(probs)
+            if sum_p > 1e-9:
+                probs = probs / sum_p
+            else:
+                log("[Python] WARNING: All actions penalized to zero in Retry Adjustment! Resetting probs.")
+                probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
         
         # --- Skip Override Logic ---
         sampling_mask = mask.copy()
@@ -3058,6 +3116,9 @@ def predict_action(state_json):
                 log(f"[Python] Map transition detected (current_pos is None). Auto-selecting first node (index 0).")
                 action_idx = 0
             
+        # Record this action in the trial history for future diversification
+        backup_manager.record_action(action_idx)
+
         log_prob = jnp.log(jnp.maximum(probs[action_idx], 1e-9)).item()
         
         # ▼ [DEBUG LOGGING]
