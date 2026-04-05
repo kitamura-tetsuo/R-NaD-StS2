@@ -50,7 +50,7 @@ interface ActionProb {
   name: string;
   prob: number;
   isSelected?: boolean;
-  isSearch?: boolean;
+  searchType?: string;
 }
 
 interface LiveData {
@@ -389,8 +389,13 @@ const App: React.FC = () => {
                           action.isSelected ? "text-brand-secondary font-bold" : "text-gray-200 font-medium"
                         )}>
                           {action.isSelected ? '▶ ' : ''}{action.name}
-                          {action.isSearch && action.isSelected && (
-                            <span className="ml-1 px-1 bg-brand-secondary text-bg-dark text-[7px] font-black rounded h-fit self-center">SEARCH</span>
+                          {action.searchType && action.isSelected && (
+                            <span className={cn(
+                              "ml-1 px-1 text-bg-dark text-[7px] font-black rounded h-fit self-center uppercase",
+                              action.searchType === 'lethal' ? "bg-red-500" : "bg-brand-secondary"
+                            )}>
+                              {action.searchType}
+                            </span>
                           )}
                         </span>
                         <span className={cn(

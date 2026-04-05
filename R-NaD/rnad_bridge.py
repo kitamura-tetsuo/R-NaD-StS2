@@ -1348,7 +1348,7 @@ class RawTrajectoryLogger:
         self.step_id = 0
         self.lock = threading.Lock()
 
-    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, logits=None, terminal=False, is_search=False):
+    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, logits=None, terminal=False, search_type=None):
         with self.lock:
             self.current_episode.append({
                 "state_json": state_json,
@@ -1380,7 +1380,7 @@ class RawTrajectoryLogger:
                     "step_id": self.step_id,
                     "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
                     "reset": self.reset_ui,
-                    "is_search": bool(is_search)
+                    "search_type": search_type
                 }
                 self.reset_ui = False
                 live_path = os.path.abspath(os.path.join(self.trajectory_dir, "../tmp/live_state.json"))
@@ -3013,6 +3013,7 @@ def predict_action(state_json):
         lethal_search_mode = os.environ.get("RNAD_LETHAL_SEARCH", "true") == "true"
         multiple_move_mode = os.environ.get("RNAD_MULTIPLE_MOVE", "false") == "true"
         search_action_idx = None
+        search_type = None
 
         if (lethal_search_mode or multiple_move_mode) and state_type == "combat" and battle_simulator is not None:
             log(f"[Python] Combat Search: START (lethal={lethal_search_mode}, multi={multiple_move_mode})")
@@ -3046,6 +3047,7 @@ def predict_action(state_json):
                         # Prioritize Kill-all by player HP (tensor[2])
                         best_ka = max(ka_seqs, key=lambda r: sum(p * t[2] for p, t in r["outcomes"]))
                         search_action_idx = best_ka["actions"][0]
+                        search_type = "lethal"
                         orig_p = float(probs[search_action_idx])
                         log(f"[Python] Lethal Search: KILL-ALL sequence FOUND! ({len(ka_seqs)} paths, best_ev={sum(p * t[2] for p, t in best_ka['outcomes']):.2f}). Selecting Action={search_action_idx} (Policy Prob={orig_p:.4f})")
                     
@@ -3085,6 +3087,7 @@ def predict_action(state_json):
                             
                             best_idx = np.argmax(r_vals)
                             search_action_idx = eval_res[best_idx]["actions"][0]
+                            search_type = "multi"
                             orig_p = float(probs[search_action_idx])
                             log(f"[Python] Search: Best-Value sequence identified. Action={search_action_idx} (EV={r_vals[best_idx]:.4f}, Policy Prob={orig_p:.4f})")
                 
@@ -3097,11 +3100,9 @@ def predict_action(state_json):
                 traceback.print_exc()
         
         # Sample or Argmax action
-        is_search_override = False
         if search_action_idx is not None and mask[search_action_idx]:
             action_idx = search_action_idx
-            is_search_override = True
-            log(f"[Python] Using SEARCH-selected action: {action_idx} (Policy prob={probs[action_idx]:.4f})")
+            log(f"[Python] Using SEARCH ({search_type})-selected action: {action_idx} (Policy prob={probs[action_idx]:.4f})")
         elif inference_mode:
             # Highest probability selection (Greedy)
             action_idx = jnp.argmax(probs).item()
@@ -3347,7 +3348,18 @@ def predict_action(state_json):
                 
                 # NEW: Raw trajectory logging for offline learning
                 terminal = (state_type == "game_over")
-                raw_logger.log_step(state_json, action_idx, probs, mask, reward, log_prob, predicted_v=value.item(), logits=logits[0, 0], terminal=terminal, is_search=is_search_override)
+                raw_logger.log_step(
+                    state_json=state_json, 
+                    action_idx=action_idx, 
+                    probs=probs, 
+                    mask=mask, 
+                    reward=reward, 
+                    log_prob=log_prob, 
+                    predicted_v=value.item(), 
+                    logits=logits[0, 0], 
+                    terminal=terminal, 
+                    search_type=search_type
+                )
 
                 if config and len(current_trajectory) >= config.unroll_length:
                     # Defer flushing until we see the next state for bootstrapping

@@ -170,7 +170,7 @@ async def process_state(data: Dict) -> Dict:
             "name": get_action_name(int(action_idx), state),
             "prob": selected_prob,
             "isSelected": True,
-            "isSearch": bool(data.get("is_search", False))
+            "searchType": data.get("search_type")
         }
         
         # Get top 3 others (excluding selected)
