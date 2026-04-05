@@ -621,6 +621,7 @@ class BackupManager:
         self.backup_root = backup_root
         self.stack = [] # List of {path: str, retry_count: int, reward: float}
         self.max_retries = 3
+        self.hp_loss_history = [] # Track HP loss for each trial in the current encounter
         if not os.path.exists(self.backup_root):
             os.makedirs(self.backup_root, exist_ok=True)
             
@@ -628,6 +629,7 @@ class BackupManager:
         """Clear all backups in the stack."""
         log(f"[BackupManager] Clearing stack of size {len(self.stack)}")
         self.stack = []
+        self.hp_loss_history = []
 
     def _are_saves_identical(self, backup_dir):
         """Compare current saves with a backup directory."""
@@ -720,7 +722,33 @@ class BackupManager:
             log(f"[BackupManager] _is_combat_save: Error checking {save_path}: {e}")
             return False
 
-    def restore(self):
+    def record_hp_loss(self, hp_loss):
+        self.hp_loss_history.append(hp_loss)
+        log(f"[BackupManager] Recorded Trial HP Loss: {hp_loss}. History: {self.hp_loss_history}")
+
+    def check_hp_performance(self, hp_loss):
+        """Check if the current HP loss is in the top 50% of history."""
+        if not self.hp_loss_history:
+            return True, 0, self.max_retries
+        
+        # Sort and find median
+        sorted_history = sorted(self.hp_loss_history)
+        n = len(sorted_history)
+        
+        # Median: lower half is better
+        median_idx = (n - 1) // 2
+        median_val = sorted_history[median_idx]
+        
+        is_top_50 = hp_loss <= median_val
+        
+        retry_count = 0
+        if self.stack:
+            retry_count = self.stack[-1]["retry_count"]
+            
+        log(f"[BackupManager] HP Performance Check: loss={hp_loss}, median={median_val}, is_top_50={is_top_50}, retries={retry_count}/{self.max_retries}")
+        return is_top_50, retry_count, self.max_retries
+
+    def restore(self, force=False):
         """Restore the latest valid backup, backtracking if necessary."""
         while self.stack:
             latest = self.stack[-1]
@@ -737,9 +765,10 @@ class BackupManager:
                         log(f"[BackupManager] Warning: failed to delete skipped backup: {e}")
                 continue
 
-            if latest["retry_count"] < self.max_retries:
+            if latest["retry_count"] < self.max_retries or force:
                 # Perform restoration
-                log(f"[BackupManager] Restoring {os.path.basename(latest['path'])} (Retry {latest['retry_count']+1}/{self.max_retries})")
+                retry_msg = f"Retry {latest['retry_count']+1}/{self.max_retries}" if not force else "FORCED Retry"
+                log(f"[BackupManager] Restoring {os.path.basename(latest['path'])} ({retry_msg})")
                 
                 try:
                     appdata_backup = os.path.join(latest["path"], "AppData")
@@ -771,7 +800,20 @@ def trigger_backup():
     global reward_tracker
     return backup_manager.backup(reward_tracker.session_cumulative_reward)
 
-def trigger_restore():
+def record_hp_loss(val):
+    """Top-level function called from Rust bridge."""
+    backup_manager.record_hp_loss(int(val))
+
+def check_hp_performance(val):
+    """Top-level function called from Rust bridge. Returns JSON string."""
+    is_top_50, retry_count, max_retries = backup_manager.check_hp_performance(int(val))
+    return json.dumps({
+        "is_top_50": is_top_50,
+        "retry_count": retry_count,
+        "max_retries": max_retries
+    })
+
+def trigger_restore(force=False):
     """Top-level function called from Rust bridge or internally."""
     global is_restoring, deferred_chunk
     global reward_tracker, experience_queue, current_trajectory, history
@@ -796,7 +838,7 @@ def trigger_restore():
     if raw_logger:
         raw_logger.flush(force_terminal=True)
 
-    restored_reward = backup_manager.restore()
+    restored_reward = backup_manager.restore(force=force)
     if restored_reward is not None:
         is_restoring = True # Set flag so predict_action knows to wait for MainMenu
         if raw_logger:

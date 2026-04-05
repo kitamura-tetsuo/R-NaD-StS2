@@ -1,5 +1,6 @@
 use godot::prelude::*;
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 struct AiBridgeExtension;
 
@@ -155,6 +156,58 @@ impl AiBridge {
             Ok(res) => res.to_variant(),
             Err(e) => {
                 eprintln!("[AiBridge-Rust] Python Error in trigger_restore: {:?}", e);
+                false.to_variant()
+            }
+        }
+    }
+
+    #[func]
+    pub fn record_hp_loss(&self, val: i32) {
+        Python::with_gil(|py| {
+            if let Ok(_) = Self::ensure_sys_path(py) {
+                if let Ok(my_ai_module) = py.import("rnad_bridge") {
+                    if let Ok(record_fn) = my_ai_module.getattr("record_hp_loss") {
+                        let _ = record_fn.call1((val,));
+                    }
+                }
+            }
+        });
+    }
+
+    #[func]
+    pub fn check_hp_performance(&self, val: i32) -> Variant {
+        let result = Python::with_gil(|py| -> PyResult<String> {
+            Self::ensure_sys_path(py)?;
+            let my_ai_module = py.import("rnad_bridge")?;
+            let check_fn = my_ai_module.getattr("check_hp_performance")?;
+            let res: String = check_fn.call1((val,))?.extract()?;
+            Ok(res)
+        });
+
+        match result {
+            Ok(res) => res.to_variant(),
+            Err(e) => {
+                eprintln!("[AiBridge-Rust] Python Error in check_hp_performance: {:?}", e);
+                "".to_variant()
+            }
+        }
+    }
+
+    #[func]
+    pub fn trigger_restore_forced(&self) -> Variant {
+        let result = Python::with_gil(|py| -> PyResult<bool> {
+            Self::ensure_sys_path(py)?;
+            let my_ai_module = py.import("rnad_bridge")?;
+            let restore_fn = my_ai_module.getattr("trigger_restore")?;
+            // Call with force=True
+            let res: bool = restore_fn.call1((true,))?.extract()?;
+            Ok(res)
+        });
+
+        match result {
+            Ok(res) => res.to_variant(),
+            Err(e) => {
+                eprintln!("[AiBridge-Rust] Python Error in trigger_restore_forced: {:?}", e);
                 false.to_variant()
             }
         }

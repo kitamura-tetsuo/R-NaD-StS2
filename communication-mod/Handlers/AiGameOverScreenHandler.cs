@@ -28,6 +28,13 @@ public class AiGameOverScreenHandler : IScreenHandler
             {
                 MainFile.Logger.Info("[AiGameOverScreenHandler] AI active. Checking for restoration/retry capability...");
                 
+                var slayer = MainFile.Instance.GetAiSlayer();
+                if (slayer.HpBeforeCombat > 0)
+                {
+                    // Record trial HP loss as total HP before combat (since player is at 0 HP)
+                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", slayer.HpBeforeCombat.ToString());
+                }
+
                 // Call bridge to restore save. This flushes the current trajectory as terminal first.
                 var restoreRes = await MainFile.Instance.CallBridgeSafe("trigger_restore");
                 if (restoreRes.VariantType == Variant.Type.Bool && (bool)restoreRes)

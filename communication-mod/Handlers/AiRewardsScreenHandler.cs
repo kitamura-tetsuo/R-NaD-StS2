@@ -23,6 +23,7 @@ public class AiRewardsScreenHandler : IScreenHandler
     public async Task HandleAsync(Rng random, CancellationToken ct)
     {
         MainFile.Logger.Info("[AiRewardsScreenHandler] Started");
+        bool hpChecked = false;
         
         while (!ct.IsCancellationRequested)
         {
@@ -35,27 +36,53 @@ public class AiRewardsScreenHandler : IScreenHandler
             NRewardsScreen screen = (NRewardsScreen)peek;
             
             // HP loss check for combat retry
-            if (AiSlayer.IsActive)
+            if (AiSlayer.IsActive && !hpChecked)
             {
                 var slayer = MainFile.Instance.GetAiSlayer();
                 var runState = MegaCrit.Sts2.Core.Runs.RunManager.Instance?.DebugOnlyGetState();
                 var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(runState);
                 
-                if (runState != null && player != null)
+                if (runState != null && player != null && slayer.HpBeforeCombat > 0)
                 {
+                    hpChecked = true;
                     int currentHp = (int)player.Creature.CurrentHp;
                     int hpLoss = slayer.HpBeforeCombat - currentHp;
                     int floorThreshold = runState.TotalFloor;
                     
-                    if (hpLoss >= floorThreshold && slayer.HpBeforeCombat > 0)
+                    // Record trial HP loss in history via Rust bridge
+                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", hpLoss.ToString());
+                    
+                    // Check performance against history
+                    var perfVariant = await MainFile.Instance.CallBridgeSafe("check_hp_performance", hpLoss.ToString());
+                    bool isTop50 = true;
+                    int retryCount = 0;
+                    int maxRetries = 3;
+
+                    if (perfVariant.VariantType == Variant.Type.String)
                     {
-                        MainFile.Logger.Info($"[AiRewardsScreenHandler] HP Loss Check: current={currentHp}, before={slayer.HpBeforeCombat}, loss={hpLoss}, threshold={floorThreshold}. TRIGGERING RETRY.");
+                        var json = new Json();
+                        if (json.Parse(perfVariant.AsString()) == Error.Ok)
+                        {
+                            var data = json.Data.AsGodotDictionary();
+                            isTop50 = data.ContainsKey("is_top_50") ? data["is_top_50"].AsBool() : true;
+                            retryCount = data.ContainsKey("retry_count") ? (int)data["retry_count"].AsInt() : 0;
+                            maxRetries = data.ContainsKey("max_retries") ? (int)data["max_retries"].AsInt() : 3;
+                        }
+                    }
+
+                    bool shouldRetry = !isTop50 && retryCount >= maxRetries;
+                    
+                    if (hpLoss >= floorThreshold || shouldRetry)
+                    {
+                        string reason = shouldRetry ? $"Performance not in Top 50% after {retryCount} trials" : $"HP Loss ({hpLoss}) >= Floor Threshold ({floorThreshold})";
+                        MainFile.Logger.Info($"[AiRewardsScreenHandler] {reason}. TRIGGERING RETRY.");
                         
                         // Wait for a few seconds as requested
-                        await Task.Delay(180, ct); // Reduced from 750ms (originally 3000ms)
+                        await Task.Delay(180, ct);
                         
-                        // Call bridge to restore save
-                        var restoreRes = await MainFile.Instance.CallBridgeSafe("trigger_restore");
+                        // Call bridge to restore save (using forced restore if standard retries exhausted)
+                        string method = shouldRetry ? "trigger_restore_forced" : "trigger_restore";
+                        var restoreRes = await MainFile.Instance.CallBridgeSafe(method);
                         if (restoreRes.VariantType == Variant.Type.Bool && (bool)restoreRes)
                         {
                             MainFile.Logger.Info("[AiRewardsScreenHandler] Restore successful. Performing Soft Reset (Return to Main Menu).");
