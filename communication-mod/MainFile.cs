@@ -478,7 +478,7 @@ public partial class MainFile : Node
             var modifiers = new List<ModifierModel>();
 
             Logger.Info($"[AutoAI] Starting new game with seed: '{seedToUse}'...");
-            await ngame.StartNewSingleplayerRun(ironclad, true, acts, modifiers, seedToUse, 0, null);
+            await ngame.StartNewSingleplayerRun(ironclad, true, acts, modifiers, seedToUse, 0, 0);
             await Task.Delay(500);
 
             var state = rm?.DebugOnlyGetState();

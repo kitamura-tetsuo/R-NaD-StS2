@@ -220,28 +220,28 @@ class CombatValidator:
         if not self.enabled or self.last_state is None or self.last_action_idx is None:
             return
 
+        # Pop the state to ensure we only validate it once per action.
+        # This prevents duplicate logs from concurrent predict_action calls (due to polling).
+        last_state = self.last_state
+        last_action_idx = self.last_action_idx
+        self.last_state = None
+        self.last_action_idx = None
+
         try:
             current_state = json.loads(current_state_json)
             if current_state.get("type") != "combat":
-                self.last_state = None
                 return
 
             # Simulate
-            sim_json = self.to_simulator_json(self.last_state)
+            sim_json = self.to_simulator_json(last_state)
             sim = battle_simulator.Simulator.from_json(sim_json)
             
-            if self.last_action_idx == 75:
-                # End turn simulation is not fully implemented in Rust yet.
-                # Validating it leads to false positive discrepancies due to 
-                # next turn energy reset, status effects, and enemy actions.
-                return
-            
             # Action mapping: 0-49 cards, 75 end turn
-            if self.last_action_idx < 50:
-                card_idx = self.last_action_idx // 5
-                target_idx = self.last_action_idx % 5
+            if last_action_idx < 50:
+                card_idx = last_action_idx // 5
+                target_idx = last_action_idx % 5
                 # Verify if card exists
-                if card_idx < len(self.last_state.get("hand", [])):
+                if card_idx < len(last_state.get("hand", [])):
                     sim.play_card(card_idx, target_idx)
             else:
                 return # Not a combat action we simulate yet
@@ -275,13 +275,13 @@ class CombatValidator:
                 # Filter discrepancies based on randomness rules
                 filtered_discrepancies = []
                 card_id = "UNKNOWN"
-                if self.last_action_idx < 50:
-                    card_idx = self.last_action_idx // 5
-                    hand = self.last_state.get("hand", [])
+                if last_action_idx < 50:
+                    card_idx = last_action_idx // 5
+                    hand = last_state.get("hand", [])
                     if card_idx < len(hand):
                         card_id = hand[card_idx].get("id", "UNKNOWN").upper().split('+')[0].strip()
                 
-                is_random_target = card_id in VALIDATION_SKIP_RANDOM and len(self.last_state.get("enemies", [])) > 1
+                is_random_target = card_id in VALIDATION_SKIP_RANDOM and len(last_state.get("enemies", [])) > 1
                 is_draw = card_id in VALIDATION_SKIP_DRAW
 
                 for d in discrepancies:
@@ -298,11 +298,9 @@ class CombatValidator:
 
                 if not filtered_discrepancies:
                     log(f"[SIMULATOR VALIDATION] SUCCESS (Filtered volatile elements for {card_id})")
-                    self.last_state = None
-                    self.last_action_idx = None
                     return
 
-                log(f"[SIMULATOR VALIDATION] DISCREPANCY FOUND after action {self.last_action_idx} ({card_id}):")
+                log(f"[SIMULATOR VALIDATION] DISCREPANCY FOUND after action {last_action_idx} ({card_id}):")
                 for d in filtered_discrepancies:
                     log(f"  - {d}")
                 # Log full states for debugging
@@ -316,22 +314,22 @@ class CombatValidator:
                     
                     # 1. State Before
                     with open(os.path.join(DISCREPANCY_LOG_DIR, f"state_before_{timestamp}.json"), "w") as f:
-                        json.dump(self.last_state, f, indent=2)
+                        json.dump(last_state, f, indent=2)
                     
                     # 2. State After
                     with open(os.path.join(DISCREPANCY_LOG_DIR, f"state_after_{timestamp}.json"), "w") as f:
                         json.dump(current_state, f, indent=2)
                     
                     # 3. Action
-                    action_info = {"action_idx": self.last_action_idx, "discrepancies": discrepancies}
-                    if self.last_action_idx < 50:
-                        card_idx = self.last_action_idx // 5
-                        target_idx = self.last_action_idx % 5
-                        hand = self.last_state.get("hand", [])
+                    action_info = {"action_idx": last_action_idx, "discrepancies": discrepancies}
+                    if last_action_idx < 50:
+                        card_idx = last_action_idx // 5
+                        target_idx = last_action_idx % 5
+                        hand = last_state.get("hand", [])
                         if card_idx < len(hand):
                             action_info["card"] = hand[card_idx].get("id")
                             action_info["target"] = target_idx
-                    elif self.last_action_idx == 75:
+                    elif last_action_idx == 75:
                         action_info["action"] = "end_turn"
                     
                     with open(os.path.join(DISCREPANCY_LOG_DIR, f"action_{timestamp}.json"), "w") as f:
@@ -340,7 +338,7 @@ class CombatValidator:
                     # 4. Summary Log
                     summary_log_path = os.path.join(DISCREPANCY_LOG_DIR, f"discrepancy_{timestamp}.log")
                     with open(summary_log_path, "w") as f:
-                        f.write(f"[SIMULATOR VALIDATION] DISCREPANCY FOUND after action {self.last_action_idx} ({card_id}):\n")
+                        f.write(f"[SIMULATOR VALIDATION] DISCREPANCY FOUND after action {last_action_idx} ({card_id}):\n")
                         for d in filtered_discrepancies:
                             f.write(f"  - {d}\n")
                         f.write(f"\nRelated Files:\n")
@@ -364,13 +362,12 @@ class CombatValidator:
                 except Exception as log_e:
                     log(f"  [DISCREPANCY LOG ERROR] {log_e}")
             else:
-                log(f"[SIMULATOR VALIDATION] SUCCESS after action {self.last_action_idx}")
+                log(f"[SIMULATOR VALIDATION] SUCCESS after action {last_action_idx}")
 
         except Exception as e:
             log(f"[SIMULATOR VALIDATION] ERROR during validation: {e}")
         finally:
-            self.last_state = None
-            self.last_action_idx = None
+            pass
 
 validator = CombatValidator()
 
@@ -2751,8 +2748,6 @@ def predict_action(state_json):
             reward_tracker.reset_for_new_run()
         if not state_json:
             return json.dumps({"action": "wait"})
-
-        log(f"predict_action called. state_type: {state_type}")
 
         log(f"predict_action called. state_type: {state_type}")
         
