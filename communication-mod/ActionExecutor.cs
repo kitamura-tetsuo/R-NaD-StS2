@@ -171,7 +171,16 @@ public partial class MainFile : Node
                 // RandomEnemy and AllEnemies should be played with null target.
                 if (tt == MegaCrit.Sts2.Core.Entities.Cards.TargetType.AnyEnemy)
                 {
-                    int targetIdx = dict.ContainsKey("target_index") ? (int)dict["target_index"].AsInt64() : 0;
+                    int targetIdx = 0;
+                    if (dict.ContainsKey("target_index"))
+                    {
+                        targetIdx = (int)dict["target_index"].AsInt64();
+                    }
+                    else
+                    {
+                        Logger.Warn($"[AutoAI] Card {card.Title} is AnyEnemy but no target_index was provided. Defaulting to 0.");
+                    }
+                    
                     var aliveEnemies = combatState.Enemies.Where(e => e.IsAlive).ToList();
                     if (targetIdx >= 0 && targetIdx < aliveEnemies.Count)
                     {
@@ -221,7 +230,16 @@ public partial class MainFile : Node
                 
                 if (targetType.Contains("Enemy") || targetType.Contains("Single"))
                 {
-                    int targetIdx = dict.ContainsKey("target_index") ? (int)dict["target_index"].AsInt64() : 0;
+                    int targetIdx = 0;
+                    if (dict.ContainsKey("target_index"))
+                    {
+                        targetIdx = (int)dict["target_index"].AsInt64();
+                    }
+                    else
+                    {
+                        Logger.Warn($"[AutoAI] Potion {potion.Title.GetRawText()} suggests targeting but no target_index was provided. Defaulting to 0.");
+                    }
+                    
                     var cm = MegaCrit.Sts2.Core.Combat.CombatManager.Instance;
                     var combatState = cm.DebugOnlyGetState();
                     var aliveEnemies = combatState.Enemies.Where(e => e.IsAlive).ToList();

@@ -242,7 +242,9 @@ class CombatValidator:
                 target_idx = last_action_idx % 5
                 # Verify if card exists
                 if card_idx < len(last_state.get("hand", [])):
-                    sim.play_card(card_idx, target_idx)
+                    card = last_state["hand"][card_idx]
+                    t_val = target_idx if needs_target(card) else None
+                    sim.play_card(card_idx, t_val)
             else:
                 return # Not a combat action we simulate yet
 
@@ -2561,6 +2563,13 @@ def compute_intermediate_reward(state, state_type, action_idx):
         
     return intermediate_reward
 
+def needs_target(card):
+    """Returns True if the card requires a specific enemy or ally target."""
+    target_type = card.get("targetType", "None")
+    # Cards that target 'AllEnemies' or 'RandomEnemy' don't need a target index in the action.
+    # Cards that target 'Self' or 'None' also don't need a target index.
+    return "Enemy" in target_type or "Single" in target_type or "Ally" in target_type or "Player" in target_type
+
 def get_action_mask(state, masked_reward_indices=None):
     do_deferred_imports()
     assert np is not None
@@ -2575,22 +2584,18 @@ def get_action_mask(state, masked_reward_indices=None):
         
         actions_disabled = state.get("actions_disabled", False)
         
-        # 0-49: Cards (up to 10 cards * 5 targets)
         if not actions_disabled:
             for i in range(min(len(hand), 10)):
                 card = hand[i]
                 if card.get("isPlayable"):
-                    target_type = card.get("targetType", "None")
-                    needs_target = "Enemy" in target_type or "Single" in target_type
-                    
-                    if needs_target:
+                    if needs_target(card):
                         # Task 3: Fix target masking for gaps in indices
                         for t in range(min(len(enemies), 5)):
                             enemy = enemies[t]
                             if enemy.get("hp", 0) > 0:
                                 mask[i * 5 + t] = True
                     else:
-                        # Self or No target cards use target_idx 0
+                        # Self, AllEnemies, None, or Random target cards use target_idx 0 in the action space
                         mask[i * 5] = True
         else:
             log("Python-Bridge: actions_disabled detected in combat. Masking cards.")
@@ -2600,15 +2605,11 @@ def get_action_mask(state, masked_reward_indices=None):
             potions = state.get("potions", [])
             for i in range(min(len(potions), 5)):
                 potion = potions[i]
-                if potion.get("canUse"):
+                if potion.get("canUse", False):
                     target_type = potion.get("targetType", "None")
-                    needs_target = "Enemy" in target_type or "Single" in target_type
-                    
-                    if needs_target:
-                        # Task 3: Fix target masking for gaps in indices
+                    if "Enemy" in target_type or "Single" in target_type or "Ally" in target_type or "Player" in target_type:
                         for t in range(min(len(enemies), 5)):
-                            enemy = enemies[t]
-                            if enemy.get("hp", 0) > 0:
+                            if enemies[t].get("hp", 0) > 0:
                                 mask[50 + i * 5 + t] = True
                     else:
                         mask[50 + i * 5] = True
@@ -2729,8 +2730,8 @@ def get_action_mask(state, masked_reward_indices=None):
         summary = {
             "floor": state.get("floor"),
             "hp": state.get("player", {}).get("hp") if isinstance(state.get("player"), dict) else None,
-            "hand_count": len(state.get("hand", [])) if isinstance(state.get("hand"), list) else 0,
-            "enemy_count": len(state.get("enemies", [])) if isinstance(state.get("enemies"), list) else 0,
+            "hand_count": len(state.get("hand", [])) if isinstance(state.get("hand", list)) else 0,
+            "enemy_count": len(state.get("enemies", [])) if isinstance(state.get("enemies", list)) else 0,
             "can_proceed": state.get("can_proceed")
         }
         log(f"WARNING: No valid actions in mask for state {state_type}. Enabling WAIT (99). State Summary: {json.dumps(summary)}")
@@ -3101,12 +3102,6 @@ def predict_action(state_json):
             action_idx = search_action_idx
             is_search_override = True
             log(f"[Python] Using SEARCH-selected action: {action_idx} (Policy prob={probs[action_idx]:.4f})")
-            
-            # Update probs for UI visibility - show search-selected action as preferred
-            if probs[action_idx] < 0.99:
-                new_probs = jnp.zeros_like(probs)
-                new_probs = new_probs.at[action_idx].set(1.0)
-                probs = new_probs
         elif inference_mode:
             # Highest probability selection (Greedy)
             action_idx = jnp.argmax(probs).item()
@@ -3162,12 +3157,29 @@ def predict_action(state_json):
                 if action_idx < 50:
                     card_idx = action_idx // 5
                     if card_idx < len(state.get("hand", [])):
-                        ident_action = f"play_card:{state['hand'][card_idx].get('id')}"
+                        card = state['hand'][card_idx]
+                        ident_action = f"play_card:{card.get('id')}"
+                        if needs_target(card):
+                            target_idx = action_idx % 5
+                            enemies = state.get("enemies", [])
+                            if target_idx < len(enemies):
+                                ident_action += f" on {enemies[target_idx].get('name')}"
+                            else:
+                                ident_action += f" on target_{target_idx}"
                 elif 50 <= action_idx < 75:
+                    pots = state.get("potions", [])
                     potion_idx = (action_idx - 50) // 5
-                    if potion_idx < len(state.get("potions", [])):
-                        p = state['potions'][potion_idx]
-                        ident_action = f"use_potion:{p.get('id')}({p.get('name')})"
+                    if potion_idx < len(pots):
+                        pot = pots[potion_idx]
+                        ident_action = f"use_potion:{pot.get('id')}"
+                        target_type = pot.get("targetType", "None")
+                        if "Enemy" in target_type or "Single" in target_type or "Ally" in target_type or "Player" in target_type:
+                            target_idx = (action_idx - 50) % 5
+                            enemies = state.get("enemies", [])
+                            if target_idx < len(enemies):
+                                ident_action += f" on {enemies[target_idx].get('name')}"
+                            else:
+                                ident_action += f" on target_{target_idx}"
                 elif action_idx == 75: ident_action = "end_turn"
             
             log_decision(f"Selected Action ID: {ident_action}")
@@ -3202,13 +3214,19 @@ def predict_action(state_json):
                 target_idx = action_idx % 5
                 if card_idx < len(hand):
                     card = hand[card_idx]
-                    action = {"action": "play_card", "card_id": card.get("id"), "card_index": card_idx, "target_index": target_idx}
+                    action = {"action": "play_card", "card_id": card.get("id"), "card_index": card_idx}
+                    if needs_target(card):
+                        action["target_index"] = target_idx
             elif 50 <= action_idx < 75:
                 potion_linear_idx = action_idx - 50
                 potion_idx = potion_linear_idx // 5
                 target_idx = potion_linear_idx % 5
                 if potion_idx < len(potions):
-                    action = {"action": "use_potion", "index": potion_idx, "target_index": target_idx}
+                    potion = potions[potion_idx]
+                    action = {"action": "use_potion", "index": potion_idx}
+                    target_type = potion.get("targetType", "None")
+                    if "Enemy" in target_type or "Single" in target_type or "Ally" in target_type or "Player" in target_type:
+                        action["target_index"] = target_idx
             elif action_idx == 75:
                 action = {"action": "end_turn"}
             elif action_idx == 86:
