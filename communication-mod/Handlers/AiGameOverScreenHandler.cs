@@ -32,7 +32,7 @@ public class AiGameOverScreenHandler : IScreenHandler
                 if (slayer.HpBeforeCombat > 0)
                 {
                     // Record trial HP loss as total HP before combat (since player is at 0 HP)
-                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", slayer.HpBeforeCombat.ToString());
+                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", slayer.HpBeforeCombat);
                 }
 
                 // Call bridge to restore save. This flushes the current trajectory as terminal first.

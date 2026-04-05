@@ -50,10 +50,10 @@ public class AiRewardsScreenHandler : IScreenHandler
                     int floorThreshold = runState.TotalFloor;
                     
                     // Record trial HP loss in history via Rust bridge
-                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", hpLoss.ToString());
+                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", hpLoss);
                     
                     // Check performance against history
-                    var perfVariant = await MainFile.Instance.CallBridgeSafe("check_hp_performance", hpLoss.ToString());
+                    var perfVariant = await MainFile.Instance.CallBridgeSafe("check_hp_performance", hpLoss);
                     bool isTop50 = true;
                     int retryCount = 0;
                     int maxRetries = 3;
