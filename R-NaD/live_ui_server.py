@@ -169,7 +169,8 @@ async def process_state(data: Dict) -> Dict:
             "id": int(action_idx),
             "name": get_action_name(int(action_idx), state),
             "prob": selected_prob,
-            "isSelected": True
+            "isSelected": True,
+            "isSearch": bool(data.get("is_search", False))
         }
         
         # Get top 3 others (excluding selected)
@@ -182,12 +183,13 @@ async def process_state(data: Dict) -> Dict:
         top_actions = [selected_action]
         
         for i in top_other_indices:
-            if probs_others[i] > 0.0001: # Small threshold
+            if i < len(probs_others) and probs_others[i] > 0.0001: # Small threshold
                 top_actions.append({
                     "id": int(i),
                     "name": get_action_name(int(i), state),
                     "prob": float(probs_others[i]),
-                    "isSelected": False
+                    "isSelected": False,
+                    "isSearch": False
                 })
                 
         data["top_actions"] = top_actions

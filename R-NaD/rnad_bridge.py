@@ -1346,7 +1346,7 @@ class RawTrajectoryLogger:
         self.step_id = 0
         self.lock = threading.Lock()
 
-    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, logits=None, terminal=False):
+    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, logits=None, terminal=False, is_search=False):
         with self.lock:
             self.current_episode.append({
                 "state_json": state_json,
@@ -1378,6 +1378,7 @@ class RawTrajectoryLogger:
                     "step_id": self.step_id,
                     "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
                     "reset": self.reset_ui,
+                    "is_search": bool(is_search)
                 }
                 self.reset_ui = False
                 live_path = os.path.abspath(os.path.join(self.trajectory_dir, "../tmp/live_state.json"))
@@ -3032,8 +3033,10 @@ def predict_action(state_json):
                     for res in results:
                         is_ka = True
                         for prob, tens in res["outcomes"]:
-                            # tens[622] is Enemy 0 Alive flag (0.0 means all dead in Rust simulator's compact view)
-                            if tens[622] > 0.5:
+                            # tens[622] is Enemy 0 Alive flag. We need to check all 5 possible enemy slots.
+                            # Each enemy has 16 features. Offsets: 622, 638, 654, 670, 686
+                            enemy_alive_flags = [tens[622 + i * 16] for i in range(5)]
+                            if any(flag > 0.5 for flag in enemy_alive_flags):
                                 is_ka = False
                                 break
                         if is_ka: ka_seqs.append(res)
@@ -3042,12 +3045,14 @@ def predict_action(state_json):
                         # Prioritize Kill-all by player HP (tensor[2])
                         best_ka = max(ka_seqs, key=lambda r: sum(p * t[2] for p, t in r["outcomes"]))
                         search_action_idx = best_ka["actions"][0]
-                        log(f"[Python] Lethal Search: KILL-ALL sequence FOUND! ({len(ka_seqs)} paths). Selecting Action={search_action_idx}")
+                        orig_p = float(probs[search_action_idx])
+                        log(f"[Python] Lethal Search: KILL-ALL sequence FOUND! ({len(ka_seqs)} paths, best_ev={sum(p * t[2] for p, t in best_ka['outcomes']):.2f}). Selecting Action={search_action_idx} (Policy Prob={orig_p:.4f})")
                     
                     elif multiple_move_mode and learner and learner.params:
                         if len(results) > 0:
                             log(f"[Python] Multiple Move: No kill-all sequence found in {len(results)} deterministic paths. Evaluating via value-head.")
-                        # 2. Multiple Move (Re-evaluate best sequence via value head)
+                        
+                        # ... existing evaluation logic ...
                         eval_res = results[:32] if len(results) > 32 else results
                         outcomes_to_eval = []
                         for ridx, r in enumerate(eval_res):
@@ -3079,7 +3084,8 @@ def predict_action(state_json):
                             
                             best_idx = np.argmax(r_vals)
                             search_action_idx = eval_res[best_idx]["actions"][0]
-                            log(f"[Python] Search: Best-Value sequence identified. Action={search_action_idx} (EV={r_vals[best_idx]:.4f})")
+                            orig_p = float(probs[search_action_idx])
+                            log(f"[Python] Search: Best-Value sequence identified. Action={search_action_idx} (EV={r_vals[best_idx]:.4f}, Policy Prob={orig_p:.4f})")
                 
                 if search_action_idx is None:
                     log(f"[Python] Combat Search: No optimal sequence identified by search. Falling back to policy.")
@@ -3090,9 +3096,17 @@ def predict_action(state_json):
                 traceback.print_exc()
         
         # Sample or Argmax action
+        is_search_override = False
         if search_action_idx is not None and mask[search_action_idx]:
             action_idx = search_action_idx
-            log(f"[Python] Using SEARCH-selected action: {action_idx} (prob={probs[action_idx]:.4f})")
+            is_search_override = True
+            log(f"[Python] Using SEARCH-selected action: {action_idx} (Policy prob={probs[action_idx]:.4f})")
+            
+            # Update probs for UI visibility - show search-selected action as preferred
+            if probs[action_idx] < 0.99:
+                new_probs = jnp.zeros_like(probs)
+                new_probs = new_probs.at[action_idx].set(1.0)
+                probs = new_probs
         elif inference_mode:
             # Highest probability selection (Greedy)
             action_idx = jnp.argmax(probs).item()
@@ -3315,7 +3329,7 @@ def predict_action(state_json):
                 
                 # NEW: Raw trajectory logging for offline learning
                 terminal = (state_type == "game_over")
-                raw_logger.log_step(state_json, action_idx, probs, mask, reward, log_prob, predicted_v=value.item(), logits=logits[0, 0], terminal=terminal)
+                raw_logger.log_step(state_json, action_idx, probs, mask, reward, log_prob, predicted_v=value.item(), logits=logits[0, 0], terminal=terminal, is_search=is_search_override)
 
                 if config and len(current_trajectory) >= config.unroll_length:
                     # Defer flushing until we see the next state for bootstrapping

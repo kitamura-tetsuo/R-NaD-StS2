@@ -54,13 +54,13 @@ public partial class MainFile : Node
 
 
 
-    public async Task<Variant> CallBridgeSafe(string method, object? arg = null)
+    public async Task<Variant> CallBridgeSafe(string method, Variant arg = default)
     {
         // If we're already on the main thread, call directly
         if (System.Threading.Thread.CurrentThread.ManagedThreadId == 1) // Heuristic for main thread in Godot
         {
-            if (arg == null) return AiBridge?.Call(method) ?? default;
-            return AiBridge?.Call(method, Variant.From(arg)) ?? default;
+            if (arg.VariantType == Variant.Type.Nil) return AiBridge?.Call(method) ?? default;
+            return AiBridge?.Call(method, arg) ?? default;
         }
 
         var tcs = new TaskCompletionSource<Variant>();
@@ -68,8 +68,8 @@ public partial class MainFile : Node
         Callable.From(() => {
             try {
                 Variant result;
-                if (arg == null) result = AiBridge?.Call(method) ?? default;
-                else result = AiBridge?.Call(method, Variant.From(arg)) ?? default;
+                if (arg.VariantType == Variant.Type.Nil) result = AiBridge?.Call(method) ?? default;
+                else result = AiBridge?.Call(method, arg) ?? default;
                 tcs.SetResult(result);
             } catch (Exception ex) {
                 tcs.SetException(ex);
