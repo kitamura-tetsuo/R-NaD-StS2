@@ -10,10 +10,10 @@ namespace communication_mod;
 public partial class MainFile : Node
 {
     private static bool _diagnosed = false;
-    private static string _lastMapJson = "";
     private static int _lastMapFloor = -1;
     private static string _lastMapBoss = "";
     private static (int row, int col)? _lastMapPos = null;
+    private static object? _lastMapSummary = null;
 
     // Combat Prediction Verification
     private static int _lastPredictedDamage = 0;
@@ -228,7 +228,8 @@ public partial class MainFile : Node
                 has_open_potion_slots = hasOpenPotionSlots,
                 relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
-                can_proceed = proceedBtnEnabled || MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState)
+                can_proceed = proceedBtnEnabled || MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState),
+                map = GetMapSummary(runState, localPlayer)
             }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardRewardSelectionScreen cardRewardScreen)
@@ -290,7 +291,8 @@ public partial class MainFile : Node
                 player = GetPlayerSummary(localPlayer),
                 cards = cards, 
                 buttons = buttons, 
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None" 
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                map = GetMapSummary(runState, localPlayer)
             }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen chooseScreen)
@@ -323,7 +325,8 @@ public partial class MainFile : Node
                 player = GetPlayerSummary(localPlayer),
                 cards = cards,
                 can_skip = canSkip,
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                map = GetMapSummary(runState, localPlayer)
             }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridSelection)
@@ -410,7 +413,8 @@ public partial class MainFile : Node
                 player = GetPlayerSummary(localPlayer),
                 cards = cards,
                 is_confirming = isConfirming,
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                map = GetMapSummary(runState, localPlayer)
             }, JsonOptions);
         }
 
@@ -442,7 +446,8 @@ public partial class MainFile : Node
                     type = "treasure_relics",
                     floor = runState.TotalFloor,
                     player = GetPlayerSummary(localPlayer),
-                    relics = relics
+                    relics = relics,
+                    map = GetMapSummary(runState, localPlayer)
                 }, JsonOptions);
             }
         }
@@ -840,7 +845,8 @@ public partial class MainFile : Node
                 player = GetPlayerSummary(localPlayer),
                 options = options,
                 can_proceed = canProceed,
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                map = GetMapSummary(runState, localPlayer)
             }, JsonOptions);
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.RestSiteRoom rsr)
@@ -895,7 +901,8 @@ public partial class MainFile : Node
                 floor = runState.TotalFloor,
                 player = GetPlayerSummary(localPlayer),
                 options = optionsData,
-                can_proceed = canProceed
+                can_proceed = canProceed,
+                map = GetMapSummary(runState, localPlayer)
             }, JsonOptions);
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.MerchantRoom)
@@ -934,7 +941,8 @@ public partial class MainFile : Node
                 gold = gold,
                 items = items,
                 can_proceed = canProceed,
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                map = GetMapSummary(runState, localPlayer)
             }, JsonOptions);
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.TreasureRoom tr)
@@ -958,7 +966,8 @@ public partial class MainFile : Node
                 player = GetPlayerSummary(localPlayer),
                 has_chest = hasChest,
                 can_proceed = canProceed,
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                map = GetMapSummary(runState, localPlayer)
             }, JsonOptions);
         }
 
@@ -968,9 +977,14 @@ public partial class MainFile : Node
 
     private string GetMapJson(MegaCrit.Sts2.Core.Runs.RunState runState, MegaCrit.Sts2.Core.Entities.Players.Player localPlayer)
     {
+        var summary = GetMapSummary(runState, localPlayer);
+        return System.Text.Json.JsonSerializer.Serialize(summary, JsonOptions);
+    }
+
+    private object GetMapSummary(MegaCrit.Sts2.Core.Runs.RunState runState, MegaCrit.Sts2.Core.Entities.Players.Player localPlayer)
+    {
         var currentPos = runState.CurrentMapCoord;
         
-        // Cache management: Check if floor or position changed or if we have no cache
         string currentBoss = "Unknown";
         try {
             var act = GetPropValue<object>(runState, "Act", null);
@@ -985,17 +999,15 @@ public partial class MainFile : Node
             }
         } catch {}
 
-        if (_lastMapJson != "" && _lastMapFloor == runState.TotalFloor && _lastMapBoss == currentBoss && 
+        if (_lastMapSummary != null && _lastMapFloor == runState.TotalFloor && _lastMapBoss == currentBoss && 
             _lastMapPos?.row == currentPos?.row && _lastMapPos?.col == currentPos?.col)
         {
-            return _lastMapJson;
+            return _lastMapSummary;
         }
 
         var nodes = new List<object>();
         var edges = new List<object>();
 
-        // Collect all nodes and their outgoing edges
-        // The map in StS2 usually has around 15-20 rows.
         for (int row = 0; row < 30; row++) 
         {
             var pointsInRow = runState.Map.GetPointsInRow(row);
@@ -1028,34 +1040,14 @@ public partial class MainFile : Node
             }
         }
 
-        // Add Boss nodes if they aren't in GetPointsInRow
         if (runState.Map.BossMapPoint != null) {
             var b = runState.Map.BossMapPoint;
             nodes.Add(new { row = b.coord.row, col = b.coord.col, type = b.PointType.ToString() });
         }
 
-        // Try to get Boss information
-        string bossId = "Unknown";
-        try {
-            var act = GetPropValue<object>(runState, "Act", null);
-            if (act != null) {
-                var bossEncounter = GetPropValue<object>(act, "BossEncounter", null);
-                if (bossEncounter != null) {
-                    var idObj = GetPropValue<object>(bossEncounter, "Id", null);
-                    if (idObj != null) {
-                        bossId = GetPropValue<string>(idObj, "Entry", bossId);
-                    }
-                }
-            }
-        } catch (System.Exception ex) {
-            Logger.Error($"[AutoAI] Error getting BossId: {ex.Message}");
-        }
-
-        // Calculate next available nodes
         var nextNodes = new List<object>();
         if (!currentPos.HasValue)
         {
-            // Search for the first non-empty row (up to row 5) for starting nodes
             for (int r = 0; r <= 5; r++)
             {
                 var rowNodes = runState.Map.GetPointsInRow(r);
@@ -1081,7 +1073,7 @@ public partial class MainFile : Node
             }
         }
 
-        _lastMapJson = System.Text.Json.JsonSerializer.Serialize(new
+        _lastMapSummary = new
         {
             type = "map",
             floor = runState.TotalFloor,
@@ -1093,13 +1085,13 @@ public partial class MainFile : Node
             nodes = nodes,
             edges = edges,
             boss = currentBoss
-        }, JsonOptions);
+        };
         
         _lastMapFloor = runState.TotalFloor;
         _lastMapBoss = currentBoss;
         _lastMapPos = currentPos.HasValue ? (currentPos.Value.row, currentPos.Value.col) : null;
 
-        return _lastMapJson;
+        return _lastMapSummary;
     }
 
     private T GetPropValue<T>(object obj, string propName, T defaultValue)

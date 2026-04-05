@@ -2340,9 +2340,12 @@ def encode_state(state):
 
     # --- Map Features (Size 2048) ---
     map_vec = np.zeros(2048, dtype=np.float32)
-    if st_idx == 1:
-        nodes = state.get("nodes", [])
-        current_pos = state.get("current_pos", {})
+    # Extract map data from root (if st_idx==1) or "map" field (if injected)
+    map_data = state.get("map") if isinstance(state.get("map"), dict) else state
+    nodes = map_data.get("nodes", [])
+
+    if nodes and st_idx in [1, 2, 3]:
+        current_pos = map_data.get("current_pos") or {}
         
         # Encode up to 256 nodes, 8 features each
         # [presence, row, col, type, is_current]
@@ -2358,8 +2361,8 @@ def encode_state(state):
             
             nt_map = {"Monster": 1, "Elite": 2, "Unknown": 3, "RestSite": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
             map_type = node.get("type")
-            assert map_type in nt_map, f"map type: {map_type} not in nt_map"
-            map_vec[base_idx + 3] = nt_map[map_type] / 10.0
+            if map_type in nt_map:
+                map_vec[base_idx + 3] = nt_map[map_type] / 10.0
             
             if current_pos and row == current_pos.get("row") and col == current_pos.get("col"):
                 map_vec[base_idx + 4] = 1.0
