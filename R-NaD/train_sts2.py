@@ -27,7 +27,7 @@ def cleanup_processes():
     except Exception:
         pass
 
-def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headless=False, offline=False, mask_card_skip=False):
+def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headless=False, offline=False, mask_card_skip=False, learning_mode_multiple_move=False):
     logging.info("Launching Slay the Spire 2...")
     game_dir = "/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
     cmd = ["./SlayTheSpire2", "--gym", "--train"]
@@ -70,6 +70,10 @@ def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headl
     if mask_card_skip:
         env["RNAD_MASK_CARD_SKIP"] = "true"
         logging.info("Setting RNAD_MASK_CARD_SKIP environment variable to: true")
+
+    if learning_mode_multiple_move:
+        env["RNAD_MULTIPLE_MOVE"] = "true"
+        logging.info("Setting RNAD_MULTIPLE_MOVE environment variable to: true")
 
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     if not os.path.exists(log_dir):
@@ -576,7 +580,16 @@ def perform_restart(process, current_checkpoint, args):
     cleanup_processes()
     
     # 3. Relaunch the game
-    new_process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless, offline=False, mask_card_skip=args.mask_card_skip)
+    new_process = launch_game(
+        checkpoint=checkpoint, 
+        seed=args.seed, 
+        no_speedup=args.no_speedup, 
+        route=args.route, 
+        headless=args.headless, 
+        offline=False, 
+        mask_card_skip=args.mask_card_skip,
+        learning_mode_multiple_move=args.learning_mode_multiple_move
+    )
     
     # 4. Wait for server and re-initialize
     if not wait_for_server("http://127.0.0.1:8081/status", timeout=300):
@@ -627,6 +640,7 @@ def main():
     parser.add_argument("--headless", action="store_true", help="Run the game in headless mode")
     parser.add_argument("--offline", action="store_true", help="Enable offline training from trajectories/replays on first launch")
     parser.add_argument("--mask-card-skip", action="store_true", help="Mask Skip in post-combat card rewards")
+    parser.add_argument("--learning-mode-multiple-move", action="store_true", help="Enable Multiple Move search strategy during training")
     parser.add_argument("--ui", action="store_true", help="Launch the Live Inference Monitor (Streamlit)")
     args = parser.parse_args()
     
@@ -672,7 +686,16 @@ def main():
         ui_procs = launch_ui()
         logging.info("Real-time UI started at http://localhost:5173")
 
-    process = launch_game(checkpoint=checkpoint, seed=args.seed, no_speedup=args.no_speedup, route=args.route, headless=args.headless, offline=args.offline, mask_card_skip=args.mask_card_skip)
+    process = launch_game(
+        checkpoint=checkpoint, 
+        seed=args.seed, 
+        no_speedup=args.no_speedup, 
+        route=args.route, 
+        headless=args.headless, 
+        offline=args.offline, 
+        mask_card_skip=args.mask_card_skip,
+        learning_mode_multiple_move=args.learning_mode_multiple_move
+    )
 
     try:
         # Wait for game to initialize by checking status endpoint
