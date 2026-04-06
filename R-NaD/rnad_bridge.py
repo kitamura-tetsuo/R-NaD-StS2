@@ -734,8 +734,13 @@ class BackupManager:
         self.hp_loss_history.append(hp_loss)
         log(f"[BackupManager] Recorded Trial HP Loss: {hp_loss}. History: {self.hp_loss_history}")
 
-    def check_hp_performance(self, hp_loss):
+    def check_hp_performance(self, hp_loss, is_elite, is_boss, hp_before, max_hp):
         """Check if the current HP loss is in the top 50% of history."""
+        # Calculate dynamic max_retries
+        self.max_retries = 3
+        if (is_elite or is_boss) and hp_before > (max_hp / 2):
+            self.max_retries = 10
+            
         if not self.hp_loss_history:
             return True, 0, self.max_retries
         
@@ -843,9 +848,18 @@ def record_hp_loss(val):
     """Top-level function called from Rust bridge."""
     backup_manager.record_hp_loss(int(val))
 
-def check_hp_performance(val):
+def check_hp_performance(info_str):
     """Top-level function called from Rust bridge. Returns JSON string."""
-    is_top_50, retry_count, max_retries = backup_manager.check_hp_performance(int(val))
+    info = json.loads(info_str)
+    hp_loss = info.get("hp_loss", 0)
+    is_elite = info.get("is_elite", False)
+    is_boss = info.get("is_boss", False)
+    hp_before_combat = info.get("hp_before_combat", 0)
+    max_hp = info.get("max_hp", 100)
+    
+    is_top_50, retry_count, max_retries = backup_manager.check_hp_performance(
+        hp_loss, is_elite, is_boss, hp_before_combat, max_hp
+    )
     return json.dumps({
         "is_top_50": is_top_50,
         "retry_count": retry_count,

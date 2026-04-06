@@ -1,0 +1,18 @@
+--- GDExtension/src/lib.rs
++++ GDExtension/src/lib.rs
+@@ -176,12 +176,13 @@
+     }
+ 
+     #[func]
+-    pub fn check_hp_performance(&self, val: i32) -> Variant {
++    pub fn check_hp_performance(&self, info_json: GString) -> Variant {
++        let info_str = info_json.to_string();
+         let result = Python::with_gil(|py| -> PyResult<String> {
+             Self::ensure_sys_path(py)?;
+             let my_ai_module = py.import("rnad_bridge")?;
+             let check_fn = my_ai_module.getattr("check_hp_performance")?;
+-            let res: String = check_fn.call1((val,))?.extract()?;
++            let res: String = check_fn.call1((info_str,))?.extract()?;
+             Ok(res)
+         });
+ 

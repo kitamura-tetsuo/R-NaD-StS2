@@ -53,7 +53,16 @@ public class AiRewardsScreenHandler : IScreenHandler
                     await MainFile.Instance.CallBridgeSafe("record_hp_loss", hpLoss);
                     
                     // Check performance against history
-                    var perfVariant = await MainFile.Instance.CallBridgeSafe("check_hp_performance", hpLoss);
+                    var infoDict = new Godot.Collections.Dictionary {
+                        ["hp_loss"] = hpLoss,
+                        ["is_elite"] = runState.CurrentRoom?.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Elite,
+                        ["is_boss"] = runState.CurrentRoom?.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Boss,
+                        ["hp_before_combat"] = slayer.HpBeforeCombat,
+                        ["max_hp"] = (int)player.Creature.MaxHp
+                    };
+                    string infoJson = Json.Stringify(infoDict);
+                    var perfVariant = await MainFile.Instance.CallBridgeSafe("check_hp_performance", infoJson);
+
                     bool isTop50 = true;
                     int retryCount = 0;
                     int maxRetries = 3;
@@ -70,28 +79,49 @@ public class AiRewardsScreenHandler : IScreenHandler
                         }
                     }
 
-                    bool shouldRetry = !isTop50 && retryCount >= maxRetries;
+                    bool shouldRetry = false;
+                    string retryReason = "";
                     
-                    if (hpLoss >= floorThreshold || shouldRetry)
+                    if (retryCount == 0)
                     {
-                        string reason = shouldRetry ? $"Performance not in Top 50% after {retryCount} trials" : $"HP Loss ({hpLoss}) >= Floor Threshold ({floorThreshold})";
-                        MainFile.Logger.Info($"[AiRewardsScreenHandler] {reason}. TRIGGERING RETRY.");
+                        if (hpLoss >= floorThreshold)
+                        {
+                            shouldRetry = true;
+                            retryReason = $"Initial HP Loss ({hpLoss}) >= Floor Threshold ({floorThreshold})";
+                        }
+                    }
+                    else
+                    {
+                        if (!isTop50)
+                        {
+                            shouldRetry = true;
+                            retryReason = $"Performance not in Top 50% (Retry {retryCount}/{maxRetries})";
+                        }
+                    }
+
+                    if (retryCount >= maxRetries)
+                    {
+                        shouldRetry = false;
+                        MainFile.Logger.Info($"[AiRewardsScreenHandler] Reached max retries ({maxRetries}). Proceeding to next floor without backtracking.");
+                    }
+                    else if (!shouldRetry && retryCount > 0)
+                    {
+                        MainFile.Logger.Info($"[AiRewardsScreenHandler] HP loss is within median/Top 50%. Proceeding to next floor.");
+                    }
+                    
+                    if (shouldRetry)
+                    {
+                        MainFile.Logger.Info($"[AiRewardsScreenHandler] {retryReason}. TRIGGERING RETRY.");
                         
-                        // Wait for a few seconds as requested
                         await Task.Delay(180, ct);
                         
-                        // Call bridge to restore save (using forced restore if standard retries exhausted)
-                        string method = shouldRetry ? "trigger_restore_forced" : "trigger_restore";
-                        var restoreRes = await MainFile.Instance.CallBridgeSafe(method);
+                        var restoreRes = await MainFile.Instance.CallBridgeSafe("trigger_restore");
                         if (restoreRes.VariantType == Variant.Type.Bool && (bool)restoreRes)
                         {
                             MainFile.Logger.Info("[AiRewardsScreenHandler] Restore successful. Performing Soft Reset (Return to Main Menu).");
                             
-                            // Use Universal Action to return to main menu
                             var dict = new Godot.Collections.Dictionary { ["action"] = "return_to_main_menu" };
                             await MainFile.Instance.ExecuteUniversalAction(dict);
-                            
-                            // Exit the handler and let the AiSlayer loop handle the return to main menu and continue
                             return;
                         }
                         else
