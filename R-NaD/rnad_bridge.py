@@ -13,6 +13,7 @@ import importlib.util
 # Godot game and JAX both need GPU memory.
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5" # Allow game more room
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer=" # As suggested by JAX error
+os.environ["RNAD_DEBUG_ENCODING"] = "1" # Debug encoding
 
 # Ensure stdout/stderr are unbuffered and also log to a file
 import io
@@ -913,6 +914,9 @@ class RewardTracker:
 
     def reset_for_new_run(self):
         """Reset state when returning to main menu or starting a fresh run."""
+        if self.last_state_type == "main_menu":
+            return # Avoid redundant resets and logging noise
+
         self.last_processed_floor = -1
         self.last_player_hp = 0
         self.last_total_enemy_hp = 0
@@ -922,7 +926,7 @@ class RewardTracker:
         self.session_cumulative_reward = 0.0
         self.episode_end_recorded = False
         self.combat_initialized = False
-        self.last_state_type = None
+        self.last_state_type = "main_menu" # Set immediately to prevent re-entry noise
         self.last_upgraded_count = -1
         self.last_total_cards = -1
         self.last_potion_count = -1
@@ -1209,6 +1213,150 @@ POWER_VOCAB_SIZE = max(max(POWER_VOCAB.values()) + 1, 280)
 BOSS_VOCAB_SIZE = max(max(BOSS_VOCAB.values()) + 1, 100)
 MONSTER_VOCAB_SIZE = max(max(MONSTER_VOCAB.values()) + 1, 128)
 
+# --- Decoding and Validation Utilities ---
+def get_reverse_vocab(vocab):
+    """Inverts a vocabulary dictionary."""
+    return {v: k for k, v in vocab.items()}
+
+def decode_state(encoded_dict):
+    """Decodes an encoded state dictionary back into a human-readable format for validation."""
+    do_deferred_imports()
+    assert np is not None
+    
+    rev_card = get_reverse_vocab(CARD_VOCAB)
+    rev_relic = get_reverse_vocab(RELIC_VOCAB)
+    rev_monster = get_reverse_vocab(MONSTER_VOCAB)
+    rev_power = get_reverse_vocab(POWER_VOCAB)
+    rev_boss = get_reverse_vocab(BOSS_VOCAB)
+    
+    st_idx = int(encoded_dict["state_type"])
+    head_idx = int(encoded_dict["head_type"])
+    
+    # Global features
+    g = encoded_dict["global"]
+    decoded = {
+        "floor": round(float(g[0] * 50.0)),
+        "gold": round(float(g[1] * 500.0)),
+        "hp": round(float(g[2] * 100.0)),
+        "maxHp": round(float(g[3] * 100.0)),
+        "block": round(float(g[4] * 50.0)),
+        "energy": round(float(g[5] * 5.0)),
+        "stars": round(float(g[6] * 10.0)),
+        # Boss index at global_vec[20]
+        "boss": rev_boss.get(round(float(g[20] * BOSS_VOCAB_SIZE)), "UNKNOWN"),
+        "relics": [rev_relic.get(int(rid), f"UNKNOWN_RELIC_{int(rid)}") for rid in encoded_dict["relic_ids"] if rid > 0]
+    }
+    
+    # BoW Piles
+    for pile_key in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]:
+        bow_vec = encoded_dict[pile_key]
+        pile_cards = []
+        # Find indices where value > 0 (BoW uses counts as values)
+        indices = np.where(bow_vec > 0)[0]
+        for idx in indices:
+            count = int(bow_vec[idx])
+            card_id = rev_card.get(idx, f"UNKNOWN_CARD_{idx}")
+            pile_cards.extend([card_id] * count)
+        decoded[pile_key.replace("_bow", "")] = pile_cards
+
+    # Combat features
+    if st_idx == 0:
+        c = encoded_dict["combat"]
+        
+        # Hand (up to 10 cards, 10 features each starting at index 10)
+        hand = []
+        for i in range(10):
+            base = 10 + i * 10
+            card_idx = int(c[base])
+            if card_idx > 0:
+                hand.append({
+                    "id": rev_card.get(card_idx, f"UNKNOWN_CARD_{card_idx}"),
+                    "isPlayable": bool(c[base+1]),
+                    "cost": round(float(c[base+3] * 5.0)),
+                    "upgraded": bool(c[base+7])
+                })
+        decoded["hand"] = hand
+        
+        # Enemies (up to 5 enemies, 16 features each starting at index 110)
+        enemies = []
+        for i in range(5):
+            base = 110 + i * 16
+            if c[base] > 0: # Alive flag
+                enemies.append({
+                    "id": rev_monster.get(int(c[base+1]), f"UNKNOWN_MONSTER_{int(c[base+1])}"),
+                    "hp": round(float(c[base+3] * 200.0)),
+                    "maxHp": round(float(c[base+4] * 200.0)),
+                    "block": round(float(c[base+5] * 50.0))
+                })
+        decoded["enemies"] = enemies
+        
+        # Predicted features
+        decoded["predicted_total_damage"] = float(c[320] * 50.0)
+        decoded["predicted_end_block"] = float(c[321] * 50.0)
+
+    # Map features
+    if st_idx == 1:
+        m = encoded_dict["map"]
+        map_nodes = []
+        for i in range(256):
+            base = i * 8
+            if m[base] > 0: # presence
+                row = round(float(m[base+1] * 20.0))
+                col = round(float(m[base+2] * 7.0))
+                map_nodes.append({"row": row, "col": col})
+        decoded["map_nodes"] = map_nodes
+
+    return decoded
+
+def validate_encoding(original_state, encoded_dict):
+    """Validates the encoded tensor by decoding it and comparing with the original state."""
+    try:
+        decoded = decode_state(encoded_dict)
+        
+        # Validation results
+        discrepancies = []
+        
+        def check_field(decoded_val, original_val, name, tol=1.1):
+            if isinstance(decoded_val, (int, float)) and isinstance(original_val, (int, float)):
+                if abs(decoded_val - original_val) > tol:
+                    discrepancies.append(f"{name}: Decoded={decoded_val}, Original={original_val}")
+                    return False
+            elif decoded_val != original_val:
+                discrepancies.append(f"{name}: Decoded={len(decoded_val) if isinstance(decoded_val, list) else decoded_val}, Original={len(original_val) if isinstance(original_val, list) else original_val}")
+                return False
+            return True
+
+        check_field(decoded["floor"], original_state.get("floor", 0), "floor")
+        check_field(decoded["gold"], original_state.get("gold", 0), "gold")
+        
+        player = original_state.get("player", {})
+        original_hp = player.get("hp", original_state.get("hp", 0))
+        check_field(decoded["hp"], original_hp, "hp")
+        
+        if original_state.get("type") == "combat":
+            # Check draw pile count
+            check_field(len(decoded["draw"]), len(player.get("drawPile", [])), "drawPile count")
+            
+            # Check hand count
+            original_hand = original_state.get("hand", [])
+            check_field(len(decoded["hand"]), len(original_hand[:10]), "hand count")
+            
+            # Check enemy count (alive only)
+            alive_enemies = [e for e in original_state.get("enemies", []) if e.get("hp", 0) > 0]
+            check_field(len(decoded["enemies"]), len(alive_enemies[:5]), "alive enemies count")
+
+        if discrepancies:
+            log(f"WARNING: Encoding Validation Discrepancy Found! Type: {original_state.get('type')}")
+            for d in discrepancies:
+                log(f"  - {d}")
+            return False
+            
+        return True
+    except Exception as e:
+        log(f"ERROR: validate_encoding failed: {e}")
+        return False
+
+
 
 def get_monster_idx(monster_id):
     if not monster_id:
@@ -1348,7 +1496,7 @@ class RawTrajectoryLogger:
         self.step_id = 0
         self.lock = threading.Lock()
 
-    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, logits=None, terminal=False, search_type=None):
+    def log_step(self, state_json, action_idx, probs, mask, reward, log_prob, predicted_v=0.0, logits=None, terminal=False, search_type=None, stochastic_override=False):
         with self.lock:
             self.current_episode.append({
                 "state_json": state_json,
@@ -1380,7 +1528,8 @@ class RawTrajectoryLogger:
                     "step_id": self.step_id,
                     "mask": mask.tolist() if hasattr(mask, "tolist") else list(mask),
                     "reset": self.reset_ui,
-                    "search_type": search_type
+                    "search_type": search_type,
+                    "stochastic_override": stochastic_override
                 }
                 self.reset_ui = False
                 live_path = os.path.abspath(os.path.join(self.trajectory_dir, "../tmp/live_state.json"))
@@ -2416,7 +2565,7 @@ def encode_state(state):
     elif state_type == "hand_selection":
         event_vec[90] = -1.0
 
-    return {
+    res = {
         "global": global_vec,
         "combat": combat_vec,
         "relic_ids": relic_ids,
@@ -2429,6 +2578,12 @@ def encode_state(state):
         "state_type": np.int32(st_idx),
         "head_type": np.int32(head_idx)
     }
+    
+    # Validate encoding (sampling 1/100 to avoid overhead, or always during debug)
+    if os.environ.get("RNAD_DEBUG_ENCODING") == "1" or np.random.random() < 0.01:
+        validate_encoding(state, res)
+        
+    return res
 
 def compute_reward(state, state_type=None):
     """Compute the reward for the current state.
@@ -2832,6 +2987,7 @@ def predict_action(state_json):
                 reward_tracker.last_reward_floor = state.get("floor")
         elif state_type in ["main_menu", "none"]:
             reward_tracker.reset_for_new_run()
+            reward_tracker.last_state_type = state_type
         if not state_json:
             return json.dumps({"action": "wait"})
 
@@ -3010,6 +3166,33 @@ def predict_action(state_json):
                     probs = probs / sum_p
                 log(f"[Python] TURN END OVERRIDE: Scaling prob for End Turn (75) by 0.01 due to energy={energy}. New prob: {probs[75]:.4f}")
         # ---------------------------
+        # --- Retry Stochastic Diversity Override ---
+        current_retry_count = 0
+        if backup_manager.stack:
+            current_retry_count = backup_manager.stack[-1].get("retry_count", 0)
+            
+        stochastic_override_active = False
+        # Capture original policy probabilities before the random override for UI display
+        policy_probs = probs
+
+        if current_retry_count > 0 and not inference_mode:
+            # Check for non-turn-end actions (excluding 75 and 99)
+            div_mask = mask.copy()
+            div_mask[75] = False
+            if len(div_mask) > 99: div_mask[99] = False
+            
+            valid_indices = np.where(div_mask)[0]
+            if len(valid_indices) > 0:
+                prob_override = 0.1 * current_retry_count
+                if random.random() < prob_override:
+                    stochastic_override_active = True
+                    # Create uniform distribution over valid non-turn-end actions
+                    new_probs_np = np.zeros_like(mask, dtype=np.float32)
+                    new_probs_np[valid_indices] = 1.0 / len(valid_indices)
+                    probs = jnp.array(new_probs_np)
+                    log(f"[Python] RETRY STOCHASTIC OVERRIDE: retry_count={current_retry_count}, prob={prob_override:.2f}. "
+                        f"Overriding policy with uniform distribution over {len(valid_indices)} non-turn-end actions.")
+
         # --- Search Features ---
         # Lethal Search: Harness to ensure we don't miss a deterministic kill-all sequence.
         # Multiple Move: Full tree search with value-head evaluation for best next state.
@@ -3018,7 +3201,7 @@ def predict_action(state_json):
         search_action_idx = None
         search_type = None
 
-        if (lethal_search_mode or multiple_move_mode) and state_type == "combat" and battle_simulator is not None:
+        if not stochastic_override_active and (lethal_search_mode or multiple_move_mode) and state_type == "combat" and battle_simulator is not None:
             log(f"[Python] Combat Search: START (lethal={lethal_search_mode}, multi={multiple_move_mode})")
             try:
                 sim_json = validator.to_simulator_json(state)
@@ -3390,14 +3573,15 @@ def predict_action(state_json):
                 raw_logger.log_step(
                     state_json=state_json, 
                     action_idx=action_idx, 
-                    probs=probs, 
+                    probs=policy_probs, 
                     mask=mask, 
                     reward=reward, 
                     log_prob=log_prob, 
                     predicted_v=value.item(), 
                     logits=logits[0, 0], 
                     terminal=terminal, 
-                    search_type=search_type
+                    search_type=search_type,
+                    stochastic_override=stochastic_override_active
                 )
 
                 if config and len(current_trajectory) >= config.unroll_length:

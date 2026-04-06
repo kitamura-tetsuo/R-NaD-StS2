@@ -44,6 +44,7 @@ public partial class MainFile : Node
     private bool _noSpeedup = false;
     private bool _isStartingRun = false;
     public bool TrainMode { get; private set; } = false;
+    private long _lastIdleStepTime = 0;
 
 
     private void ScheduleAI()
@@ -365,6 +366,15 @@ public partial class MainFile : Node
             if (pollTime > 100) {
                  Logger.Info($"[PERF] Background polling took {pollTime}ms");
             }
+
+            // Periodic State Reporting (Idle Phase / Main Menu)
+            // This ensures the bridge receives 'can_continue' status before a run starts.
+            if (!AiSlayer.IsActive && currentTime - _lastIdleStepTime > 500)
+            {
+                _lastIdleStepTime = currentTime;
+                // Handle actions (like Proceed/MainMenu) even in idle state to prevent hangs
+                _ = StepAI(ExecuteUniversalAction); 
+            }
         }
         
         long frameFinal = _frameStopwatch.ElapsedMilliseconds;
@@ -468,7 +478,19 @@ public partial class MainFile : Node
             {
                 Logger.Info("[AutoAI] Cleaning up existing run before starting new one...");
                 rm.CleanUp(false);
-                await Task.Delay(100);
+                await Task.Delay(200);
+            }
+
+            // Also check for Game Over screen that might be blocking the start
+            var topOverlay = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.Peek();
+            if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen.NGameOverScreen gos)
+            {
+                Logger.Info("[AutoAI] Game Over screen detected during setup. Closing it...");
+                if (MegaCrit.Sts2.Core.Nodes.NGame.Instance != null)
+                {
+                    MegaCrit.Sts2.Core.Nodes.NGame.Instance.ReturnToMainMenu();
+                    await Task.Delay(500);
+                }
             }
 
             _isStartingRun = true;
@@ -478,8 +500,10 @@ public partial class MainFile : Node
             var modifiers = new List<ModifierModel>();
 
             Logger.Info($"[AutoAI] Starting new game with seed: '{seedToUse}'...");
+            // Use 0 for the 7th argument as the method signature in this build expects an int
             await ngame.StartNewSingleplayerRun(ironclad, true, acts, modifiers, seedToUse, 0, 0);
-            await Task.Delay(500);
+            Logger.Info("[AutoAI] Run initialized. Waiting for state to settle...");
+            await Task.Delay(1000);
 
             var state = rm?.DebugOnlyGetState();
             if (state?.CurrentRoom is MapRoom) await rm.EnterMapCoord(state.Map.StartingMapPoint.coord);

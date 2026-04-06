@@ -170,7 +170,8 @@ async def process_state(data: Dict) -> Dict:
             "name": get_action_name(int(action_idx), state),
             "prob": selected_prob,
             "isSelected": True,
-            "searchType": data.get("search_type")
+            "searchType": data.get("search_type"),
+            "isStochastic": data.get("stochastic_override")
         }
         
         # Get top 5 others (excluding selected)

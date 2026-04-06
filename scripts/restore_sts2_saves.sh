@@ -28,7 +28,8 @@ fi
 if [ -d "$BACKUP_DIR/AppData" ]; then
     echo "Restoring Location A: $DEST_A"
     mkdir -p "$DEST_A"
-    cp -rp "$BACKUP_DIR/AppData/." "$DEST_A/"
+    # Use -av to preserve attributes and provide verbose output
+    cp -av "$BACKUP_DIR/AppData/." "$DEST_A/"
 else
     echo "Skip: AppData not found in backup."
 fi
@@ -37,9 +38,32 @@ fi
 if [ -d "$BACKUP_DIR/UserData" ]; then
     echo "Restoring Location B: $DEST_B"
     mkdir -p "$DEST_B"
-    cp -rp "$BACKUP_DIR/UserData/." "$DEST_B/"
+    cp -av "$BACKUP_DIR/UserData/." "$DEST_B/"
 else
     echo "Skip: UserData not found in backup."
 fi
 
-echo "Restore completed."
+echo "Verifying files..."
+
+# Validation
+MISSING_A=0
+MISSING_B=0
+
+if [ ! -f "$DEST_A/current_run.save" ]; then
+    echo "Warning: current_run.save is missing in Location A after restore!"
+    MISSING_A=1
+fi
+
+if [ ! -f "$DEST_B/current_run.save" ]; then
+    echo "Warning: current_run.save is missing in Location B after restore!"
+    MISSING_B=1
+fi
+
+if [ $MISSING_A -eq 0 ] && [ $MISSING_B -eq 0 ]; then
+    echo "Success: current_run.save found in both locations."
+    echo "Restore completed successfully."
+else
+    echo "Error: Restore verification failed. Some save files are missing."
+    exit 1
+fi
+

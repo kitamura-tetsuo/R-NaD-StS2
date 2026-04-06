@@ -74,17 +74,19 @@ public partial class MainFile : Node
 
     public string GetJsonState()
     {
+        if (_isStartingRun) return null; // Wait while initialization is in progress
+
         var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
         var runState = rm.DebugOnlyGetState();
         if (runState == null) {
-            // If runState is null, it means we are likely in the main menu or transitioning.
-            // For the AI bridge, reporting this as game_over allows for a clean reset of trajectories.
+            // If runState is null, we are in the main menu or transitioning (e.g. at boot).
+            // Reporting this as main_menu allows the bridge to recognize continuation availability
+            // and resets training trajectory states correctly.
             bool canContinue = MegaCrit.Sts2.Core.Saves.SaveManager.Instance.HasRunSave;
             return System.Text.Json.JsonSerializer.Serialize(new { 
-                type = "game_over", 
+                type = "main_menu", 
                 floor = 0, 
                 victory = false, 
-                reason = "main_menu",
                 can_continue = canContinue 
             }, JsonOptions);
         }

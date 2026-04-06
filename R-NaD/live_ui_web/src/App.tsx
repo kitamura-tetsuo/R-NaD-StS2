@@ -51,6 +51,7 @@ interface ActionProb {
   prob: number;
   isSelected?: boolean;
   searchType?: string;
+  isStochastic?: boolean;
 }
 
 interface LiveData {
@@ -65,6 +66,7 @@ interface LiveData {
   reset?: boolean;
   step_id?: number;
   events?: { time: number; label: string; color: string }[];
+  stochastic_override?: boolean;
 }
 
 const App: React.FC = () => {
@@ -360,9 +362,16 @@ const App: React.FC = () => {
 
         {/* Far Right: AI Action History Pipeline - 2 columns */}
         <aside className="col-span-2 space-y-4">
-          <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2 flex items-center gap-2 px-2">
-            <Activity className="w-4 h-4 text-brand-secondary" /> Action Timeline
-          </h3>
+          <div className="flex items-center justify-between px-2 mb-2">
+            <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 flex items-center gap-2">
+              <Activity className="w-4 h-4 text-brand-secondary" /> Action Timeline
+            </h3>
+            {data.stochastic_override && (
+              <span className="px-1.5 py-0.5 bg-orange-600 text-white text-[8px] font-black tracking-tighter uppercase rounded animate-pulse shadow-[0_0_8px_rgba(234,88,12,0.4)] border border-orange-400/50">
+                RETRY STOCHASTIC OVERRIDE
+              </span>
+            )}
+          </div>
           <div className="space-y-4">
             {actionHistory.map((actions, stepIdx) => (
               <div
@@ -395,6 +404,11 @@ const App: React.FC = () => {
                               action.searchType === 'lethal' ? "bg-red-500" : "bg-brand-secondary"
                             )}>
                               {action.searchType}
+                            </span>
+                          )}
+                          {action.isStochastic && action.isSelected && (
+                            <span className="ml-1 px-1 bg-orange-600 text-white text-[7px] font-black rounded h-fit self-center uppercase shadow-[0_0_4px_rgba(234,88,12,0.4)]">
+                              STOCHASTIC
                             </span>
                           )}
                         </span>
