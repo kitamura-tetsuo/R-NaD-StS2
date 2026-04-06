@@ -506,6 +506,80 @@ public partial class MainFile : Node
             await Task.Delay(1000);
 
             var state = rm?.DebugOnlyGetState();
+            
+            // --- デバッグ用カード追加処理 START ---
+            try
+            {
+                var player = (MegaCrit.Sts2.Core.Entities.Players.Player)MegaCrit.Sts2.Core.Context.LocalContext.GetMe(state);
+                if (player != null)
+                {
+                    object cardModel = null;
+                    var modelDbCardMethod = typeof(MegaCrit.Sts2.Core.Models.ModelDb).GetMethod("Card", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static, null, new Type[] { typeof(string) }, null);
+                    if (modelDbCardMethod != null)
+                    {
+                        cardModel = modelDbCardMethod.Invoke(null, new object[] { "Bloodletting" });
+                    }
+                    if (cardModel == null)
+                    {
+                        var getDbMethod = typeof(MegaCrit.Sts2.Core.Models.ModelDb).GetMethod("GetDb", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                        if (getDbMethod != null)
+                        {
+                            var db = getDbMethod.Invoke(null, new object[] { "cards" });
+                            var getEntryMethod = db?.GetType().GetMethod("GetEntry");
+                            cardModel = getEntryMethod?.Invoke(db, new object[] { "Bloodletting" });
+                        }
+                    }
+
+                    if (cardModel != null)
+                    {
+                        object newCard = null;
+                        var createMethod = cardModel.GetType().GetMethod("GenerateCard") 
+                                           ?? cardModel.GetType().GetMethod("CreateCard")
+                                           ?? cardModel.GetType().GetMethod("Generate");
+                        if (createMethod != null)
+                        {
+                            newCard = createMethod.Invoke(cardModel, null);
+                        }
+                        else
+                        {
+                            var cardType = typeof(MegaCrit.Sts2.Core.Entities.Cards.TargetType).Assembly.GetType("MegaCrit.Sts2.Core.Entities.Cards.Card");
+                            if (cardType != null) {
+                                newCard = Activator.CreateInstance(cardType, cardModel);
+                            }
+                        }
+
+                        if (newCard != null)
+                        {
+                            dynamic p = player;
+                            try { p.MasterDeck.AddCard(newCard); }
+                            catch
+                            {
+                                try { p.MasterDeck.Add(newCard); }
+                                catch
+                                {
+                                    try { p.Deck.AddCard(newCard); }
+                                    catch
+                                    {
+                                        try { p.Deck.Add(newCard); }
+                                        catch
+                                        {
+                                            try { p.MasterDeck.Cards.Add(newCard); }
+                                            catch { p.Deck.Cards.Add(newCard); }
+                                        }
+                                    }
+                                }
+                            }
+                            Logger.Info("[AutoAI] Debug: Added Bloodletting to MasterDeck.");
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Error($"[AutoAI] Failed to add Bloodletting to deck: {e.Message}");
+            }
+            // --- デバッグ用カード追加処理 END ---
+
             if (state?.CurrentRoom is MapRoom) await rm.EnterMapCoord(state.Map.StartingMapPoint.coord);
             
             Logger.Info($"[AutoAI] Run initialized. Starting AI loop with seed: {seedToUse}");

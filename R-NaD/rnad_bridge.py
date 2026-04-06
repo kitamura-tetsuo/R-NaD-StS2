@@ -909,6 +909,7 @@ class RewardTracker:
         self.last_upgraded_count: int = -1
         self.last_total_cards: int = -1
         self.last_potion_count: int = -1
+        self.last_enemy_count: int = -1
         self.was_elite: bool = False
         self.was_boss: bool = False
 
@@ -930,6 +931,7 @@ class RewardTracker:
         self.last_upgraded_count = -1
         self.last_total_cards = -1
         self.last_potion_count = -1
+        self.last_enemy_count = -1
         self.was_elite = False
         self.was_boss = False
         backup_manager.clear()
@@ -944,12 +946,13 @@ class RewardTracker:
         # Do NOT reset last_processed_floor here as it might be used across screens
         log("RewardTracker: Per-episode reset.")
 
-    def initialize_combat(self, hp, enemy_hp):
+    def initialize_combat(self, hp, enemy_hp, enemy_count):
         """Initialize combat trackers to avoid the start-of-combat penalty."""
         self.last_player_hp = hp
         self.last_total_enemy_hp = enemy_hp
+        self.last_enemy_count = enemy_count
         self.combat_initialized = True
-        log(f"RewardTracker: Combat initialized (Player HP: {hp}, Enemy HP: {enemy_hp})")
+        log(f"RewardTracker: Combat initialized (Player HP: {hp}, Enemy HP: {enemy_hp}, Count: {enemy_count})")
 
 # Preserve RewardTracker state across re-imports
 if 'rnad_bridge' in sys.modules:
@@ -966,6 +969,7 @@ if 'rnad_bridge' in sys.modules:
         reward_tracker.session_cumulative_reward = getattr(old_tracker, 'session_cumulative_reward', 0.0)
         reward_tracker.episode_end_recorded = getattr(old_tracker, 'episode_end_recorded', False)
         reward_tracker.combat_initialized = getattr(old_tracker, 'combat_initialized', False)
+        reward_tracker.last_enemy_count = getattr(old_tracker, 'last_enemy_count', -1)
         log("Preserved RewardTracker state.")
     else:
         reward_tracker = RewardTracker()
@@ -1218,6 +1222,15 @@ def get_reverse_vocab(vocab):
     """Inverts a vocabulary dictionary."""
     return {v: k for k, v in vocab.items()}
 
+# Shared mappings for validation
+TT_REV = {1: "AnyEnemy", 2: "AllEnemies", 3: "RandomEnemy", 0: "None", 4: "Self"}
+IT_REV = {
+    1: "Attack", 2: "Defense", 3: "AttackDefense", 4: "Buff", 
+    5: "Debuff", 6: "StrongDebuff", 7: "Stun", 8: "StatusCard", 
+    9: "Summon", 10: "CardDebuff", 11: "Heal", 12: "Escape", 
+    13: "Hidden", 14: "Sleep", 15: "DeathBlow", 0: "Unknown"
+}
+
 def decode_state(encoded_dict):
     """Decodes an encoded state dictionary back into a human-readable format for validation."""
     do_deferred_imports()
@@ -1230,7 +1243,6 @@ def decode_state(encoded_dict):
     rev_boss = get_reverse_vocab(BOSS_VOCAB)
     
     st_idx = int(encoded_dict["state_type"])
-    head_idx = int(encoded_dict["head_type"])
     
     # Global features
     g = encoded_dict["global"]
@@ -1242,6 +1254,8 @@ def decode_state(encoded_dict):
         "block": round(float(g[4] * 50.0)),
         "energy": round(float(g[5] * 5.0)),
         "stars": round(float(g[6] * 10.0)),
+        # Potions presence at global_vec[10:15]
+        "potions": [bool(g[10+i]) for i in range(5)],
         # Boss index at global_vec[20]
         "boss": rev_boss.get(round(float(g[20] * BOSS_VOCAB_SIZE)), "UNKNOWN"),
         "relics": [rev_relic.get(int(rid), f"UNKNOWN_RELIC_{int(rid)}") for rid in encoded_dict["relic_ids"] if rid > 0]
@@ -1250,20 +1264,24 @@ def decode_state(encoded_dict):
     # BoW Piles
     for pile_key in ["draw_bow", "discard_bow", "exhaust_bow", "master_bow"]:
         bow_vec = encoded_dict[pile_key]
-        pile_cards = []
-        # Find indices where value > 0 (BoW uses counts as values)
         indices = np.where(bow_vec > 0)[0]
+        pile_cards = []
         for idx in indices:
             count = int(bow_vec[idx])
             card_id = rev_card.get(idx, f"UNKNOWN_CARD_{idx}")
             pile_cards.extend([card_id] * count)
-        decoded[pile_key.replace("_bow", "")] = pile_cards
+        decoded[pile_key.replace("_bow", "")] = sorted(pile_cards)
 
     # Combat features
     if st_idx == 0:
         c = encoded_dict["combat"]
         
-        # Hand (up to 10 cards, 10 features each starting at index 10)
+        # Pile counts
+        decoded["draw_count"] = round(float(c[0] * 30.0))
+        decoded["discard_count"] = round(float(c[1] * 30.0))
+        decoded["exhaust_count"] = round(float(c[2] * 30.0))
+        
+        # Hand (up to 10 cards, 10 features each)
         hand = []
         for i in range(10):
             base = 10 + i * 10
@@ -1272,27 +1290,72 @@ def decode_state(encoded_dict):
                 hand.append({
                     "id": rev_card.get(card_idx, f"UNKNOWN_CARD_{card_idx}"),
                     "isPlayable": bool(c[base+1]),
+                    "targetType": TT_REV.get(int(round(float(c[base+2] * 10.0))), "Unknown"),
                     "cost": round(float(c[base+3] * 5.0)),
-                    "upgraded": bool(c[base+7])
+                    "baseDamage": round(float(c[base+4] * 20.0)),
+                    "baseBlock": round(float(c[base+5] * 20.0)),
+                    "magicNumber": round(float(c[base+6] * 10.0)),
+                    "upgraded": bool(c[base+7]),
+                    "currentDamage": round(float(c[base+8] * 50.0)),
+                    "currentBlock": round(float(c[base+9] * 50.0))
                 })
         decoded["hand"] = hand
         
-        # Enemies (up to 5 enemies, 16 features each starting at index 110)
+        # Enemies
         enemies = []
         for i in range(5):
             base = 110 + i * 16
             if c[base] > 0: # Alive flag
-                enemies.append({
+                e = {
                     "id": rev_monster.get(int(c[base+1]), f"UNKNOWN_MONSTER_{int(c[base+1])}"),
+                    "isMinion": bool(c[base+2]),
                     "hp": round(float(c[base+3] * 200.0)),
                     "maxHp": round(float(c[base+4] * 200.0)),
-                    "block": round(float(c[base+5] * 50.0))
-                })
+                    "block": round(float(c[base+5] * 50.0)),
+                    "intents": []
+                }
+                for j in range(2):
+                    it_base = base + 6 + j * 4
+                    if c[it_base] > 0 or c[it_base+1] > 0:
+                        e["intents"].append({
+                            "type": IT_REV.get(int(round(float(c[it_base] * 10.0))), "Unknown"),
+                            "damage": round(float(c[it_base+1] * 50.0)),
+                            "repeats": round(float(c[it_base+2] * 5.0)),
+                            "count": round(float(c[it_base+3] * 10.0))
+                        })
+                enemies.append(e)
         decoded["enemies"] = enemies
+        
+        # Player Powers
+        p_powers = []
+        for i in range(10):
+            base = 200 + i * 2
+            p_idx = int(c[base])
+            if p_idx > 0:
+                p_powers.append({
+                    "id": rev_power.get(p_idx, f"UNKNOWN_POWER_{p_idx}"),
+                    "amount": round(float(c[base+1] * 10.0))
+                })
+        decoded["player_powers"] = p_powers
+        
+        # Enemy Powers
+        for i in range(len(enemies)):
+            e_powers = []
+            ebase = 220 + i * 20
+            for j in range(10):
+                base = ebase + j * 2
+                p_idx = int(c[base])
+                if p_idx > 0:
+                    e_powers.append({
+                        "id": rev_power.get(p_idx, f"UNKNOWN_POWER_{p_idx}"),
+                        "amount": round(float(c[base+1] * 10.0))
+                    })
+            enemies[i]["powers"] = e_powers
         
         # Predicted features
         decoded["predicted_total_damage"] = float(c[320] * 50.0)
         decoded["predicted_end_block"] = float(c[321] * 50.0)
+        decoded["surplus_block"] = bool(c[322])
 
     # Map features
     if st_idx == 1:
@@ -1301,49 +1364,152 @@ def decode_state(encoded_dict):
         for i in range(256):
             base = i * 8
             if m[base] > 0: # presence
-                row = round(float(m[base+1] * 20.0))
-                col = round(float(m[base+2] * 7.0))
-                map_nodes.append({"row": row, "col": col})
+                map_nodes.append({
+                    "row": round(float(m[base+1] * 20.0)),
+                    "col": round(float(m[base+2] * 7.0)),
+                    "type": int(round(float(m[base+3] * 10.0))), 
+                    "is_current": bool(m[base+4])
+                })
         decoded["map_nodes"] = map_nodes
 
     return decoded
 
+def normalize_original_state(state):
+    """Normalizes the original JSON state into a semantic dictionary matching decode_state's structure."""
+    state_type = state.get("type", "unknown")
+    player = state.get("player", {})
+    
+    rev_card = get_reverse_vocab(CARD_VOCAB)
+    rev_relic = get_reverse_vocab(RELIC_VOCAB)
+    rev_monster = get_reverse_vocab(MONSTER_VOCAB)
+    rev_power = get_reverse_vocab(POWER_VOCAB)
+    rev_boss = get_reverse_vocab(BOSS_VOCAB)
+
+    # 1. Global
+    norm = {
+        "floor": int(state.get("floor", 0)),
+        "gold": int(state.get("gold", 0)),
+        "hp": int(player.get("hp", state.get("hp", 0))),
+        "maxHp": int(player.get("maxHp", 100)),
+        "block": int(player.get("block", 0)),
+        "energy": int(player.get("energy", 0)),
+        "stars": int(player.get("stars", 0)),
+        "potions": [p.get("id") != "empty" for p in state.get("potions", [])[:5]] + [False] * (5 - len(state.get("potions", [])[:5])),
+        "boss": rev_boss.get(get_boss_idx(state.get("boss") or "UNKNOWN"), "UNKNOWN"),
+        "relics": [rev_relic.get(get_relic_idx(r), f"UNKNOWN_{r}") for r in (state.get("relics", []) or player.get("relics", []))[:30]]
+    }
+
+    # 2. Piles (Bag of Words)
+    for p_key in ["drawPile", "discardPile", "exhaustPile", "masterDeck"]:
+        pile = state.get(p_key) if p_key == "masterDeck" else player.get(p_key, [])
+        norm[p_key.replace("Pile", "").replace("Deck", "")] = sorted([rev_card.get(get_card_idx(c), "UNKNOWN") for c in pile])
+
+    # 3. Combat
+    if state_type == "combat":
+        norm["draw_count"] = len(player.get("drawPile", []))
+        norm["discard_count"] = len(player.get("discardPile", []))
+        norm["exhaust_count"] = len(player.get("exhaustPile", []))
+        
+        # Hand
+        hand = []
+        tt_norm = {"SingleEnemy": "AnyEnemy", "AnyEnemy": "AnyEnemy", "AllEnemy": "AllEnemies", "AllEnemies": "AllEnemies", "RandomEnemy": "RandomEnemy", "None": "None", "Self": "Self"}
+        for c in state.get("hand", [])[:10]:
+            hand.append({
+                "id": rev_card.get(get_card_idx(c.get("id")), "UNKNOWN"),
+                "isPlayable": bool(c.get("isPlayable")),
+                "targetType": tt_norm.get(c.get("targetType", "None"), "Unknown"),
+                "cost": int(c.get("cost", 0)),
+                "baseDamage": int(c.get("baseDamage", 0)),
+                "baseBlock": int(c.get("baseBlock", 0)),
+                "magicNumber": int(c.get("magicNumber", 0)),
+                "upgraded": bool(c.get("upgraded")),
+                "currentDamage": int(c.get("currentDamage", 0)),
+                "currentBlock": int(c.get("currentBlock", 0))
+            })
+        norm["hand"] = hand
+        
+        # Enemies
+        enemies = []
+        it_norm = {"Defense": "Defense", "Defend": "Defense", "AttackDefense": "AttackDefense", "Buff": "Buff", "Debuff": "Debuff", "StrongDebuff": "StrongDebuff", "DebuffStrong": "StrongDebuff", "Stun": "Stun", "StatusCard": "StatusCard", "Summon": "Summon", "CardDebuff": "CardDebuff", "Heal": "Heal", "Escape": "Escape", "Hidden": "Hidden", "Sleep": "Sleep", "DeathBlow": "DeathBlow", "Attack": "Attack", "Unknown": "Unknown"}
+        for e in [en for en in state.get("enemies", []) if en.get("hp", 0) > 0][:5]:
+            norm_e = {
+                "id": rev_monster.get(get_monster_idx(e.get("id")), "UNKNOWN"),
+                "isMinion": bool(e.get("isMinion")),
+                "hp": int(e.get("hp", 0)),
+                "maxHp": int(e.get("maxHp", 1)),
+                "block": int(e.get("block", 0)),
+                "intents": []
+            }
+            for it in e.get("intents", [])[:2]:
+                norm_e["intents"].append({
+                    "type": it_norm.get(it.get("type", "Unknown"), "Unknown"),
+                    "damage": int(it.get("damage", 0)),
+                    "repeats": int(it.get("repeats", 1)),
+                    "count": int(it.get("count", 0))
+                })
+            norm_e["powers"] = [
+                {"id": rev_power.get(get_power_idx(p.get("id")), "UNKNOWN"), "amount": int(p.get("amount", 0))}
+                for p in e.get("powers", [])[:10]
+            ]
+            enemies.append(norm_e)
+        norm["enemies"] = enemies
+        
+        norm["player_powers"] = [
+            {"id": rev_power.get(get_power_idx(p.get("id")), "UNKNOWN"), "amount": int(p.get("amount", 0))}
+            for p in player.get("powers", [])[:10]
+        ]
+        
+        norm["predicted_total_damage"] = float(state.get("predicted_total_damage", 0.0))
+        norm["predicted_end_block"] = float(state.get("predicted_end_block", 0.0))
+        norm["surplus_block"] = bool(state.get("surplus_block"))
+
+    # 4. Map
+    if state_type == "map":
+        nodes = state.get("nodes", [])[:256]
+        norm["map_nodes"] = [
+            {
+                "row": int(n.get("row", 0)),
+                "col": int(n.get("col", 0)),
+                "type": int(n.get("type", 0)),
+                "is_current": bool(n.get("is_current"))
+            } for n in nodes
+        ]
+
+    return norm
+
 def validate_encoding(original_state, encoded_dict):
-    """Validates the encoded tensor by decoding it and comparing with the original state."""
+    """Validates the encoded tensor by dynamically traversing and comparing with the original state."""
     try:
         decoded = decode_state(encoded_dict)
+        expected = normalize_original_state(original_state)
         
-        # Validation results
-        discrepancies = []
-        
-        def check_field(decoded_val, original_val, name, tol=1.1):
-            if isinstance(decoded_val, (int, float)) and isinstance(original_val, (int, float)):
-                if abs(decoded_val - original_val) > tol:
-                    discrepancies.append(f"{name}: Decoded={decoded_val}, Original={original_val}")
-                    return False
-            elif decoded_val != original_val:
-                discrepancies.append(f"{name}: Decoded={len(decoded_val) if isinstance(decoded_val, list) else decoded_val}, Original={len(original_val) if isinstance(original_val, list) else original_val}")
-                return False
-            return True
+        def recursive_compare(d_val, e_val, path="", tol=1.1):
+            errs = []
+            if type(d_val) != type(e_val):
+                errs.append(f"{path}: Type mismatch: Decoded={type(d_val)}, Expected={type(e_val)}")
+                return errs
+            
+            if isinstance(d_val, dict):
+                for k, v in d_val.items():
+                    if k not in e_val:
+                        errs.append(f"{path}.{k}: Missing in expected")
+                    else:
+                        errs.extend(recursive_compare(v, e_val[k], f"{path}.{k}", tol))
+            elif isinstance(d_val, list):
+                if len(d_val) != len(e_val):
+                    errs.append(f"{path}: Length mismatch: Decoded={len(d_val)}, Expected={len(e_val)}")
+                else:
+                    for i, (v_d, v_e) in enumerate(zip(d_val, e_val)):
+                        errs.extend(recursive_compare(v_d, v_e, f"{path}[{i}]", tol))
+            elif isinstance(d_val, (int, float)):
+                if abs(d_val - e_val) > tol:
+                    errs.append(f"{path}: Value mismatch: Decoded={d_val}, Expected={e_val}")
+            else:
+                if d_val != e_val:
+                    errs.append(f"{path}: Value mismatch: Decoded={d_val}, Expected={e_val}")
+            return errs
 
-        check_field(decoded["floor"], original_state.get("floor", 0), "floor")
-        check_field(decoded["gold"], original_state.get("gold", 0), "gold")
-        
-        player = original_state.get("player", {})
-        original_hp = player.get("hp", original_state.get("hp", 0))
-        check_field(decoded["hp"], original_hp, "hp")
-        
-        if original_state.get("type") == "combat":
-            # Check draw pile count
-            check_field(len(decoded["draw"]), len(player.get("drawPile", [])), "drawPile count")
-            
-            # Check hand count
-            original_hand = original_state.get("hand", [])
-            check_field(len(decoded["hand"]), len(original_hand[:10]), "hand count")
-            
-            # Check enemy count (alive only)
-            alive_enemies = [e for e in original_state.get("enemies", []) if e.get("hp", 0) > 0]
-            check_field(len(decoded["enemies"]), len(alive_enemies[:5]), "alive enemies count")
+        discrepancies = recursive_compare(decoded, expected)
 
         if discrepancies:
             log(f"WARNING: Encoding Validation Discrepancy Found! Type: {original_state.get('type')}")
@@ -1354,6 +1520,8 @@ def validate_encoding(original_state, encoded_dict):
         return True
     except Exception as e:
         log(f"ERROR: validate_encoding failed: {e}")
+        import traceback
+        log(traceback.format_exc())
         return False
 
 
@@ -2627,8 +2795,9 @@ def compute_intermediate_reward(state, state_type, action_idx):
     # Combat delta reward (Dense Reward)
     if state_type == "combat":
         # Task 2: Fix combat initialization to avoid start-of-combat penalty
+        current_enemy_count = sum(1 for e in enemies if e.get("hp", 0) > 0 and not e.get("isMinion", False))
         if not reward_tracker.combat_initialized:
-            reward_tracker.initialize_combat(current_hp, current_enemy_hp)
+            reward_tracker.initialize_combat(current_hp, current_enemy_hp, current_enemy_count)
             # return 0.0 # No delta on initialization step
         
         last_hp = reward_tracker.last_player_hp
@@ -2640,11 +2809,21 @@ def compute_intermediate_reward(state, state_type, action_idx):
         # Player HP: Reward both damage taken (penalty) and healing (reward) at the same ratio (0.015)
         hp_delta = float(current_hp - last_hp)
         
-        combat_reward = (damage_dealt * 0.002) + (hp_delta * 0.03)
+        combat_reward = (damage_dealt * 0.002) + (hp_delta * 0.3)
         
         if abs(combat_reward) > 1e-6:
             intermediate_reward += combat_reward
         
+        # Enemy Defeat Reward: 0.01 per enemy defeated (HP <= 0 or removed)
+        # Exclude minions if they were excluded from HP delta, or count all?
+        # User requested: "敵撃破時に0.01" (usually implies all enemies we care about)
+        last_enemy_count = reward_tracker.last_enemy_count
+        if last_enemy_count != -1 and current_enemy_count < last_enemy_count:
+            defeat_count = last_enemy_count - current_enemy_count
+            defeat_reward = defeat_count * 0.01
+            intermediate_reward += defeat_reward
+            log(f"Reward for defeating {defeat_count} enemy: +{defeat_reward:.2f}")
+
         # Track if it was an elite or boss room
         room_type = state.get("room_type", "")
         if room_type == "Elite":
@@ -2655,6 +2834,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
         # Update trackers for next step
         reward_tracker.last_player_hp = current_hp
         reward_tracker.last_total_enemy_hp = current_enemy_hp
+        reward_tracker.last_enemy_count = current_enemy_count
 
     # Battle Clear Reward
     if reward_tracker.last_state_type == "combat" and (state_type == "rewards" or state_type == "map"):
@@ -3513,7 +3693,11 @@ def predict_action(state_json):
                         action = {"action": "select_grid_card", "index": cards[action_idx].get("index")}
                     else:
                         action = {"action": "select_hand_card", "index": cards[action_idx].get("index")}
-        
+            elif action_idx == 90:
+                if state_type == "grid_selection" and state.get("subtype") == "choose_a_card":
+                    action = {"action": "select_grid_card", "index": -1}
+                else:
+                    action = {"action": "confirm_selection"}
         
         elif state_type == "game_over":
             if action_idx == 86:

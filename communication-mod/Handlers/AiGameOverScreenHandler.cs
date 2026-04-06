@@ -112,7 +112,7 @@ public class AiGameOverScreenHandler : IScreenHandler
                 // but let's be safe within the local loop if the buttons never become enabled)
                 // However, WaitHelper is better for this. Let's use a WaitHelper.Until for the 'state change' condition instead of manual loop if possible.
                 // Re-using WaitHelper.Until for the 'something is ready' condition:
-                bool somethingReady = await WaitHelper.Until(() => {
+                await WaitHelper.Until(() => {
                     if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree()) return true;
                     var c = UiHelper.FindFirst<NGameOverContinueButton>(screen);
                     if (c != null && c.Visible && c.IsEnabled) return true;
@@ -121,7 +121,6 @@ public class AiGameOverScreenHandler : IScreenHandler
                     return false;
                 }, ct, TimeSpan.FromSeconds(30), "Neither Continue nor Main Menu button appeared");
 
-                if (!somethingReady) break; // Should have thrown, but just in case
             }
 
             if (!GodotObject.IsInstanceValid(screen) || !screen.IsVisibleInTree())

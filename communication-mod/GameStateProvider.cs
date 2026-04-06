@@ -14,6 +14,7 @@ public partial class MainFile : Node
     private static string _lastMapBoss = "";
     private static (int row, int col)? _lastMapPos = null;
     private static object? _lastMapSummary = null;
+    private static bool _isAutoConfirming = false;
 
     // Combat Prediction Verification
     private static int _lastPredictedDamage = 0;
@@ -405,6 +406,18 @@ public partial class MainFile : Node
                 isConfirming = confirmBtn != null && confirmBtn.Visible && confirmBtn.IsEnabled;
             }
 
+            if (isConfirming)
+            {
+                if (!_isAutoConfirming)
+                {
+                    _isAutoConfirming = true;
+                    Logger.Info($"[AutoAI] Auto-confirming {gridSelection.GetType().Name} to save AI step.");
+                    _ = HandleConfirmSelection(new Godot.Collections.Dictionary());
+                    _ = System.Threading.Tasks.Task.Run(async () => { await System.Threading.Tasks.Task.Delay(1000); _isAutoConfirming = false; });
+                }
+                return null;
+            }
+
             return System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "grid_selection",
@@ -500,6 +513,18 @@ public partial class MainFile : Node
 
                     bool isConfirming = confirmBtn != null && confirmBtn.IsVisibleInTree() && confirmBtn.IsEnabled;
                     
+                    if (isConfirming)
+                    {
+                        if (!_isAutoConfirming)
+                        {
+                            _isAutoConfirming = true;
+                            Logger.Info($"[AutoAI] Auto-confirming Hand Selection to save AI step.");
+                            _ = HandleConfirmSelection(new Godot.Collections.Dictionary());
+                            _ = System.Threading.Tasks.Task.Run(async () => { await System.Threading.Tasks.Task.Delay(1000); _isAutoConfirming = false; });
+                        }
+                        return null;
+                    }
+
                     return System.Text.Json.JsonSerializer.Serialize(new
                     {
                         type = "hand_selection",

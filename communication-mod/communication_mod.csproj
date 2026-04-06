@@ -3,6 +3,7 @@
         <TargetFramework>net9.0</TargetFramework>
         <ImplicitUsings>true</ImplicitUsings>
         <Nullable>enable</Nullable> <!--Makes code analysis regarding null values stricter.-->
+        <NoWarn>$(NoWarn);CS8602;CS8618;CS8600;CS8603;CS8604;STS002;CS8625;CS1998;CS8619;CS8601;CS0219;CS4014</NoWarn>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <DefaultItemExcludes>packages\**</DefaultItemExcludes>
     </PropertyGroup>

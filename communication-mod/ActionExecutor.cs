@@ -558,90 +558,6 @@ public partial class MainFile : Node
                  {
                      Logger.Info($"[AutoAI] Selecting card at index {index} on {top.GetType().Name}: {holders[index].CardModel?.Title}");
                      grid.Call("OnHolderPressed", holders[index]);
-
-                     if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen upgradeScreenAuto)
-                     {
-                         Logger.Info("[AutoAI] Automatically confirming upgrade selection.");
-                         await Task.Delay(500); 
-
-                         var singleFieldU = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen).GetField("_singlePreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                         var multiFieldU = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen).GetField("_multiPreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-                         var singleBtnU = singleFieldU?.GetValue(upgradeScreenAuto) as Node;
-                         var multiBtnU = multiFieldU?.GetValue(upgradeScreenAuto) as Node;
-
-                         Node? confirmBtnU = null;
-                         if (singleBtnU != null && ((CanvasItem)singleBtnU).IsVisibleInTree()) confirmBtnU = singleBtnU;
-                         else if (multiBtnU != null && ((CanvasItem)multiBtnU).IsVisibleInTree()) confirmBtnU = multiBtnU;
-
-                         if (confirmBtnU != null)
-                         {
-                             Logger.Info("[AutoAI] Clicking upgrade confirm button automatically.");
-                             confirmBtnU.Call("ForceClick");
-                         }
-                     }
-                     if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen enchantScreen)
-                     {
-                         Logger.Info("[AutoAI] Automatically confirming enchantment selection.");
-                         await Task.Delay(500);
-                         
-                         var singleField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_singlePreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                         var multiField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckEnchantSelectScreen).GetField("_multiPreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                         
-                         var singleBtn = singleField?.GetValue(enchantScreen) as Node;
-                         var multiBtn = multiField?.GetValue(enchantScreen) as Node;
-                         
-                         Node? confirmBtn = null;
-                         if (singleBtn != null && ((CanvasItem)singleBtn).IsVisibleInTree()) confirmBtn = singleBtn;
-                         else if (multiBtn != null && ((CanvasItem)multiBtn).IsVisibleInTree()) confirmBtn = multiBtn;
-
-                         if (confirmBtn != null)
-                         {
-                             Logger.Info("[AutoAI] Clicking confirm button automatically.");
-                             confirmBtn.Call("ForceClick");
-                         }
-                     }
-                     if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen deckCardSelectScreen)
-                     {
-                         Logger.Info($"[AutoAI] Automatically confirming deck card selection on {deckCardSelectScreen.GetType().Name}");
-                         await Task.Delay(500); 
-
-                         var field = deckCardSelectScreen.GetType().GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                         var confirmBtn = field?.GetValue(deckCardSelectScreen) as Node;
-                         
-                         if (confirmBtn == null || !((CanvasItem)confirmBtn).IsVisibleInTree())
-                         {
-                             field = deckCardSelectScreen.GetType().GetField("_confirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                             confirmBtn = field?.GetValue(deckCardSelectScreen) as Node;
-                         }
-
-                         if (confirmBtn != null && ((CanvasItem)confirmBtn).IsVisibleInTree())
-                         {
-                             Logger.Info("[AutoAI] Clicking deck card confirm button automatically.");
-                             confirmBtn.Call("ForceClick");
-                         }
-                     }
-                     if (top is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen transformSelectScreen)
-                     {
-                         Logger.Info("[AutoAI] Automatically confirming transform selection.");
-                         await Task.Delay(500); 
-
-                         var field = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_previewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                         var multiField = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckTransformSelectScreen).GetField("_multiPreviewConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                         
-                         var singleBtn = field?.GetValue(transformSelectScreen) as Node;
-                         var multiBtn = multiField?.GetValue(transformSelectScreen) as Node;
-                         
-                         Node? confirmBtn = null;
-                         if (singleBtn != null && ((CanvasItem)singleBtn).IsVisibleInTree()) confirmBtn = singleBtn;
-                         else if (multiBtn != null && ((CanvasItem)multiBtn).IsVisibleInTree()) confirmBtn = multiBtn;
-
-                         if (confirmBtn != null)
-                         {
-                             Logger.Info("[AutoAI] Clicking transform confirm button automatically.");
-                             confirmBtn.Call("ForceClick");
-                         }
-                     }
                  }
             }
         }
@@ -665,18 +581,6 @@ public partial class MainFile : Node
                     Logger.Info($"[AutoAI] Selecting hand card at index {index}: {holder.CardNode?.Model?.Title}");
                     hand.Call("OnHolderPressed", holder);
 
-                    if (hand.CurrentMode == MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand.Mode.UpgradeSelect)
-                    {
-                        Logger.Info("[AutoAI] UpgradeSelect mode: waiting for confirm button to become available.");
-                        await Task.Delay(500);
-                        var confirmBtnField = typeof(MegaCrit.Sts2.Core.Nodes.Combat.NPlayerHand).GetField("_selectModeConfirmButton", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                        var confirmBtnNode = confirmBtnField?.GetValue(hand) as Node;
-                        if (confirmBtnNode != null && ((CanvasItem)confirmBtnNode).IsVisibleInTree())
-                        {
-                            Logger.Info("[AutoAI] Clicking UpgradeSelect confirm button automatically.");
-                            confirmBtnNode.Call("ForceClick");
-                        }
-                    }
                     return;
                 }
             }
