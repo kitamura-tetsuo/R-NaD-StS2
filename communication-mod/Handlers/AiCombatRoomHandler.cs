@@ -124,7 +124,15 @@ public class AiCombatRoomHandler : IRoomHandler
             if (!_hasValidBackup)
             {
                 MainFile.Logger.Info($"[AiCombatRoomHandler] End of Turn {turnCount}. Requesting save backup...");
-                var result = await MainFile.Instance.CallBridgeSafe("trigger_backup");
+                
+                var backupInfo = new Godot.Collections.Dictionary {
+                    ["is_elite"] = runState?.CurrentRoom?.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Elite,
+                    ["is_boss"] = runState?.CurrentRoom?.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Boss,
+                    ["floor"] = runState?.TotalFloor ?? 0
+                };
+                string backupInfoJson = Json.Stringify(backupInfo);
+                
+                var result = await MainFile.Instance.CallBridgeSafe("trigger_backup", backupInfoJson);
                 if (result.AsBool())
                 {
                     MainFile.Logger.Info($"[AiCombatRoomHandler] Combat backup verified successfully on Turn {turnCount}.");

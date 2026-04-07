@@ -43,7 +43,11 @@ public class AiGameOverScreenHandler : IScreenHandler
                 if (slayer.HpBeforeCombat > 0)
                 {
                     // Record trial HP loss as total HP before combat (since player is at 0 HP)
-                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", slayer.HpBeforeCombat);
+                    var hpInfo = new Godot.Collections.Dictionary {
+                        ["hp_loss"] = slayer.HpBeforeCombat,
+                        ["is_victory"] = false
+                    };
+                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", Json.Stringify(hpInfo));
                 }
 
                 // Call bridge to restore save. This flushes the current trajectory as terminal first.

@@ -49,16 +49,16 @@ public class AiRewardsScreenHandler : IScreenHandler
                     int hpLoss = slayer.HpBeforeCombat - currentHp;
                     int floorThreshold = runState.TotalFloor;
                     
-                    // Record trial HP loss in history via Rust bridge
-                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", hpLoss);
+                    // Record trial HP loss in history via Rust bridge (with victory flag)
+                    var hpInfo = new Godot.Collections.Dictionary {
+                        ["hp_loss"] = hpLoss,
+                        ["is_victory"] = true
+                    };
+                    await MainFile.Instance.CallBridgeSafe("record_hp_loss", Json.Stringify(hpInfo));
                     
                     // Check performance against history
                     var infoDict = new Godot.Collections.Dictionary {
-                        ["hp_loss"] = hpLoss,
-                        ["is_elite"] = runState.CurrentRoom?.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Elite,
-                        ["is_boss"] = runState.CurrentRoom?.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Boss,
-                        ["hp_before_combat"] = slayer.HpBeforeCombat,
-                        ["max_hp"] = (int)player.Creature.MaxHp
+                        ["hp_loss"] = hpLoss
                     };
                     string infoJson = Json.Stringify(infoDict);
                     var perfVariant = await MainFile.Instance.CallBridgeSafe("check_hp_performance", infoJson);
@@ -79,19 +79,8 @@ public class AiRewardsScreenHandler : IScreenHandler
                         }
                     }
 
-                    bool shouldRetry = false;
-                    string retryReason = "";
-                    
-                    if (retryCount < 3)
-                    {
-                        shouldRetry = true;
-                        retryReason = $"Forced exploration (Trial {retryCount + 1}/3 before median check)";
-                    }
-                    else if (!isTop50)
-                    {
-                        shouldRetry = true;
-                        retryReason = $"Performance not in Top 50% (Retry {retryCount}/{maxRetries})";
-                    }
+                    bool shouldRetry = !isTop50;
+                    string retryReason = isTop50 ? "" : $"HP loss threshold not met (Attempt {retryCount + 1}/{maxRetries})";
 
                     if (retryCount >= maxRetries)
                     {

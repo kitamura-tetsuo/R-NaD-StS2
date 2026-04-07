@@ -579,7 +579,14 @@ def perform_restart(process, current_checkpoint, args):
     # Extra cleanup just in case
     cleanup_processes()
     
-    # 3. Relaunch the game
+    # 3. Relaunch the game with the absolute latest checkpoint
+    latest_ckpt, latest_run_id = select_best_checkpoint()
+    if latest_ckpt:
+        logging.info(f"Restarting with latest detected checkpoint: {latest_ckpt}")
+        checkpoint = latest_ckpt
+        if latest_run_id:
+            os.environ["RNAD_RUN_ID"] = latest_run_id
+
     new_process = launch_game(
         checkpoint=checkpoint, 
         seed=args.seed, 
@@ -597,8 +604,12 @@ def perform_restart(process, current_checkpoint, args):
         logging.error("Failed to recover: game server didn't start.")
         return new_process, checkpoint
     
-    logging.info("Waiting 30 seconds for Game Scene Tree to initialize...")
-    time.sleep(30)
+    # Wait for R-NaD bridge to fully initialize (including JAX pre-warm)
+    if not wait_for_bridge_initialization(timeout=300):
+        logging.warning("R-NaD bridge initialization timed out during restart. Continuing anyway...")
+    
+    logging.info("Waiting 5 seconds for Game Scene Tree to finalize initialization...")
+    time.sleep(5)
     
     logging.info("Re-enabling learning mode...")
     try:

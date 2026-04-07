@@ -622,9 +622,8 @@ BACKUP_ROOT = os.path.expanduser("~/sts2_backups")
 class BackupManager:
     def __init__(self, backup_root):
         self.backup_root = backup_root
-        self.stack = [] # List of {path: str, retry_count: int, reward: float, trials: list}
-        self.max_retries = 3
-        self.hp_loss_history = [] # Track HP loss for each trial in the current encounter
+        self.stack = [] # List of {path: str, retry_count: int, reward: float, trials: list, ...}
+        self.hp_loss_history = [] # Track HP loss for each trial (DEPRECATED in favor of per-backup win_hp_losses)
         self.current_trial_actions = [] # Actions taken since the last backup or restore
         if not os.path.exists(self.backup_root):
             os.makedirs(self.backup_root, exist_ok=True)
@@ -660,7 +659,7 @@ class BackupManager:
             
         return True
 
-    def backup(self, current_reward):
+    def backup(self, current_reward, is_elite=False, is_boss=False, floor=0):
         """Create a backup if the state has changed."""
         if self.stack:
             last_backup = self.stack[-1]["path"]
@@ -683,7 +682,10 @@ class BackupManager:
                 
             metadata = {
                 "retry_count": 0,
-                "accumulated_reward": float(current_reward)
+                "accumulated_reward": float(current_reward),
+                "is_elite": is_elite,
+                "is_boss": is_boss,
+                "floor": int(floor)
             }
             with open(os.path.join(backup_dir, "metadata.json"), "w") as f:
                 json.dump(metadata, f)
@@ -692,9 +694,13 @@ class BackupManager:
                 "path": backup_dir,
                 "retry_count": 0,
                 "reward": current_reward,
-                "trials": []
+                "trials": [],
+                "is_elite": is_elite,
+                "is_boss": is_boss,
+                "floor": int(floor),
+                "win_hp_losses": []
             })
-            log(f"[BackupManager] Created new backup at {backup_dir}. Stack size: {len(self.stack)}")
+            log(f"[BackupManager] Created new backup at {backup_dir} (Elite={is_elite}, Boss={is_boss}, Floor={floor}). Stack size: {len(self.stack)}")
             # New backup point: clear path history so we diversify from this point onwards
             self.current_trial_actions = []
             self.hp_loss_history = []
@@ -731,36 +737,58 @@ class BackupManager:
             log(f"[BackupManager] _is_combat_save: Error checking {save_path}: {e}")
             return False
 
-    def record_hp_loss(self, hp_loss):
-        self.hp_loss_history.append(hp_loss)
-        log(f"[BackupManager] Recorded Trial HP Loss: {hp_loss}. History: {self.hp_loss_history}")
-
-    def check_hp_performance(self, hp_loss, is_elite, is_boss, hp_before, max_hp):
-        """Check if the current HP loss is in the top 50% of history."""
-        # Calculate dynamic max_retries
-        self.max_retries = 3
-        if (is_elite or is_boss) and hp_before > (max_hp / 2):
-            self.max_retries = 10
-            
-        if not self.hp_loss_history:
-            return True, 0, self.max_retries
-        
-        # Sort and find median
-        sorted_history = sorted(self.hp_loss_history)
-        n = len(sorted_history)
-        
-        # Median: lower half is better
-        median_idx = (n - 1) // 2
-        median_val = sorted_history[median_idx]
-        
-        is_top_50 = hp_loss <= median_val
-        
-        retry_count = 0
+    def record_hp_loss(self, hp_loss, is_victory=False):
+        """Record HP loss for the current trial. If victory, store in win history for median calculation."""
         if self.stack:
-            retry_count = self.stack[-1]["retry_count"]
+            latest = self.stack[-1]
+            if is_victory:
+                latest["win_hp_losses"].append(hp_loss)
             
-        log(f"[BackupManager] HP Performance Check: loss={hp_loss}, median={median_val}, is_top_50={is_top_50}, retries={retry_count}/{self.max_retries}")
-        return is_top_50, retry_count, self.max_retries
+        self.hp_loss_history.append(hp_loss)
+        log(f"[BackupManager] Recorded {'Victory' if is_victory else 'Defeat'} HP Loss: {hp_loss}.")
+
+    def check_hp_performance(self, hp_loss):
+        """Check if the current HP loss meets the criteria to proceed to the next floor."""
+        if not self.stack:
+            return True, 0, 3
+
+        latest = self.stack[-1]
+        is_elite = latest.get("is_elite", False)
+        is_boss = latest.get("is_boss", False)
+        floor = latest.get("floor", 0)
+        retry_count = latest["retry_count"]
+        win_hp_losses = latest.get("win_hp_losses", [])
+        
+        # Default limits
+        max_retries = 3
+        if is_elite or is_boss:
+            # Stage 2 check: if we already tried 10 times and had at least one win
+            if retry_count >= 10 and win_hp_losses:
+                max_retries = 20
+            else:
+                max_retries = 10
+
+        # Stage 1: HP loss <= floor
+        if retry_count < 10 or not (is_elite or is_boss):
+            should_proceed = hp_loss <= floor
+            goal_desc = f"HP loss <= {floor} (Stage 1)"
+        else:
+            # Stage 2 (Elite/Boss only): HP loss <= median of previous wins
+            if not win_hp_losses:
+                # Should not happen if retry_count >= 10 and we are in check_hp_performance (which is victory)
+                # But for safety, use floor threshold
+                should_proceed = hp_loss <= floor
+                goal_desc = f"HP loss <= {floor} (Stage 2 Failback)"
+            else:
+                sorted_wins = sorted(win_hp_losses)
+                n = len(sorted_wins)
+                median_idx = (n - 1) // 2
+                median_val = sorted_wins[median_idx]
+                should_proceed = hp_loss <= median_val
+                goal_desc = f"HP loss <= median({median_val}) (Stage 2)"
+
+        log(f"[BackupManager] Performance Check: loss={hp_loss}, {goal_desc}, should_proceed={should_proceed}, retries={retry_count}/{max_retries}")
+        return should_proceed, retry_count, max_retries
 
     def record_action(self, action_idx):
         """Record an action in the current trial."""
@@ -798,21 +826,22 @@ class BackupManager:
         while self.stack:
             latest = self.stack[-1]
             
-            # Check if this backup is a valid combat save.
-            # If not, it means we took a backup at a reward screen or map by mistake.
-            if not self._is_combat_save(latest["path"]):
-                log(f"[BackupManager] Skipping non-combat/finished backup: {os.path.basename(latest['path'])}. Backtracking...")
-                self.stack.pop()
-                if os.path.exists(latest["path"]):
-                    try:
-                        shutil.rmtree(latest["path"])
-                    except Exception as e:
-                        log(f"[BackupManager] Warning: failed to delete skipped backup: {e}")
-                continue
+            # Determine max_retries for this backup
+            is_elite = latest.get("is_elite", False)
+            is_boss = latest.get("is_boss", False)
+            win_hp_losses = latest.get("win_hp_losses", [])
+            retry_count = latest["retry_count"]
+            
+            current_max = 3
+            if is_elite or is_boss:
+                if retry_count >= 10 and win_hp_losses:
+                    current_max = 20
+                else:
+                    current_max = 10
 
-            if latest["retry_count"] < self.max_retries or force:
+            if retry_count < current_max or force:
                 # Perform restoration
-                retry_msg = f"Retry {latest['retry_count']+1}/{self.max_retries}" if not force else "FORCED Retry"
+                retry_msg = f"Retry {retry_count+1}/{current_max}" if not force else "FORCED Retry"
                 log(f"[BackupManager] Restoring {os.path.basename(latest['path'])} ({retry_msg})")
                 
                 try:
@@ -830,7 +859,7 @@ class BackupManager:
                     log(f"[BackupManager] ERROR during restore: {e}")
                     return None
             else:
-                log(f"[BackupManager] Backup {os.path.basename(latest['path'])} exhausted (tried {self.max_retries} times). Backtracking...")
+                log(f"[BackupManager] Backup {os.path.basename(latest['path'])} exhausted (tried {retry_count} times, limit {current_max}). Backtracking...")
                 self.stack.pop()
         
         log(f"[BackupManager] FAILED: All backups exhausted or stack empty (stack size: {len(self.stack)}). Proceeding.")
@@ -840,29 +869,46 @@ class BackupManager:
 backup_manager = BackupManager(BACKUP_ROOT)
 is_restoring = False
 
-def trigger_backup():
+def trigger_backup(info_str=None):
     """Top-level function called from Rust bridge."""
     global reward_tracker
-    return backup_manager.backup(reward_tracker.session_cumulative_reward)
+    is_elite = False
+    is_boss = False
+    floor = 0
+    if info_str:
+        try:
+            info = json.loads(info_str)
+            is_elite = info.get("is_elite", False)
+            is_boss = info.get("is_boss", False)
+            floor = info.get("floor", 0)
+        except:
+            pass
+    return backup_manager.backup(reward_tracker.session_cumulative_reward, is_elite, is_boss, floor)
 
-def record_hp_loss(val):
+def record_hp_loss(info_str):
     """Top-level function called from Rust bridge."""
-    backup_manager.record_hp_loss(int(val))
+    val = 0
+    is_victory = False
+    try:
+        info = json.loads(info_str)
+        if isinstance(info, dict):
+            val = info.get("hp_loss", 0)
+            is_victory = info.get("is_victory", False)
+        else:
+            val = int(info)
+    except:
+        val = int(info_str) if info_str else 0
+        
+    backup_manager.record_hp_loss(val, is_victory)
 
 def check_hp_performance(info_str):
     """Top-level function called from Rust bridge. Returns JSON string."""
     info = json.loads(info_str)
     hp_loss = info.get("hp_loss", 0)
-    is_elite = info.get("is_elite", False)
-    is_boss = info.get("is_boss", False)
-    hp_before_combat = info.get("hp_before_combat", 0)
-    max_hp = info.get("max_hp", 100)
     
-    is_top_50, retry_count, max_retries = backup_manager.check_hp_performance(
-        hp_loss, is_elite, is_boss, hp_before_combat, max_hp
-    )
+    should_proceed, retry_count, max_retries = backup_manager.check_hp_performance(hp_loss)
     return json.dumps({
-        "is_top_50": is_top_50,
+        "is_top_50": should_proceed, # Key name kept for backward compatibility in C# side if needed, but semantic is "should_proceed"
         "retry_count": retry_count,
         "max_retries": max_retries
     })
@@ -2480,6 +2526,8 @@ def load_model(checkpoint_path=None):
         training_worker = TrainingWorker(learner, config, experiment_manager=exp_manager, step_count=step)
         training_worker.start()
     
+    # Confirm initialization in log
+    log(f"[Python] JAX model and TrainingWorker ready at step {step}")
     initialization_event.set()
 
 def encode_state(state):
@@ -3110,8 +3158,8 @@ def get_action_mask(state, masked_reward_indices=None):
         summary = {
             "floor": state.get("floor"),
             "hp": state.get("player", {}).get("hp") if isinstance(state.get("player"), dict) else None,
-            "hand_count": len(state.get("hand", [])) if isinstance(state.get("hand", list)) else 0,
-            "enemy_count": len(state.get("enemies", [])) if isinstance(state.get("enemies", list)) else 0,
+            "hand_count": len(state.get("hand", [])) if isinstance(state.get("hand"), list) else 0,
+            "enemy_count": len(state.get("enemies", [])) if isinstance(state.get("enemies"), list) else 0,
             "can_proceed": state.get("can_proceed")
         }
         log(f"WARNING: No valid actions in mask for state {state_type}. Enabling WAIT (99). State Summary: {json.dumps(summary)}")
@@ -4203,7 +4251,7 @@ def init():
             try:
                 load_model()
                 initialized = True
-                print("[Python] rnad_bridge initialization complete (background).")
+                print(f"[Python] rnad_bridge initialization complete (background thread). Status: initialized={initialized}")
             except Exception as e:
                 print(f"[Python] Critical error during background model loading: {e}")
                 traceback.print_exc()
