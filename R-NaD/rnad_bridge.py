@@ -3077,6 +3077,9 @@ def get_action_mask(state, masked_reward_indices=None):
         else:
             for i in range(min(len(next_nodes), 10)):
                 mask[i] = True
+        
+        if state.get("can_proceed"):
+            mask[86] = True # Proceed
             
     elif state_type == "event":
         options = state.get("options", [])

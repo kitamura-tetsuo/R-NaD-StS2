@@ -1099,6 +1099,37 @@ public partial class MainFile : Node
                 }
             }
         }
+        
+        // Fallback: if no next nodes found but map is open, try searching the next possible rows
+        if (nextNodes.Count == 0)
+        {
+            int startRow = currentPos.HasValue ? currentPos.Value.row : 0;
+            for (int r = startRow; r <= startRow + 5; r++)
+            {
+                var rowNodes = runState.Map.GetPointsInRow(r);
+                if (rowNodes != null && rowNodes.Any())
+                {
+                    bool foundAny = false;
+                    foreach (var p in rowNodes)
+                    {
+                        // Avoid adding current node as next node
+                        if (currentPos.HasValue && p.coord.row == currentPos.Value.row && p.coord.col == currentPos.Value.col) continue;
+                        
+                        nextNodes.Add(new { row = p.coord.row, col = p.coord.col });
+                        foundAny = true;
+                    }
+                    if (foundAny) break;
+                }
+            }
+        }
+
+        var mapScreen = MegaCrit.Sts2.Core.Nodes.Screens.Map.NMapScreen.Instance;
+        bool canProceed = false;
+        if (mapScreen != null && mapScreen.IsOpen)
+        {
+            var proceedBtn = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.CommonUi.NProceedButton>((Node)(object)mapScreen);
+            canProceed = proceedBtn != null && proceedBtn.IsEnabled && proceedBtn.Visible;
+        }
 
         _lastMapSummary = new
         {
@@ -1111,7 +1142,8 @@ public partial class MainFile : Node
             next_nodes = nextNodes,
             nodes = nodes,
             edges = edges,
-            boss = currentBoss
+            boss = currentBoss,
+            can_proceed = canProceed
         };
         
         _lastMapFloor = runState.TotalFloor;

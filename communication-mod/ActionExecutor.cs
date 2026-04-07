@@ -90,6 +90,7 @@ public partial class MainFile : Node
         switch (action)
         {
             case "select_map_node": await HandleSelectMapNode(dict); break;
+            case "proceed": await HandleProceed(dict); break;
             default: Logger.Warn($"[AutoAI] Unhandled map action: {action}"); break;
         }
     }
