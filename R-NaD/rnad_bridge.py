@@ -971,6 +971,8 @@ class RewardTracker:
         self.last_total_cards: int = -1
         self.last_potion_count: int = -1
         self.last_enemy_count: int = -1
+        self.last_predicted_damage_to_player: float = 0.0
+        self.last_action_idx: int = -1
         self.was_elite: bool = False
         self.was_boss: bool = False
 
@@ -993,6 +995,8 @@ class RewardTracker:
         self.last_total_cards = -1
         self.last_potion_count = -1
         self.last_enemy_count = -1
+        self.last_predicted_damage_to_player = 0.0
+        self.last_action_idx = -1
         self.was_elite = False
         self.was_boss = False
         backup_manager.clear()
@@ -1007,13 +1011,15 @@ class RewardTracker:
         # Do NOT reset last_processed_floor here as it might be used across screens
         log("RewardTracker: Per-episode reset.")
 
-    def initialize_combat(self, hp, enemy_hp, enemy_count):
+    def initialize_combat(self, hp, enemy_hp, enemy_count, predicted_damage_to_player):
         """Initialize combat trackers to avoid the start-of-combat penalty."""
         self.last_player_hp = hp
         self.last_total_enemy_hp = enemy_hp
         self.last_enemy_count = enemy_count
+        self.last_predicted_damage_to_player = predicted_damage_to_player
+        self.last_action_idx = -1
         self.combat_initialized = True
-        log(f"RewardTracker: Combat initialized (Player HP: {hp}, Enemy HP: {enemy_hp}, Count: {enemy_count})")
+        log(f"RewardTracker: Combat initialized (Player HP: {hp}, Enemy HP: {enemy_hp}, Count: {enemy_count}, PredDamage: {predicted_damage_to_player})")
 
 # Preserve RewardTracker state across re-imports
 if 'rnad_bridge' in sys.modules:
@@ -2885,9 +2891,14 @@ def compute_intermediate_reward(state, state_type, action_idx):
     # Combat delta reward (Dense Reward)
     if state_type == "combat":
         # Task 2: Fix combat initialization to avoid start-of-combat penalty
+        # Predicted Damage Delta Reward
+        current_pred_damage = float(state.get("predicted_total_damage", 0))
+        current_pred_block = float(state.get("predicted_end_block", 0))
+        current_pred_dmg_to_player = max(0.0, current_pred_damage - current_pred_block)
+
         current_enemy_count = sum(1 for e in enemies if e.get("hp", 0) > 0 and not e.get("isMinion", False))
         if not reward_tracker.combat_initialized:
-            reward_tracker.initialize_combat(current_hp, current_enemy_hp, current_enemy_count)
+            reward_tracker.initialize_combat(current_hp, current_enemy_hp, current_enemy_count, current_pred_dmg_to_player)
             # return 0.0 # No delta on initialization step
         
         last_hp = reward_tracker.last_player_hp
@@ -2899,10 +2910,17 @@ def compute_intermediate_reward(state, state_type, action_idx):
         # Player HP: Reward both damage taken (penalty) and healing (reward) at the same ratio (0.015)
         hp_delta = float(current_hp - last_hp)
         
-        combat_reward = (damage_dealt * 0.002) + (hp_delta * 0.3)
+        combat_reward = (damage_dealt * 0.001) + (hp_delta * 0.03)
         
         if abs(combat_reward) > 1e-6:
             intermediate_reward += combat_reward
+
+        # Reward for reduction of predicted damage (excluding End Turn)
+        if reward_tracker.last_action_idx != 75:
+            damage_reduction = reward_tracker.last_predicted_damage_to_player - current_pred_dmg_to_player
+            if damage_reduction > 0:
+                reduction_reward = damage_reduction * 0.002
+                intermediate_reward += reduction_reward
         
         # Enemy Defeat Reward: 0.01 per enemy defeated (HP <= 0 or removed)
         # Exclude minions if they were excluded from HP delta, or count all?
@@ -2925,6 +2943,8 @@ def compute_intermediate_reward(state, state_type, action_idx):
         reward_tracker.last_player_hp = current_hp
         reward_tracker.last_total_enemy_hp = current_enemy_hp
         reward_tracker.last_enemy_count = current_enemy_count
+        reward_tracker.last_predicted_damage_to_player = current_pred_dmg_to_player
+        reward_tracker.last_action_idx = action_idx
 
     # Battle Clear Reward
     if reward_tracker.last_state_type == "combat" and (state_type == "rewards" or state_type == "map"):

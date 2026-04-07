@@ -124,12 +124,13 @@ impl AiBridge {
     }
 
     #[func]
-    pub fn trigger_backup(&self) -> Variant {
+    pub fn trigger_backup(&self, info_json: GString) -> Variant {
+        let info_str = info_json.to_string();
         let result = Python::with_gil(|py| -> PyResult<bool> {
             Self::ensure_sys_path(py)?;
             let my_ai_module = py.import("rnad_bridge")?;
             let backup_fn = my_ai_module.getattr("trigger_backup")?;
-            let res: bool = backup_fn.call0()?.extract()?;
+            let res: bool = backup_fn.call1((info_str,))?.extract()?;
             Ok(res)
         });
 
@@ -162,12 +163,13 @@ impl AiBridge {
     }
 
     #[func]
-    pub fn record_hp_loss(&self, val: i32) {
+    pub fn record_hp_loss(&self, info_json: GString) {
+        let info_str = info_json.to_string();
         Python::with_gil(|py| {
             if let Ok(_) = Self::ensure_sys_path(py) {
                 if let Ok(my_ai_module) = py.import("rnad_bridge") {
                     if let Ok(record_fn) = my_ai_module.getattr("record_hp_loss") {
-                        let _ = record_fn.call1((val,));
+                        let _ = record_fn.call1((info_str,));
                     }
                 }
             }
