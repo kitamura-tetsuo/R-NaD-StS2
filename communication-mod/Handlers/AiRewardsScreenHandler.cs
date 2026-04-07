@@ -82,21 +82,15 @@ public class AiRewardsScreenHandler : IScreenHandler
                     bool shouldRetry = false;
                     string retryReason = "";
                     
-                    if (retryCount == 0)
+                    if (retryCount < 3)
                     {
-                        if (hpLoss >= floorThreshold)
-                        {
-                            shouldRetry = true;
-                            retryReason = $"Initial HP Loss ({hpLoss}) >= Floor Threshold ({floorThreshold})";
-                        }
+                        shouldRetry = true;
+                        retryReason = $"Forced exploration (Trial {retryCount + 1}/3 before median check)";
                     }
-                    else
+                    else if (!isTop50)
                     {
-                        if (!isTop50)
-                        {
-                            shouldRetry = true;
-                            retryReason = $"Performance not in Top 50% (Retry {retryCount}/{maxRetries})";
-                        }
+                        shouldRetry = true;
+                        retryReason = $"Performance not in Top 50% (Retry {retryCount}/{maxRetries})";
                     }
 
                     if (retryCount >= maxRetries)

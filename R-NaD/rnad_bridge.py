@@ -697,6 +697,7 @@ class BackupManager:
             log(f"[BackupManager] Created new backup at {backup_dir}. Stack size: {len(self.stack)}")
             # New backup point: clear path history so we diversify from this point onwards
             self.current_trial_actions = []
+            self.hp_loss_history = []
             # Verify if the new backup is a combat save
             is_combat = self._is_combat_save(backup_dir)
             if not is_combat:
@@ -1150,7 +1151,8 @@ RELIC_VOCAB = {
     "TOY_ORNITHOPTER": 28,
     "VAJRA": 29,
     "WAR_PAINT": 30,
-    "WHETSTONE": 31
+    "WHETSTONE": 31,
+    "HEFTY_TABLET": 32
 }
 
 POWER_VOCAB = {
@@ -1243,6 +1245,21 @@ IT_REV = {
     5: "Debuff", 6: "StrongDebuff", 7: "Stun", 8: "StatusCard", 
     9: "Summon", 10: "CardDebuff", 11: "Heal", 12: "Escape", 
     13: "Hidden", 14: "Sleep", 15: "DeathBlow", 0: "Unknown"
+}
+
+# Node Type Mapping (NT)
+NT_REV = {1: "Monster", 2: "Elite", 3: "Unknown", 4: "RestSite", 5: "Shop", 6: "Treasure", 7: "Boss", 0: "None"}
+NT_MAP = {"Monster": 1, "Elite": 2, "Unknown": 3, "Event": 3, "RestSite": 4, "Rest": 4, "Shop": 5, "Treasure": 6, "Boss": 7, "None": 0}
+
+# Reward Type Mapping (RT)
+RT_REV = {1: "Gold", 2: "Card", 3: "Relic", 4: "Potion", 5: "Curse", 0: "Unknown"}
+RT_MAP = {"GoldReward": 1, "Gold": 1, "Card": 2, "CardReward": 2, "Relic": 3, "RelicReward": 3, "PotionReward": 4, "Potion": 4, "Curse": 5, "Unknown": 0}
+
+# Intent Type Mapping (IT)
+IT_MAP = {
+    "Attack": 1, "Defense": 2, "Defend": 2, "AttackDefense": 3, "Buff": 4, "Debuff": 5, 
+    "StrongDebuff": 6, "DebuffStrong": 6, "Stun": 7, "StatusCard": 8, "Summon": 9,
+    "CardDebuff": 10, "Heal": 11, "Escape": 12, "Hidden": 13, "Sleep": 14, "DeathBlow": 15, "Unknown": 0
 }
 
 def decode_state(encoded_dict):
@@ -1381,7 +1398,7 @@ def decode_state(encoded_dict):
                 map_nodes.append({
                     "row": round(float(m[base+1] * 20.0)),
                     "col": round(float(m[base+2] * 7.0)),
-                    "type": int(round(float(m[base+3] * 10.0))), 
+                    "type": NT_REV.get(int(round(float(m[base+3] * 10.0))), "Unknown"), 
                     "is_current": bool(m[base+4])
                 })
         decoded["map_nodes"] = map_nodes
@@ -1415,7 +1432,7 @@ def normalize_original_state(state):
 
     # 2. Piles (Bag of Words)
     for p_key in ["drawPile", "discardPile", "exhaustPile", "masterDeck"]:
-        pile = state.get(p_key) if p_key == "masterDeck" else player.get(p_key, [])
+        pile = (state.get(p_key) if p_key == "masterDeck" else player.get(p_key)) or []
         norm[p_key.replace("Pile", "").replace("Deck", "")] = sorted([rev_card.get(get_card_idx(c), "UNKNOWN") for c in pile])
 
     # 3. Combat
@@ -1427,7 +1444,7 @@ def normalize_original_state(state):
         # Hand
         hand = []
         tt_norm = {"SingleEnemy": "AnyEnemy", "AnyEnemy": "AnyEnemy", "AllEnemy": "AllEnemies", "AllEnemies": "AllEnemies", "RandomEnemy": "RandomEnemy", "None": "None", "Self": "Self"}
-        for c in state.get("hand", [])[:10]:
+        for c in (state.get("hand") or [])[:10]:
             hand.append({
                 "id": rev_card.get(get_card_idx(c.get("id")), "UNKNOWN"),
                 "isPlayable": bool(c.get("isPlayable")),
@@ -1445,7 +1462,7 @@ def normalize_original_state(state):
         # Enemies
         enemies = []
         it_norm = {"Defense": "Defense", "Defend": "Defense", "AttackDefense": "AttackDefense", "Buff": "Buff", "Debuff": "Debuff", "StrongDebuff": "StrongDebuff", "DebuffStrong": "StrongDebuff", "Stun": "Stun", "StatusCard": "StatusCard", "Summon": "Summon", "CardDebuff": "CardDebuff", "Heal": "Heal", "Escape": "Escape", "Hidden": "Hidden", "Sleep": "Sleep", "DeathBlow": "DeathBlow", "Attack": "Attack", "Unknown": "Unknown"}
-        for e in [en for en in state.get("enemies", []) if en.get("hp", 0) > 0][:5]:
+        for e in [en for en in (state.get("enemies") or []) if en.get("hp", 0) > 0][:5]:
             norm_e = {
                 "id": rev_monster.get(get_monster_idx(e.get("id")), "UNKNOWN"),
                 "isMinion": bool(e.get("isMinion")),
@@ -1454,7 +1471,7 @@ def normalize_original_state(state):
                 "block": int(e.get("block", 0)),
                 "intents": []
             }
-            for it in e.get("intents", [])[:2]:
+            for it in (e.get("intents") or [])[:2]:
                 norm_e["intents"].append({
                     "type": it_norm.get(it.get("type", "Unknown"), "Unknown"),
                     "damage": int(it.get("damage", 0)),
@@ -1463,14 +1480,14 @@ def normalize_original_state(state):
                 })
             norm_e["powers"] = [
                 {"id": rev_power.get(get_power_idx(p.get("id")), "UNKNOWN"), "amount": int(p.get("amount", 0))}
-                for p in e.get("powers", [])[:10]
+                for p in (e.get("powers") or [])[:10]
             ]
             enemies.append(norm_e)
         norm["enemies"] = enemies
         
         norm["player_powers"] = [
             {"id": rev_power.get(get_power_idx(p.get("id")), "UNKNOWN"), "amount": int(p.get("amount", 0))}
-            for p in player.get("powers", [])[:10]
+            for p in (player.get("powers") or [])[:10]
         ]
         
         norm["predicted_total_damage"] = float(state.get("predicted_total_damage", 0.0))
@@ -1479,12 +1496,13 @@ def normalize_original_state(state):
 
     # 4. Map
     if state_type == "map":
-        nodes = state.get("nodes", [])[:256]
+        nodes = (state.get("nodes") or [])[:256]
+        nt_norm = {"Monster": "Monster", "Elite": "Elite", "Unknown": "Unknown", "Event": "Unknown", "RestSite": "RestSite", "Rest": "RestSite", "Shop": "Shop", "Treasure": "Treasure", "Boss": "Boss", "None": "None"}
         norm["map_nodes"] = [
             {
                 "row": int(n.get("row", 0)),
                 "col": int(n.get("col", 0)),
-                "type": int(n.get("type", 0)),
+                "type": nt_norm.get(n.get("type", "Unknown"), "Unknown"),
                 "is_current": bool(n.get("is_current"))
             } for n in nodes
         ]
@@ -1611,24 +1629,32 @@ def get_card_idx(card_id):
 
 def get_relic_idx(relic_id):
     if not relic_id:
-        assert False, f"relic_id is missing or empty"
+        log("WARNING: relic_id is missing or empty. Defaulting to 0.")
+        return 0
     if isinstance(relic_id, dict):
         relic_id = relic_id.get("id") or relic_id.get("name")
     if not relic_id:
-        assert False, "relic_id is missing or empty after dict extraction"
+        log("WARNING: relic_id is missing after dict extraction. Defaulting to 0.")
+        return 0
     rid = str(relic_id).upper().replace(" ", "_")
-    assert rid in RELIC_VOCAB, f"Unknown relic_id: {relic_id} (mapped to {rid})"
+    if rid not in RELIC_VOCAB:
+        log(f"WARNING: Unknown relic_id: {relic_id} (mapped to {rid}). Defaulting to 0.")
+        return 0
     return RELIC_VOCAB[rid]
 
 def get_power_idx(power_id):
     if not power_id:
-        assert False, f"power_id is missing or empty"
+        log("WARNING: power_id is missing or empty. Defaulting to 0.")
+        return 0
     if isinstance(power_id, dict):
         power_id = power_id.get("id") or power_id.get("name")
     if not power_id:
-        assert False, "power_id is missing or empty after dict extraction"
+        log("WARNING: power_id is missing after dict extraction. Defaulting to 0.")
+        return 0
     pid = str(power_id).upper().replace(" ", "_")
-    assert pid in POWER_VOCAB, f"Unknown power_id: {power_id} (mapped to {pid})"
+    if pid not in POWER_VOCAB:
+        log(f"WARNING: Unknown power_id: {power_id} (mapped to {pid}). Defaulting to 0.")
+        return 0
     return POWER_VOCAB[pid]
 
 def encode_bow(card_list):
@@ -2634,10 +2660,10 @@ def encode_state(state):
                     "Unknown": 0
                 }
                 it_type = intent.get("type", "Unknown")
-                if it_type not in it_map:
-                    log(f"[Python] Warning: intent type: {it_type} not in it_map, falling back to Unknown")
+                if it_type not in IT_MAP:
+                    log(f"[Python] Warning: intent type: {it_type} not in IT_MAP, falling back to Unknown")
                     it_type = "Unknown"
-                combat_vec[intent_idx] = it_map[it_type] / 10.0
+                combat_vec[intent_idx] = IT_MAP[it_type] / 10.0
                 combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
                 combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
                 combat_vec[intent_idx + 3] = intent.get("count", 0) / 10.0
@@ -2690,10 +2716,11 @@ def encode_state(state):
             map_vec[base_idx + 1] = row / 20.0
             map_vec[base_idx + 2] = col / 7.0
             
-            nt_map = {"Monster": 1, "Elite": 2, "Unknown": 3, "RestSite": 4, "Shop": 5, "Treasure": 6, "Boss": 7}
-            map_type = node.get("type")
-            if map_type in nt_map:
-                map_vec[base_idx + 3] = nt_map[map_type] / 10.0
+            map_type = node.get("type", "Unknown")
+            if map_type not in NT_MAP:
+                log(f"[Python] Warning: map node type {map_type} not in NT_MAP, falling back to Unknown")
+                map_type = "Unknown"
+            map_vec[base_idx + 3] = NT_MAP[map_type] / 10.0
             
             if current_pos and row == current_pos.get("row") and col == current_pos.get("col"):
                 map_vec[base_idx + 4] = 1.0
@@ -2707,10 +2734,11 @@ def encode_state(state):
                 reward = rewards[i]
                 base_idx = i * 4
                 event_vec[base_idx] = 1.0
-                rt_map = {"GoldReward": 1, "Gold": 1, "Card": 2, "CardReward": 2, "Relic": 3, "RelicReward": 3, "PotionReward": 4, "Potion": 4, "Curse": 5}
-                reward_type = reward.get("type")
-                assert reward_type in rt_map, f"reward type: {reward_type} not in rt_map"
-                event_vec[base_idx + 1] = rt_map[reward_type] / 10.0
+                reward_type = reward.get("type", "Unknown")
+                if reward_type not in RT_MAP:
+                     log(f"[Python] Warning: reward type {reward_type} not in RT_MAP, falling back to Unknown")
+                     reward_type = "Unknown"
+                event_vec[base_idx + 1] = RT_MAP[reward_type] / 10.0
         elif state_type == "event":
             options = state.get("options", [])
             event_id = state.get("id", "Unknown")
@@ -3817,10 +3845,17 @@ def predict_action(state_json):
         return json.dumps({"action": "error", "message": str(e)})
 
 class CommandHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Suppress reporting of /status requests to reduce noise
+        if len(args) > 0 and isinstance(args[0], str) and "/status" in args[0]:
+            return
+        super().log_message(format, *args)
+
     def do_GET(self):
         global learning_active, command_queue, current_seed, current_trajectory, experience_queue
         parsed_path = urlparse(self.path)
-        log(f"[HTTP] GET {parsed_path.path}")
+        if parsed_path.path != "/status":
+            log(f"[HTTP] GET {parsed_path.path}")
         
         if parsed_path.path == "/status":
             self.send_response(200)
