@@ -57,7 +57,7 @@ class RNaDConfig(NamedTuple):
     num_blocks: int = 4
     seq_len: int = 8
     hidden_size: int = 256
-    unroll_length: int = 24
+    unroll_length: int = 48
     card_vocab_size: int = 100
     monster_vocab_size: int = 40
     relic_vocab_size: int = 300
@@ -555,15 +555,27 @@ class TransformerNet(hk.Module):
             _ = temporal_policy_transformer(jnp.zeros((1, 1, self.hidden_size)), is_training)
             _ = temporal_value_transformer(jnp.zeros((1, 1, self.hidden_size)), is_training)
 
-        # Flatten T and B for expert processing via vmap
-        state_dict_flat = jax.tree_util.tree_map(lambda x: x.reshape(T * B, *x.shape[2:]), state_dict)
-        h_g_batch_flat = h_g_batch.reshape(T * B, -1)
-        
-        # Expert processing (B dimension in vmap output will be T*B)
-        features_flat = hk.vmap(route_expert, split_rng=False)(state_dict_flat["state_type"], h_g_batch_flat, state_dict_flat)
-        
-        # Reshape back to (T, B, hidden_size) for temporal attention
-        features = features_flat.reshape(T, B, -1)
+        # expert processing
+        def expert_fn(st_idx, h_g, s_dict):
+            # Wrap experts in remat to save memory during training
+            return hk.remat(route_expert)(st_idx, h_g, s_dict)
+
+        # To avoid OOM during training with large T*B, we use scan over T.
+        # But we only need to scan if T*B is large. For inference, a single vmap is faster.
+        if T * B > 128: # Arbitrary threshold for "large"
+            def scan_body(carry, xs):
+                h_g_t, state_dict_t = xs
+                features_t = hk.vmap(expert_fn, split_rng=False)(state_dict_t["state_type"], h_g_t, state_dict_t)
+                return carry, features_t
+
+            xs = (h_g_batch, state_dict)
+            _, features = jax.lax.scan(scan_body, None, xs)
+        else:
+            # Flatten context for expert processing when total count is small
+            state_dict_flat = jax.tree_util.tree_map(lambda x: x.reshape(T * B, *x.shape[2:]), state_dict)
+            h_g_batch_flat = h_g_batch.reshape(T * B, -1)
+            features_flat = hk.vmap(expert_fn, split_rng=False)(state_dict_flat["state_type"], h_g_batch_flat, state_dict_flat)
+            features = features_flat.reshape(T, B, -1)
         if features.shape[-1] != self.hidden_size:
             # logging.error(f"[R-NaD] Shape mismatch: features.shape={features.shape}, expected hidden_size={self.hidden_size}")
             # Explicitly project to hidden_size if mismatch occurs as a fallback

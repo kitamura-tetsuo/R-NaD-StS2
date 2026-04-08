@@ -11,7 +11,7 @@ import importlib.util
 
 # Set XLA environment variables before JAX/other imports to prevent GPU OOM
 # Godot game and JAX both need GPU memory.
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5" # Allow game more room
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.6" # Allow game more room, but give JAX slightly more for larger model
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer=" # As suggested by JAX error
 os.environ["RNAD_DEBUG_ENCODING"] = "1" # Debug encoding
 
@@ -2181,6 +2181,17 @@ class TrainingWorker(threading.Thread):
                     self.update_progress += 1
 
             log("[Python] Offline training complete.")
+            
+            # Save final checkpoint after offline training
+            checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_offline_{self.step_count}.pkl"
+            if self.experiment_manager:
+                checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_offline_{self.step_count}.pkl")
+            
+            self.learner.save_checkpoint(checkpoint_path, self.step_count)
+            log(f"[Python] Saved offline training checkpoint to {checkpoint_path}")
+            if self.experiment_manager:
+                self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
+
 
         finally:
             with self.lock:
@@ -3500,7 +3511,8 @@ def predict_action(state_json):
         value = value_seq[T_actual - 1 : T_actual]  # (1, B)
         
         # Probs are calculated from logits which are already masked in the network
-        probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
+        probs_jnp = jax_local.nn.softmax(logits, axis=-1)[0, 0]
+        probs = np.array(probs_jnp) # Convert to NumPy for post-processing to save GPU memory
 
         # --- Retry Probability Adjustment ---
         # Reduce probability for actions taken in past trials of the same retry point
@@ -3509,17 +3521,17 @@ def predict_action(state_json):
             for act in penalized_actions:
                 if act < len(probs) and mask[act]:
                     orig_p = float(probs[act])
-                    probs = probs.at[act].multiply(0.75)
+                    probs[act] *= 0.75
                     new_p = float(probs[act])
                     log(f"[Python] Retry Probability Adjustment: Penalizing action {act} (orig={orig_p:.4f}, new={new_p:.4f})")
             
             # Renormalize
-            sum_p = jnp.sum(probs)
+            sum_p = np.sum(probs)
             if sum_p > 1e-9:
                 probs = probs / sum_p
             else:
                 log("[Python] WARNING: All actions penalized to zero in Retry Adjustment! Resetting probs.")
-                probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
+                probs = np.array(probs_jnp)
         
         # --- Skip Override Logic ---
         sampling_mask = mask.copy()
@@ -3537,13 +3549,13 @@ def predict_action(state_json):
                 # Re-calculate probs based on the sampling_mask
                 # This ensures "selecting from others according to their relative probabilities"
                 probs = probs * sampling_mask
-                sum_p = jnp.sum(probs)
+                sum_p = np.sum(probs)
                 if sum_p > 1e-9:
                     probs = probs / sum_p
                 else:
                     log("[Python] WARNING: All actions masked during Skip override! Reverting to original mask.")
                     sampling_mask = mask.copy()
-                    probs = jax_local.nn.softmax(logits, axis=-1)[0, 0]
+                    probs = np.array(probs_jnp)
         # ---------------------------
         # --- Turn End Override Logic ---
         # If energy > 0 during training, scale End Turn (75) prob by 0.01 to encourage exploration
@@ -3552,8 +3564,8 @@ def predict_action(state_json):
             energy = player_info.get("energy", 0)
             if energy > 0 and mask[75]:
                 # Action 75 is End Turn
-                probs = probs.at[75].multiply(0.01)
-                sum_p = jnp.sum(probs)
+                probs[75] *= 0.01
+                sum_p = np.sum(probs)
                 if sum_p > 1e-9:
                     probs = probs / sum_p
                 log(f"[Python] TURN END OVERRIDE: Scaling prob for End Turn (75) by 0.01 due to energy={energy}. New prob: {probs[75]:.4f}")
@@ -3581,7 +3593,7 @@ def predict_action(state_json):
                     # Create uniform distribution over valid non-turn-end actions
                     new_probs_np = np.zeros_like(mask, dtype=np.float32)
                     new_probs_np[valid_indices] = 1.0 / len(valid_indices)
-                    probs = jnp.array(new_probs_np)
+                    probs = new_probs_np
                     log(f"[Python] RETRY STOCHASTIC OVERRIDE: retry_count={current_retry_count}, prob={prob_override:.2f}. "
                         f"Overriding policy with uniform distribution over {len(valid_indices)} non-turn-end actions.")
 
@@ -3672,23 +3684,35 @@ def predict_action(state_json):
         # --- FINAL STAMP: STRICT MASKING ---
         # Ensure we ONLY pick from the mask right before the final decision.
         # This prevents picking index 99 (Wait) if 75 (End Turn) is enabled.
-        final_probs = probs * mask
-        sum_fp = jnp.sum(final_probs)
+        final_probs = probs.astype(np.float64) * mask.astype(np.float64)
+        sum_fp = np.sum(final_probs)
         
         if sum_fp > 1e-12:
-            # Re-normalize over the mask
-            probs = final_probs / sum_fp
+            # Re-normalize over the mask using float64 for precision
+            probs = (final_probs / sum_fp).astype(np.float32)
+            # Extra robustness: handle potential NaNs from extreme logits
+            probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+            # Re-normalize again if nan_to_num zeroed anything out
+            s = np.sum(probs)
+            if s > 0:
+                probs /= s
+            else:
+                probs[np.argmax(mask)] = 1.0 # Fallback to first valid action
+            # Force exact sum to 1.0 to satisfy np.random.choice
+            probs[np.argmax(probs)] += 1.0 - np.sum(probs)
         else:
             # FALLBACK: If all valid actions ended up with 0 probability (e.g. after scaling),
             # Distribute probability uniformly over the mask to ensure we pick SOME valid action.
             log(f"[Python] WARNING: All valid actions have zero probability in {state_type}. Falling back to uniform over mask.")
             num_valid = np.sum(mask)
             if num_valid > 0:
-                probs = jnp.array(mask, dtype=jnp.float32) / num_valid
+                probs = (np.array(mask, dtype=np.float32) / num_valid)
+                probs[np.argmax(probs)] += 1.0 - np.sum(probs)
             else:
                 # Should not happen as get_action_mask forces WAIT if empty, 
                 # but handle it gracefully just in case.
-                probs = jnp.zeros_like(probs).at[99].set(1.0)
+                probs = np.zeros_like(probs, dtype=np.float32)
+                probs[99] = 1.0
         # -----------------------------------
 
         # Sample or Argmax action
@@ -3697,13 +3721,13 @@ def predict_action(state_json):
             log(f"[Python] Using SEARCH ({search_type})-selected action: {action_idx} (Policy prob={probs[action_idx]:.4f})")
         elif inference_mode:
             # Highest probability selection (Greedy)
-            action_idx = jnp.argmax(probs).item()
+            action_idx = np.argmax(probs).item()
             log(f"[Python] Inference mode (Greedy selection): index={action_idx}, prob={probs[action_idx]:.4f}")
         else:
             # Stochastic selection (Sampling)
             rng_key, subkey = jax_local.random.split(rng_key)
-            # Use choice with adjusted probs
-            action_idx = jax_local.random.choice(subkey, jnp.arange(len(probs)), p=probs).item()
+            # Use choice with adjusted probs (NumPy random handles this well)
+            action_idx = np.random.choice(len(probs), p=probs)
             
         # Store state for next validation if we're in combat
         # Skip storing if it's the End Turn action (75) to avoid false discrepancies next time
@@ -3777,7 +3801,7 @@ def predict_action(state_json):
                     log(f"[Python] Map Route Override: FAILED. No valid alternatives found for floor {floor}, pos ({row}, {col}).")
         # --------------------------------------------------
 
-        log_prob = jnp.log(jnp.maximum(probs[action_idx], 1e-9)).item()
+        log_prob = np.log(max(probs[action_idx], 1e-9)).item()
         
         # ▼ [DEBUG LOGGING]
         try:
