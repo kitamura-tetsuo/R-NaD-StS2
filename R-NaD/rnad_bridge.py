@@ -1947,6 +1947,12 @@ class TrainingWorker(threading.Thread):
         try:
             import glob
             files = sorted(glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json")))
+            human_files = sorted(glob.glob("/mnt/nas/StS2/replay/human_play_*.jsonl"))
+            
+            with self.lock:
+                self.update_total = len(files) + len(human_files)
+                self.update_progress = 0
+
             trajectories = []
             if files:
                 for filepath in files:
@@ -2007,9 +2013,10 @@ class TrainingWorker(threading.Thread):
                                 trajectories.append({"steps": list(traj_segment), "next_step": None})
                     except Exception as e:
                         log(f"[Python] Error processing {filepath}: {e}")
+                    with self.lock:
+                        self.update_progress += 1
 
             # Now parse human replays
-            human_files = sorted(glob.glob("/mnt/nas/StS2/replay/human_play_*.jsonl"))
             human_trajectories = []
             if human_files:
                 log(f"[Python] Starting offline training from {len(human_files)} human play files in /mnt/nas/StS2/replay...")
@@ -2091,6 +2098,8 @@ class TrainingWorker(threading.Thread):
                             human_trajectories.append({"steps": list(traj_segment), "next_step": None})
                     except Exception as e:
                         log(f"[Python] Error processing human replay {filepath}: {e}")
+                    with self.lock:
+                        self.update_progress += 1
 
             all_updates = []
             
