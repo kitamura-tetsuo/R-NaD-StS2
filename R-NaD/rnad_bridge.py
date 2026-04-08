@@ -13,7 +13,18 @@ import importlib.util
 # Godot game and JAX both need GPU memory.
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.6" # Allow game more room, but give JAX slightly more for larger model
 os.environ["XLA_FLAGS"] = "--xla_gpu_enable_command_buffer=" # As suggested by JAX error
-os.environ["RNAD_DEBUG_ENCODING"] = "1" # Debug encoding
+
+# Detect offline mode once at module level to minimize repeated checks
+IS_OFFLINE_MODE = (
+    os.environ.get("SKIP_RNAD_INIT") == "1" or 
+    os.environ.get("RNAD_OFFLINE") == "true" or
+    "--offline" in sys.argv
+)
+
+if IS_OFFLINE_MODE:
+    os.environ["RNAD_DEBUG_ENCODING"] = "0"
+else:
+    os.environ["RNAD_DEBUG_ENCODING"] = "1" # Debug encoding enabled for online/record modes
 
 # Ensure stdout/stderr are unbuffered and also log to a file
 import io
@@ -524,9 +535,13 @@ mask_card_skip = os.environ.get("RNAD_MASK_CARD_SKIP") == "true"
 if mask_card_skip:
     log("Initialized mask_card_skip from environment: true")
 
-offline_enabled = "--offline" in sys.argv or os.environ.get("RNAD_OFFLINE") == "true"
+offline_enabled = IS_OFFLINE_MODE
 if offline_enabled:
     log("Offline training mode enabled.")
+
+record_only = os.environ.get("RNAD_RECORD_ONLY") == "true"
+if record_only:
+    log("Record-only mode enabled (No model updates will be performed).")
 
 # Placeholders for deferred imports
 jax = None
@@ -1529,19 +1544,19 @@ def normalize_original_state(state):
 
     # 2. Piles (Bag of Words)
     for p_key in ["drawPile", "discardPile", "exhaustPile", "masterDeck"]:
-        pile = (state.get(p_key) if p_key == "masterDeck" else player.get(p_key)) or []
+        pile = get_list_robust(state if p_key == "masterDeck" else player, p_key)
         norm[p_key.replace("Pile", "").replace("Deck", "")] = sorted([rev_card.get(get_card_idx(c), "UNKNOWN") for c in pile])
 
     # 3. Combat
     if state_type == "combat":
-        norm["draw_count"] = len(player.get("drawPile", []))
-        norm["discard_count"] = len(player.get("discardPile", []))
-        norm["exhaust_count"] = len(player.get("exhaustPile", []))
+        norm["draw_count"] = len(get_list_robust(player, "drawPile"))
+        norm["discard_count"] = len(get_list_robust(player, "discardPile"))
+        norm["exhaust_count"] = len(get_list_robust(player, "exhaustPile"))
         
         # Hand
         hand = []
         tt_norm = {"SingleEnemy": "AnyEnemy", "AnyEnemy": "AnyEnemy", "AllEnemy": "AllEnemies", "AllEnemies": "AllEnemies", "RandomEnemy": "RandomEnemy", "None": "None", "Self": "Self"}
-        for c in (state.get("hand") or [])[:10]:
+        for c in get_list_robust(state, "hand")[:10]:
             hand.append({
                 "id": rev_card.get(get_card_idx(c.get("id")), "UNKNOWN"),
                 "isPlayable": bool(c.get("isPlayable")),
@@ -1559,7 +1574,7 @@ def normalize_original_state(state):
         # Enemies
         enemies = []
         it_norm = {"Defense": "Defense", "Defend": "Defense", "AttackDefense": "AttackDefense", "Buff": "Buff", "Debuff": "Debuff", "StrongDebuff": "StrongDebuff", "DebuffStrong": "StrongDebuff", "Stun": "Stun", "StatusCard": "StatusCard", "Summon": "Summon", "CardDebuff": "CardDebuff", "Heal": "Heal", "Escape": "Escape", "Hidden": "Hidden", "Sleep": "Sleep", "DeathBlow": "DeathBlow", "Attack": "Attack", "Unknown": "Unknown"}
-        for e in [en for en in (state.get("enemies") or []) if en.get("hp", 0) > 0][:5]:
+        for e in [en for en in get_list_robust(state, "enemies") if en.get("hp", 0) > 0][:5]:
             norm_e = {
                 "id": rev_monster.get(get_monster_idx(e.get("id")), "UNKNOWN"),
                 "isMinion": bool(e.get("isMinion")),
@@ -1568,7 +1583,7 @@ def normalize_original_state(state):
                 "block": int(e.get("block", 0)),
                 "intents": []
             }
-            for it in (e.get("intents") or [])[:2]:
+            for it in get_list_robust(e, "intents")[:2]:
                 norm_e["intents"].append({
                     "type": it_norm.get(it.get("type", "Unknown"), "Unknown"),
                     "damage": int(it.get("damage", 0)),
@@ -1577,14 +1592,14 @@ def normalize_original_state(state):
                 })
             norm_e["powers"] = [
                 {"id": rev_power.get(get_power_idx(p.get("id")), "UNKNOWN"), "amount": int(p.get("amount", 0))}
-                for p in (e.get("powers") or [])[:10]
+                for p in get_list_robust(e, "powers")[:10]
             ]
             enemies.append(norm_e)
         norm["enemies"] = enemies
         
         norm["player_powers"] = [
             {"id": rev_power.get(get_power_idx(p.get("id")), "UNKNOWN"), "amount": int(p.get("amount", 0))}
-            for p in (player.get("powers") or [])[:10]
+            for p in get_list_robust(player, "powers")[:10]
         ]
         
         norm["predicted_total_damage"] = float(state.get("predicted_total_damage", 0.0))
@@ -1641,9 +1656,10 @@ def validate_encoding(original_state, encoded_dict):
         discrepancies = recursive_compare(decoded, expected)
 
         if discrepancies:
-            log(f"WARNING: Encoding Validation Discrepancy Found! Type: {original_state.get('type')}")
-            for d in discrepancies:
-                log(f"  - {d}")
+            if not IS_OFFLINE_MODE:
+                log(f"WARNING: Encoding Validation Discrepancy Found! Type: {original_state.get('type')}")
+                for d in discrepancies:
+                    log(f"  - {d}")
             return False
             
         return True
@@ -1754,22 +1770,44 @@ def get_power_idx(power_id):
         return 0
     return POWER_VOCAB[pid]
 
+def get_list_robust(obj, key, default=None):
+    """Safely extracts a list from a dictionary, handling JSON-encoded strings gracefully."""
+    if default is None: default = []
+    if not obj: return default
+    val = obj.get(key, default)
+    if isinstance(val, str):
+        val_stripped = val.strip()
+        if not val_stripped: return []
+        if val_stripped.startswith("[") and val_stripped.endswith("]"):
+            try:
+                parsed = json.loads(val)
+                if isinstance(parsed, list):
+                    return parsed
+            except:
+                pass
+        # Special case: if default is [], and it's not a JSON list, return [] to avoid iterating characters
+        return default
+    return val if isinstance(val, list) else default
+
 def encode_bow(card_list):
     do_deferred_imports()
     assert np is not None
     vec = np.zeros(VOCAB_SIZE, dtype=np.float32)
     if isinstance(card_list, str):
-        log(f"WARNING: encode_bow received a string instead of a list: {card_list[:100]}...")
-        if card_list.strip().startswith("["):
+        val_stripped = card_list.strip()
+        if not val_stripped: return vec
+        if val_stripped.startswith("["):
             try:
-                import json
                 card_list = json.loads(card_list)
             except Exception as e:
-                log(f"ERROR: Failed to parse card_list string as JSON: {e}")
+                log(f"WARNING: encode_bow failed to parse card_list string: {e}")
                 return vec
         else:
-            return vec
+            # Interpret as a single card ID if it doesn't look like a list
+            card_list = [card_list]
             
+    if not isinstance(card_list, (list, tuple)): 
+        return vec
     if not card_list: return vec
     for cid in card_list:
         idx = get_card_idx(cid)
@@ -1964,6 +2002,9 @@ class TrainingWorker(threading.Thread):
                         self.batch_buffer = self.batch_buffer[self.config.batch_size:]
                 
                 if batch:
+                    if record_only:
+                        log(f"[Python] TrainingWorker: Skipping model update in record-only mode. (batch size: {len(batch)})")
+                        continue
                     # Perform update outside the lock
                     self.perform_update(batch)
             except queue.Empty:
@@ -1991,8 +2032,10 @@ class TrainingWorker(threading.Thread):
         
         try:
             import glob
-            files = sorted(glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json")))
-            human_files = sorted(glob.glob("/mnt/nas/StS2/replay/human_play_*.jsonl"))
+            files = glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json"))
+            random.shuffle(files)
+            human_files = glob.glob("/mnt/nas/StS2/replay/human_play_*.jsonl")
+            random.shuffle(human_files)
             
             with self.lock:
                 self.update_total = len(files) + len(human_files)
@@ -2157,6 +2200,10 @@ class TrainingWorker(threading.Thread):
                 log(f"[Python] Enhancing {len(human_trajectories)} human play segments with multiple passes.")
                 for epoch in range(5):
                     all_updates.extend(human_trajectories)
+
+            if all_updates:
+                random.shuffle(all_updates)
+                log(f"[Python] Shuffled {len(all_updates)} total trajectory segments.")
 
             if not all_updates:
                 log("[Python] No valid trajectory segments found for offline training.")
@@ -2714,18 +2761,23 @@ def encode_state(state):
 
     if st_idx == 0:
         # Piles
-        draw_bow = encode_bow(player.get("drawPile", []))
-        discard_bow = encode_bow(player.get("discardPile", []))
-        exhaust_bow = encode_bow(player.get("exhaustPile", []))
-        master_bow = encode_bow(player.get("masterDeck", []))
+        draw_pile = get_list_robust(player, "drawPile")
+        discard_pile = get_list_robust(player, "discardPile")
+        exhaust_pile = get_list_robust(player, "exhaustPile")
+        master_deck = get_list_robust(player, "masterDeck")
+        
+        draw_bow = encode_bow(draw_pile)
+        discard_bow = encode_bow(discard_pile)
+        exhaust_bow = encode_bow(exhaust_pile)
+        master_bow = encode_bow(master_deck)
 
         # Pile counts for legacy/redundancy
-        combat_vec[0] = len(player.get("drawPile", [])) / 30.0
-        combat_vec[1] = len(player.get("discardPile", [])) / 30.0
-        combat_vec[2] = len(player.get("exhaustPile", [])) / 30.0
+        combat_vec[0] = len(draw_pile) / 30.0
+        combat_vec[1] = len(discard_pile) / 30.0
+        combat_vec[2] = len(exhaust_pile) / 30.0
         
         # Hand cards (up to 10 cards, 10 features each)
-        hand = state.get("hand") or []
+        hand = get_list_robust(state, "hand")
         for i in range(min(len(hand), 10)):
             card = hand[i]
             base_idx = 10 + i * 10
@@ -2754,7 +2806,7 @@ def encode_state(state):
 
         # Enemies (up to 5 enemies, 16 features each)
         # Offset to 110: 110 + 5*16 = 190 (fits before powers at 200)
-        enemies = state.get("enemies", [])
+        enemies = get_list_robust(state, "enemies")
         for i in range(min(len(enemies), 5)):
             enemy = enemies[i]
             base_idx = 110 + i * 16
@@ -2766,7 +2818,7 @@ def encode_state(state):
             combat_vec[base_idx + 4] = enemy.get("maxHp", 1) / 200.0
             combat_vec[base_idx + 5] = enemy.get("block", 0) / 50.0
             
-            intents = enemy.get("intents", [])
+            intents = get_list_robust(enemy, "intents")
             for j in range(min(len(intents), 2)):
                 intent = intents[j]
                 intent_idx = base_idx + 6 + j * 4
@@ -2791,18 +2843,18 @@ def encode_state(state):
                     "Unknown": 0
                 }
                 it_type = intent.get("type", "Unknown")
-                if it_type not in IT_MAP:
-                    log(f"[Python] Warning: intent type: {it_type} not in IT_MAP, falling back to Unknown")
+                if it_type not in it_map:
+                    log(f"[Python] Warning: intent type: {it_type} not in it_map, falling back to Unknown")
                     it_type = "Unknown"
-                combat_vec[intent_idx] = IT_MAP[it_type] / 10.0
+                combat_vec[intent_idx] = it_map[it_type] / 10.0
                 combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
                 combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
                 combat_vec[intent_idx + 3] = intent.get("count", 0) / 10.0
-                log(f"[Python] Debug Enemy {i}: ID={enemy.get('id')}, Alive={combat_vec[base_idx]}, Minion={combat_vec[base_idx+2]}, Intent={it_type}")
+                # log(f"[Python] Debug Enemy {i}: ID={enemy.get('id')}, Alive={combat_vec[base_idx]}, Minion={combat_vec[base_idx+2]}, Intent={it_type}")
                 
         # Powers (starting at 200)
         # Player powers (up to 10, index 200-219)
-        p_powers = player.get("powers", [])
+        p_powers = get_list_robust(player, "powers")
         for i in range(min(len(p_powers), 10)):
             p = p_powers[i]
             base_idx = 200 + i * 2
@@ -2811,7 +2863,7 @@ def encode_state(state):
             
         # Enemy powers (up to 5 enemies, 10 powers each, starting at 220)
         for i in range(min(len(enemies), 5)):
-            e_powers = enemies[i].get("powers", [])
+            e_powers = get_list_robust(enemies[i], "powers")
             enemy_base = 220 + i * 20
             for j in range(min(len(e_powers), 10)):
                 p = e_powers[j]
@@ -2824,7 +2876,7 @@ def encode_state(state):
         combat_vec[321] = state.get("predicted_end_block", 0) / 50.0
         combat_vec[322] = 1.0 if state.get("surplus_block") else 0.0
         
-        log(f"[Python] Predicted Damage: {state.get('predicted_total_damage', 0)}, Predicted Block: {state.get('predicted_end_block', 0)}, Surplus: {state.get('surplus_block')}")
+        # log(f"[Python] Predicted Damage: {state.get('predicted_total_damage', 0)}, Predicted Block: {state.get('predicted_end_block', 0)}, Surplus: {state.get('surplus_block')}")
 
     # --- Card Reward Features (Size 128) - Expert 5 ---
     card_reward_vec = np.zeros(128, dtype=np.float32)
@@ -3040,7 +3092,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
             defeat_count = last_enemy_count - current_enemy_count
             defeat_reward = defeat_count * 0.01
             intermediate_reward += defeat_reward
-            log(f"Reward for defeating {defeat_count} enemy: +{defeat_reward:.2f}")
+            # log(f"Reward for defeating {defeat_count} enemy: +{defeat_reward:.2f}")
 
         # Track if it was an elite or boss room
         room_type = state.get("room_type", "")
@@ -3059,13 +3111,13 @@ def compute_intermediate_reward(state, state_type, action_idx):
     # Battle Clear Reward
     if reward_tracker.last_state_type == "combat" and (state_type == "rewards" or state_type == "map"):
         intermediate_reward += 0.1 # Battle clear base
-        log("Reward for battle clear: +0.1")
+        # log("Reward for battle clear: +0.1")
         if reward_tracker.was_elite:
             intermediate_reward += 0.1
-            log("Extra reward for ELITE defeat: +0.1")
+            # log("Extra reward for ELITE defeat: +0.1")
         if reward_tracker.was_boss:
             intermediate_reward += 0.5
-            log("Extra reward for BOSS defeat: +0.5")
+            # log("Extra reward for BOSS defeat: +0.5")
         reward_tracker.was_elite = False
         reward_tracker.was_boss = False
 
@@ -3077,11 +3129,11 @@ def compute_intermediate_reward(state, state_type, action_idx):
         if current_potion_count > reward_tracker.last_potion_count:
             if state_type in ["rewards", "shop", "treasure"]: # After battle reward, shop buy, or treasure
                 intermediate_reward += 0.01
-                log(f"Reward for potion acquisition: +0.01")
+                # log(f"Reward for potion acquisition: +0.01")
         elif current_potion_count < reward_tracker.last_potion_count:
             # 0.001 penalty for using/losing a potion to prevent wasteful use
             intermediate_reward -= 0.001
-            log(f"Penalty for potion use: -0.001")
+            # log(f"Penalty for potion use: -0.001")
     reward_tracker.last_potion_count = current_potion_count
 
     # Card Acquisition Count (Using piles in combat or reward list in selection)
@@ -3103,7 +3155,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
         # Actually, let's keep it simple: if it increases, reward it.
         if state_type != "combat" or reward_tracker.last_state_type == "combat": # Transition or outside
             intermediate_reward += 0.01
-            log(f"Reward for card acquisition: +0.01")
+            # log(f"Reward for card acquisition: +0.01")
     reward_tracker.last_total_cards = total_cards
 
     # Card Upgrade Reward (+0.01)
@@ -3112,7 +3164,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
         upgraded_count = sum(1 for c in cards if c.get("upgraded"))
         if reward_tracker.last_upgraded_count != -1 and upgraded_count > reward_tracker.last_upgraded_count:
             intermediate_reward += 0.01
-            log("Reward for card upgrade: +0.01")
+            # log("Reward for card upgrade: +0.01")
         reward_tracker.last_upgraded_count = upgraded_count
     else:
         reward_tracker.last_upgraded_count = -1
@@ -4060,7 +4112,15 @@ def predict_action(state_json):
                     stochastic_override=stochastic_override_active
                 )
 
-                if config and len(current_trajectory) >= config.unroll_length:
+                # Handle unrolling and terminal flushing
+                if terminal:
+                    if current_trajectory:
+                        log(f"Terminal state reached ({state_type}). Flushing final trajectory segment of length {len(current_trajectory)}.")
+                        # Mark the last step as terminal for bootstrapping
+                        current_trajectory[-1]["done"] = 1.0
+                        experience_queue.put(list(current_trajectory))
+                        current_trajectory = []
+                elif not record_only and config and len(current_trajectory) >= config.unroll_length:
                     # Defer flushing until we see the next state for bootstrapping
                     log(f"Trajectory reached unroll_length ({config.unroll_length}). Moving to deferred_chunk.")
                     deferred_chunk = {"steps": list(current_trajectory)}
@@ -4135,6 +4195,7 @@ class CommandHandler(BaseHTTPRequestHandler):
                 "update_progress": training_worker.update_progress if training_worker else 0,
                 "update_total": training_worker.update_total if training_worker else 0,
                 "initialized": initialized,
+                "is_restoring": is_restoring,
                 "last_activity_time": last_activity_time
             }).encode())
             

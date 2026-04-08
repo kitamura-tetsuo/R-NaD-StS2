@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+import glob
 import time
 import traceback
 
@@ -18,10 +19,25 @@ import rnad_bridge
 def main():
     parser = argparse.ArgumentParser(description="Offline Training for R-NaD StS2")
     parser.add_argument("--checkpoint", type=str, help="Path to checkpoint .pkl to resume from")
-    parser.add_argument("--epochs", type=int, default=1, help="Number of passes through all found trajectories")
+    parser.add_argument("--epochs", type=int, default=100000, help="Number of passes through all found trajectories")
     args = parser.parse_args()
 
     print(f"--- Starting Offline Training (Epochs: {args.epochs}) ---")
+    
+    # Auto-detect latest checkpoint if not specified
+    if args.checkpoint is None:
+        checkpoint_dir = os.path.join(R_NAD_DIR, "checkpoints")
+        if os.path.exists(checkpoint_dir):
+            # Recursively search for checkpoint_*.pkl
+            checkpoints = glob.glob(os.path.join(checkpoint_dir, "**", "checkpoint_*.pkl"), recursive=True)
+            if checkpoints:
+                # Find the latest by modification time
+                args.checkpoint = max(checkpoints, key=os.path.getmtime)
+                print(f"Auto-detected latest checkpoint: {args.checkpoint}")
+            else:
+                print("No checkpoints found in 'checkpoints/' directory.")
+        else:
+            print(f"Checkpoint directory not found: {checkpoint_dir}")
 
     try:
         # 1. Load the model and initialize the TrainingWorker
