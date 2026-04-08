@@ -175,12 +175,14 @@ def get_latest_local_checkpoint():
     ]
     latest_file = None
     latest_mtime = 0
+    # Prioritize the main project checkpoints directory
     for base_dir in search_dirs:
         if not os.path.exists(base_dir):
             continue
         for root, _, files in os.walk(base_dir):
             for file in files:
-                if file.endswith(".pkl") and "checkpoint_" in file:
+                # Look for both regular and offline checkpoints
+                if file.endswith(".pkl") and ("checkpoint_" in file or "checkpoint_offline_" in file):
                     full_path = os.path.join(root, file)
                     try:
                         mtime = os.path.getmtime(full_path)
@@ -189,16 +191,18 @@ def get_latest_local_checkpoint():
                             latest_file = full_path
                     except OSError:
                         continue
+    
     if latest_file:
         run_id = None
-        match = re.search(r"checkpoints/([0-9a-f]{32})/", latest_file)
+        # Robustly extract 32-char hex run_id from anywhere in the path
+        match = re.search(r"([0-9a-f]{32})", latest_file)
         if match:
             run_id = match.group(1)
         return latest_file, run_id, latest_mtime
     return None, None, 0
 
 def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
-    mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+    mlflow.set_tracking_uri("sqlite:////home/ubuntu/src/R-NaD-StS2/mlflow.db")
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if not experiment:
         return None, None, 0

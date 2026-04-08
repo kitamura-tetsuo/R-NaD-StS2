@@ -15,7 +15,7 @@ class ExperimentManager:
         self.last_checkpoint_path: str | None = None
         self.last_checkpoint_step: int | None = None
         # Ensure logs go to the project root regardless of CWD
-        mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+        mlflow.set_tracking_uri("sqlite:////home/ubuntu/src/R-NaD-StS2/mlflow.db")
         self.client = mlflow.tracking.MlflowClient()
         
         mlflow.set_experiment(experiment_name=experiment_name)

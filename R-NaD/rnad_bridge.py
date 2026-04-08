@@ -2020,7 +2020,7 @@ class TrainingWorker(threading.Thread):
             self.episode_game_overed_rewards.append(reward)
             print(f"[Python] Recorded game over at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_game_overed_floors)}")
 
-    def perform_offline_training(self):
+    def perform_offline_training(self, save_checkpoint=True):
         with self.lock:
             if self.is_updating:
                 log("[Python] Already updating, skipping offline training request.")
@@ -2229,15 +2229,16 @@ class TrainingWorker(threading.Thread):
 
             log("[Python] Offline training complete.")
             
-            # Save final checkpoint after offline training
-            checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_offline_{self.step_count}.pkl"
-            if self.experiment_manager:
-                checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_offline_{self.step_count}.pkl")
-            
-            self.learner.save_checkpoint(checkpoint_path, self.step_count)
-            log(f"[Python] Saved offline training checkpoint to {checkpoint_path}")
-            if self.experiment_manager:
-                self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
+            if save_checkpoint:
+                # Save final checkpoint after offline training
+                checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_offline_{self.step_count}.pkl"
+                if self.experiment_manager:
+                    checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_offline_{self.step_count}.pkl")
+                
+                self.learner.save_checkpoint(checkpoint_path, self.step_count)
+                log(f"[Python] Saved offline training checkpoint to {checkpoint_path}")
+                if self.experiment_manager:
+                    self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
 
 
         finally:

@@ -192,7 +192,7 @@ namespace recorder_mod
             var modifiers = new List<ModifierModel>();
 
             Logger.Info($"[Recorder] Starting new seeded run: {seedToUse}");
-            await ngame.StartNewSingleplayerRun(ironclad, true, acts, modifiers, seedToUse, 0, null);
+            await ngame.StartNewSingleplayerRun(ironclad, true, acts, modifiers, seedToUse, 0, 0);
         }
 
         private List<T> FindNodesByType<T>(Node root) where T : class

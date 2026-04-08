@@ -4,6 +4,9 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Linq;
 using System.Text.Json;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Runs;
 using Godot;
@@ -18,9 +21,12 @@ namespace recorder_mod
     {
         private static readonly Logger Logger = new Logger("RecorderData", LogType.Generic);
         public static DataCollector? Instance { get; private set; }
-        private string _logFilePath;
+        private string? _logFilePath;
         private ActionExecutor? _lastExecutor;
         public bool IsInitialized { get; private set; } = false;
+        private bool _hasUploaded = false;
+        private static readonly System.Net.Http.HttpClient _httpClient = new System.Net.Http.HttpClient();
+        private const string DefaultWebhookUrl = "https://discord.com/api/webhooks/1491584705391231156/Q4_k5o5E9NS4Vq2kY3fNZ5JtwSeHESFCc0nTEb7aEp8DO_uMVHcunX3MUKg_l803tF6d";
 
         public void Initialize()
         {
@@ -194,6 +200,9 @@ namespace recorder_mod
             // Re-subscribe to executor as it might change
             var rmInstance = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
             if (rmInstance != null) SubscribeToExecutorReflection(rmInstance);
+
+            _hasUploaded = false;
+            MainFile.Logger.Info("[RecorderMod] Reset upload status for new run.");
         }
 
         private void OnBeforeActionExecuted(GameAction action)
@@ -261,9 +270,63 @@ namespace recorder_mod
         public void Update()
         {
             var rmInstance = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
-            if (rmInstance != null) SubscribeToExecutorReflection(rmInstance);
+            if (rmInstance != null) {
+                SubscribeToExecutorReflection(rmInstance);
+                
+                // Check for Game Over / Victory
+                if (!_hasUploaded && _logFilePath != null && File.Exists(_logFilePath)) {
+                    var runState = rmInstance.DebugOnlyGetState();
+                    bool isGameOver = false;
+                    
+                    if (runState != null && runState.IsGameOver) {
+                        isGameOver = true;
+                        MainFile.Logger.Info("[RecorderData] RunState.IsGameOver detected.");
+                    } else {
+                        // Check for GameOverScreen overlay as a fallback
+                        var topOverlay = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance?.Peek();
+                        if (topOverlay != null && topOverlay.GetType().FullName.Contains("GameOverScreen")) {
+                            isGameOver = true;
+                            MainFile.Logger.Info("[RecorderData] GameOverScreen detected.");
+                        }
+                    }
+
+                    if (isGameOver) {
+                        _hasUploaded = true;
+                        // Fire and forget upload
+                        _ = UploadToDiscordAsync(_logFilePath);
+                    }
+                }
+            }
+        }
+
+        private async Task UploadToDiscordAsync(string path)
+        {
+            try {
+                string? webhookUrl = System.Environment.GetEnvironmentVariable("DISCORD_WEBHOOK_URL");
+                if (string.IsNullOrEmpty(webhookUrl)) {
+                    webhookUrl = DefaultWebhookUrl;
+                }
+
+                MainFile.Logger.Info($"[RecorderData] Uploading to Discord: {path}");
+                
+                using (var content = new MultipartFormDataContent()) {
+                    var fileBytes = File.ReadAllBytes(path);
+                    var fileContent = new ByteArrayContent(fileBytes);
+                    fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse("application/octet-stream");
+                    content.Add(fileContent, "file", Path.GetFileName(path));
+                    content.Add(new StringContent($"Game Over / Clear Trajectory: {Path.GetFileName(path)}"), "content");
+
+                    var response = await _httpClient.PostAsync(webhookUrl, content);
+                    if (response.IsSuccessStatusCode) {
+                        MainFile.Logger.Info("[RecorderData] Successfully uploaded to Discord.");
+                    } else {
+                        string errorStr = await response.Content.ReadAsStringAsync();
+                        MainFile.Logger.Error($"[RecorderData] Discord upload failed: {response.StatusCode} - {errorStr}");
+                    }
+                }
+            } catch (Exception e) {
+                MainFile.Logger.Error($"[RecorderData] Discord upload error: {e.Message}");
+            }
         }
     }
-
-    // No Harmony patches in this version to avoid assembly loading issues during patching
 }

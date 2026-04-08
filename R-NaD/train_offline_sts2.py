@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description="Offline Training for R-NaD StS2")
     parser.add_argument("--checkpoint", type=str, help="Path to checkpoint .pkl to resume from")
     parser.add_argument("--epochs", type=int, default=100000, help="Number of passes through all found trajectories")
+    parser.add_argument("--save_interval", type=int, default=1, help="Frequency (in epochs) to save checkpoints and log to MLflow")
     args = parser.parse_args()
 
     print(f"--- Starting Offline Training (Epochs: {args.epochs}) ---")
@@ -54,7 +55,10 @@ def main():
         # and runs the update loop.
         for epoch in range(args.epochs):
             print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
-            rnad_bridge.training_worker.perform_offline_training()
+            
+            # Save checkpoint every N epochs or on the last epoch
+            should_save = ((epoch + 1) % args.save_interval == 0) or (epoch == args.epochs - 1)
+            rnad_bridge.training_worker.perform_offline_training(save_checkpoint=should_save)
         
         print("\n--- Offline Training Finished Successfully ---")
 

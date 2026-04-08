@@ -216,13 +216,13 @@ def cleanup_checkpoints(keep_n=5):
         except Exception as e:
             logging.warning(f"Error during local checkpoint cleanup: {e}")
 
-    # 2. MLflow checkpoints (mlruns/*/*/artifacts/checkpoints/step_*)
-    mlruns_base = os.path.join(os.path.dirname(base_dir), "mlruns")
-    if os.path.exists(mlruns_base):
+    # 2. MLflow checkpoints (mlartifacts/*/*/artifacts/checkpoints/step_*)
+    mlartifacts_base = os.path.join(os.path.dirname(base_dir), "mlartifacts")
+    if os.path.exists(mlartifacts_base):
         count = 0
         try:
-            for exp_id in os.listdir(mlruns_base):
-                exp_path = os.path.join(mlruns_base, exp_id)
+            for exp_id in os.listdir(mlartifacts_base):
+                exp_path = os.path.join(mlartifacts_base, exp_id)
                 if not os.path.isdir(exp_path) or exp_id == ".trash":
                     continue
                 
@@ -318,7 +318,7 @@ def get_latest_local_checkpoint():
 
 def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
     """Finds the latest checkpoint in the specified MLflow experiment, returning the one with the highest step number among the recent runs."""
-    mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+    mlflow.set_tracking_uri("sqlite:////home/ubuntu/src/R-NaD-StS2/mlflow.db")
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if not experiment:
         logging.info(f"Experiment {experiment_name} not found.")
@@ -538,7 +538,7 @@ def perform_restart(process, current_checkpoint, args):
         # If no checkpoint found, still try to stay on the same run if not already set
         # Re-import mllow briefly or just use subprocess if needed, but we can reuse the logic
         import mlflow
-        mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+        mlflow.set_tracking_uri("sqlite:////home/ubuntu/src/R-NaD-StS2/mlflow.db")
         experiment = mlflow.get_experiment_by_name("R-NaD-StS2")
         if experiment:
             runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["attributes.start_time DESC"], max_results=1)
@@ -679,7 +679,7 @@ def main():
         else:
             # Fallback for just run ID
             import mlflow
-            mlflow.set_tracking_uri("file:///home/ubuntu/src/R-NaD-StS2/mlruns")
+            mlflow.set_tracking_uri("sqlite:////home/ubuntu/src/R-NaD-StS2/mlflow.db")
             experiment = mlflow.get_experiment_by_name("R-NaD-StS2")
             if experiment:
                 runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["attributes.start_time DESC"], max_results=1)
@@ -830,9 +830,9 @@ def main():
                     
                     consecutive_failures = 0
                     
-                    # Check disk space (on the mlruns directory)
-                    mlruns_dir = os.path.join(os.path.dirname(__file__), "..", "mlruns")
-                    if check_disk_space(mlruns_dir, threshold=0.1):
+                    # Check disk space (on the mlartifacts directory)
+                    mlartifacts_dir = os.path.join(os.path.dirname(__file__), "..", "mlartifacts")
+                    if check_disk_space(mlartifacts_dir, threshold=0.1):
                         logging.error("FATAL: Insufficient disk space for checkpoints (<10% free). Stopping training.")
                         raise RuntimeError("Low disk space on checkpoint storage.")
 
