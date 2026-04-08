@@ -57,7 +57,7 @@ class RNaDConfig(NamedTuple):
     num_blocks: int = 4
     seq_len: int = 8
     hidden_size: int = 256
-    unroll_length: int = 32
+    unroll_length: int = 24
     card_vocab_size: int = 100
     monster_vocab_size: int = 40
     relic_vocab_size: int = 300
@@ -312,6 +312,68 @@ class MapExpert(hk.Module):
         
         return jnp.mean(tokens, axis=0)
 
+class CardRewardExpert(hk.Module):
+    def __init__(self, hidden_size, num_blocks, num_heads, name=None):
+        super().__init__(name=name)
+        self.hidden_size = hidden_size
+        self.num_blocks = num_blocks
+        self.num_heads = num_heads
+
+    def __call__(self, h_global, reward_obs, bow_obs, relic_obs=None, is_training: bool = False, config: Optional[RNaDConfig] = None):
+        card_vocab = config.card_vocab_size if config else 100
+        # Re-use card_embedding if initialized at same scope, otherwise it creates new parameters.
+        # But Haiku experts are separate modules, so we need to ensure they access common embeddings if needed.
+        # However, the user asked for a *dedicated* expert, so separate params are fine OR we can try to share.
+        # For now, let's keep it dedicated but use the same name "card_embedding" to match pre-trained loader.
+        card_embedding = hk.Embed(vocab_size=card_vocab, embed_dim=384, name="card_embedding")
+        card_proj = hk.Linear(self.hidden_size, name="card_proj")
+        
+        # Deck context (Master Deck Bag-of-Words)
+        master_bow = bow_obs["master_bow"]
+        bow_proj = jax.nn.relu(hk.Linear(128, name="bow_proj")(master_bow))
+        context = jnp.concatenate([h_global, bow_proj], axis=-1)
+        context_proj = hk.Linear(self.hidden_size, name="context_proj")(context)
+        
+        # Candidate cards as tokens (up to 5)
+        candidate_tokens = []
+        for i in range(5):
+            base_idx = i * 20
+            presence = reward_obs[base_idx]
+            card_id_idx = combat_vec_to_id(reward_obs[base_idx + 1])
+            card_embed = card_embedding(card_id_idx)
+            other_feats = reward_obs[base_idx + 2 : base_idx + 11] # Detailed features (upgraded to rarity)
+            
+            card_feat = jnp.concatenate([card_embed, other_feats], axis=-1)
+            # Mask if not present
+            candidate_tokens.append(card_proj(card_feat) * presence)
+            
+        # Relics as tokens (up to 30)
+        relic_vocab = config.relic_vocab_size if config else 300
+        relic_embedding = hk.Embed(vocab_size=relic_vocab, embed_dim=384, name="relic_embedding")
+        relic_proj = hk.Linear(self.hidden_size, name="relic_proj")
+        
+        relic_tokens = []
+        if relic_obs is not None:
+            for i in range(30):
+                ridx = combat_vec_to_id(relic_obs[i])
+                rembed = relic_embedding(ridx)
+                relic_tokens.append(relic_proj(rembed))
+        else:
+            dummy_relic = jnp.zeros(384)
+            for _ in range(30):
+                relic_tokens.append(relic_proj(dummy_relic))
+                
+        # Total tokens: 1 (context) + 5 (candidates) + 30 (relics) = 36
+        tokens = jnp.stack([context_proj] + candidate_tokens + relic_tokens, axis=0)
+        pos_emb = hk.get_parameter("pos_emb_card_reward", [36, self.hidden_size], init=hk.initializers.TruncatedNormal())
+        tokens = tokens + pos_emb
+        
+        for i in range(self.num_blocks):
+            tokens = TransformerBlock(self.num_heads, self.hidden_size // self.num_heads, self.hidden_size, name=f"reward_block_{i}")(tokens, is_training)
+            
+        return jnp.mean(tokens, axis=0)
+
+
 class SimpleExpert(hk.Module):
     def __init__(self, hidden_size, name=None):
         super().__init__(name=name)
@@ -332,6 +394,41 @@ class TemporalTransformer(hk.Module):
         self.num_blocks = num_blocks
         self.seq_len = seq_len
 
+    def _causal_mha(self, x, mask, i):
+        T, B, C = x.shape
+        # Manual Multi-Head Attention to avoid mysterious Haiku shape doubling
+        query = hk.Linear(self.hidden_size, name=f"manual_q_{i}")(x)
+        key = hk.Linear(self.hidden_size, name=f"manual_k_{i}")(x)
+        value = hk.Linear(self.hidden_size, name=f"manual_v_{i}")(x)
+        
+        # Split heads: (T, B, hidden_size) -> (T, B, num_heads, key_size)
+        q_heads = query.reshape(T, B, self.num_heads, -1)
+        k_heads = key.reshape(T, B, self.num_heads, -1)
+        v_heads = value.reshape(T, B, self.num_heads, -1)
+        
+        # (T, B, H, K) x (T, B, H, K) -> (B, H, T, T)
+        # Transpose to (B, H, T, K) for easier dot product
+        q_heads = q_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
+        k_heads = k_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
+        v_heads = v_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
+        
+        # Dot-product attention
+        # (B, H, T, K) @ (B, H, K, T) -> (B, H, T, T)
+        logits = jnp.einsum("bhik,bhjk->bhij", q_heads, k_heads) / jnp.sqrt(self.key_size)
+        
+        # Apply causal mask
+        logits = jnp.where(mask.astype(bool), logits, -1e9)
+        
+        weights = jax.nn.softmax(logits, axis=-1)
+        
+        # (B, H, T, T) @ (B, H, T, K) -> (B, H, T, K)
+        attn_out_heads = jnp.einsum("bhij,bhjk->bhik", weights, v_heads)
+        
+        # Transpose back: (B, H, T, K) -> (T, B, H, K) -> (T, B, hidden_size)
+        attn_out = attn_out_heads.transpose(2, 0, 1, 3).reshape(T, B, -1)
+        attn_out = hk.Linear(self.hidden_size, name=f"manual_proj_{i}")(attn_out)
+        return attn_out
+
     def __call__(self, x, is_training=False):
         # x: (T, B, hidden_size)
         T, B, C = x.shape
@@ -346,44 +443,10 @@ class TemporalTransformer(hk.Module):
         x = x + pos_emb[:T, None, :]
         
         for i in range(self.num_blocks):
-            # Haiku MultiHeadAttention expects (T, B, C) and mask (B, num_heads, T, T)
-            # Actually hk.MultiHeadAttention expects (T, B, C) and mask of shape (B, num_heads, T, T)
-            # Wait, standard Haiku MHA takes (query, key, value, mask)
-            # Let's use it simply.
-            # Manual Multi-Head Attention to avoid mysterious Haiku shape doubling
-            query = hk.Linear(self.hidden_size, name=f"manual_q_{i}")(x)
-            key = hk.Linear(self.hidden_size, name=f"manual_k_{i}")(x)
-            value = hk.Linear(self.hidden_size, name=f"manual_v_{i}")(x)
-            
-            # Split heads: (T, B, hidden_size) -> (T, B, num_heads, key_size)
-            q_heads = query.reshape(T, B, self.num_heads, -1)
-            k_heads = key.reshape(T, B, self.num_heads, -1)
-            v_heads = value.reshape(T, B, self.num_heads, -1)
-            
-            # (T, B, H, K) x (T, B, H, K) -> (B, H, T, T)
-            # Transpose to (B, H, T, K) for easier dot product
-            q_heads = q_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
-            k_heads = k_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
-            v_heads = v_heads.transpose(1, 2, 0, 3) # (B, H, T, K)
-            
-            # Dot-product attention
-            # (B, H, T, K) @ (B, H, K, T) -> (B, H, T, T)
-            logits = jnp.einsum("bhik,bhjk->bhij", q_heads, k_heads) / jnp.sqrt(self.key_size)
-            
-            # Apply causal mask
-            # mask shape is (1, 1, T, T) or (T, T)
-            # causal_mask = jnp.tril(jnp.ones((T, T)))
-            # logits = jnp.where(causal_mask[None, None, :, :].astype(bool), logits, -1e9)
-            logits = jnp.where(mask.astype(bool), logits, -1e9)
-            
-            weights = jax.nn.softmax(logits, axis=-1)
-            
-            # (B, H, T, T) @ (B, H, T, K) -> (B, H, T, K)
-            attn_out_heads = jnp.einsum("bhij,bhjk->bhik", weights, v_heads)
-            
-            # Transpose back: (B, H, T, K) -> (T, B, H, K) -> (T, B, hidden_size)
-            attn_out = attn_out_heads.transpose(2, 0, 1, 3).reshape(T, B, -1)
-            attn_out = hk.Linear(self.hidden_size, name=f"manual_proj_{i}")(attn_out)
+            # Causal Multi-Head Attention with rematerialization
+            # Use partial to bind 'i' as a static value to avoid tracer issues with Haiku names
+            attn_fn = partial(self._causal_mha, i=i)
+            attn_out = hk.remat(attn_fn)(x, mask)
             
             x = hk.LayerNorm(axis=-1, create_scale=True, create_offset=True, name=f"hist_ln_1_{i}")(x + attn_out)
             
@@ -411,6 +474,8 @@ class TransformerNet(hk.Module):
         event_expert = SimpleExpert(self.hidden_size, name="event_expert")
         grid_expert = SimpleExpert(self.hidden_size, name="grid_expert")
         hand_expert = SimpleExpert(self.hidden_size, name="hand_expert")
+        card_reward_expert = CardRewardExpert(self.hidden_size, self.num_blocks, self.num_heads, name="card_reward_expert")
+
         temporal_policy_transformer = TemporalTransformer(
             num_heads=4,
             key_size=32,
@@ -446,7 +511,8 @@ class TransformerNet(hk.Module):
                 lambda: map_expert(h_g, s_dict["map"], bow_obs, is_training, config=self.config),
                 lambda: event_expert(h_g, s_dict["event"], bow_obs, is_training),
                 lambda: grid_expert(h_g, s_dict["event"], bow_obs, is_training),
-                lambda: hand_expert(h_g, s_dict["event"], bow_obs, is_training)
+                lambda: hand_expert(h_g, s_dict["event"], bow_obs, is_training),
+                lambda: card_reward_expert(h_g, s_dict["card_reward"], bow_obs, s_dict.get("relic_ids"), is_training, config=self.config)
             ])
 
         def route_head(head_idx, feat_p, feat_v):
@@ -475,6 +541,8 @@ class TransformerNet(hk.Module):
             _ = event_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             _ = grid_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
             _ = hand_expert(dummy_h_g, state_dict["event"][0, 0], dummy_bow_obs, is_training)
+            _ = card_reward_expert(dummy_h_g, state_dict["card_reward"][0, 0], dummy_bow_obs, state_dict.get("relic_ids", jnp.zeros((30,)))[0, 0], is_training, config=self.config)
+
             
             # Ensure every head is called at least once during init
             dummy_features_p = jnp.zeros(self.hidden_size)
@@ -618,6 +686,7 @@ class RNaDLearner:
             "master_bow": jnp.zeros((1, 1, self.config.card_vocab_size)),
             "map": jnp.zeros((1, 1, 2048)),
             "event": jnp.zeros((1, 1, 128)),
+            "card_reward": jnp.zeros((1, 1, 128)),
             "state_type": jnp.zeros((1, 1), dtype=jnp.int32),
             "head_type": jnp.zeros((1, 1), dtype=jnp.int32)
         }
@@ -719,30 +788,30 @@ def load_pretrained_embeddings(params: Dict[str, Any], embeddings_path: str, car
         
         # Helper to populate a specific embedding layer
         def populate_layer(scope_suffix, vocab, pretrained_key):
-            target_scope = None
+            target_scopes = []
             for scope in new_params.keys():
                 if scope_suffix in scope and 'embeddings' in new_params[scope]:
-                    target_scope = scope
-                    break
+                    target_scopes.append(scope)
             
-            if not target_scope:
+            if not target_scopes:
                 logging.warning(f"Could not find embedding scope for {scope_suffix}")
                 return
             
-            embeddings = np.array(new_params[target_scope]['embeddings'])
             mapping = pretrained.get(pretrained_key, {})
             
-            count = 0
-            for name, idx in vocab.items():
-                if name in mapping and idx < embeddings.shape[0]:
-                    embeddings[idx] = mapping[name]
-                    count += 1
-                elif name.upper() in mapping and idx < embeddings.shape[0]:
-                    embeddings[idx] = mapping[name.upper()]
-                    count += 1
-            
-            new_params[target_scope]['embeddings'] = jnp.array(embeddings)
-            logging.info(f"Loaded {count}/{len(vocab)} embeddings for {scope_suffix}")
+            for target_scope in target_scopes:
+                embeddings = np.array(new_params[target_scope]['embeddings'])
+                count = 0
+                for name, idx in vocab.items():
+                    if name in mapping and idx < embeddings.shape[0]:
+                        embeddings[idx] = mapping[name]
+                        count += 1
+                    elif name.upper() in mapping and idx < embeddings.shape[0]:
+                        embeddings[idx] = mapping[name.upper()]
+                        count += 1
+                
+                new_params[target_scope]['embeddings'] = jnp.array(embeddings)
+                logging.info(f"Loaded {count}/{len(vocab)} embeddings for {target_scope}")
 
         populate_layer('card_embedding', card_vocab, 'CARDS')
         populate_layer('monster_embedding', monster_vocab, 'MONSTERS')

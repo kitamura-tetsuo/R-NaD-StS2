@@ -117,31 +117,32 @@ def test_shapes():
         params = learner.params
         key = jax.random.PRNGKey(42)
         
-        # Test all 6 heads
-        for ht_idx in range(6):
-            print(f"Testing head_type: {ht_idx}")
+        # Test all experts
+        for st_idx in [0, 1, 2, 3, 4, 5]:
+            print(f"Testing state_type: {st_idx}")
             obs_dict = {
                 "global": jnp.array([[encoded["global"]]]),
                 "combat": jnp.array([[encoded["combat"]]]),
                 "relic_ids": jnp.array([[encoded["relic_ids"]]]),
                 "map": jnp.array([[encoded["map"]]]),
                 "event": jnp.array([[encoded["event"]]]),
+                "card_reward": jnp.array([[encoded["card_reward"]]]),
                 "draw_bow": jnp.array([[encoded["draw_bow"]]]),
                 "discard_bow": jnp.array([[encoded["discard_bow"]]]),
                 "exhaust_bow": jnp.array([[encoded["exhaust_bow"]]]),
                 "master_bow": jnp.array([[encoded["master_bow"]]]),
-                "state_type": jnp.array([[encoded["state_type"]]]), # (T=1, B=1)
-                "head_type": jnp.array([[ht_idx]])  # (T=1, B=1)
+                "state_type": jnp.array([[st_idx]]), # (T=1, B=1)
+                "head_type": jnp.array([[0]])  # (T=1, B=1)
             }
             mask_arr = jnp.ones((1, 1, 100)) # (T=1, B=1, num_actions)
             
             # Run predict
             logits, value = learner.network.apply(params, key, obs_dict, mask_arr, is_training=False)
-            print(f"  Model output shape: logits={logits.shape}, value={value.shape}")
+            print(f"  Model output shape (st_idx={st_idx}): logits={logits.shape}, value={value.shape}")
             assert logits.shape == (1, 1, 100)
             assert value.shape == (1, 1)
         
-        print("Forward pass successful for all heads!")
+        print("Forward pass successful for all experts!")
         
     except Exception as e:
         print(f"Forward pass failed: {e}")

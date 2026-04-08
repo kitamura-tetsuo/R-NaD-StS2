@@ -27,6 +27,17 @@ public class AiCombatRoomHandler : IRoomHandler
         await WaitHelper.Until(() => {
             if (CombatManager.Instance.IsInProgress) return true;
             
+            // Check if combat is already finished (rewards or game over screen)
+            if (NOverlayStack.Instance != null && NOverlayStack.Instance.ScreenCount > 0)
+            {
+                var peek = NOverlayStack.Instance.Peek();
+                if (peek is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen || peek is NGameOverScreen)
+                {
+                    MainFile.Logger.Info("[AiCombatRoomHandler] Combat already finished or Rewards/GameOver screen detected. Skipping wait.");
+                    return true;
+                }
+            }
+
             // Handle dialogue hitboxes if they appear (common in Boss/Elite intro)
             var root = ((Node)(object)((SceneTree)Engine.GetMainLoop()).Root);
             var ancientHitbox = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NAncientDialogueHitbox>(root);
@@ -37,7 +48,7 @@ public class AiCombatRoomHandler : IRoomHandler
             }
             
             return false;
-        }, ct, TimeSpan.FromSeconds(5), "Event room not found"); // Reduced from 30s to 5s
+        }, ct, TimeSpan.FromSeconds(15), "Combat did not start");
         
         int turnCount = 0;
         _hasValidBackup = false;
@@ -141,7 +152,7 @@ public class AiCombatRoomHandler : IRoomHandler
             }
         }
 
-        await WaitHelper.Until(() => !CombatManager.Instance.IsInProgress, ct, TimeSpan.FromSeconds(5), "Combat did not end"); // Reduced from 30s to 5s
+        await WaitHelper.Until(() => !CombatManager.Instance.IsInProgress, ct, TimeSpan.FromSeconds(15), "Combat did not end");
         MainFile.Logger.Info("[AiSlayer] Combat finished");
     }
 }

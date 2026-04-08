@@ -82,12 +82,7 @@ public class AiRewardsScreenHandler : IScreenHandler
                     bool shouldRetry = !isTop50;
                     string retryReason = isTop50 ? "" : $"HP loss threshold not met (Attempt {retryCount + 1}/{maxRetries})";
 
-                    if (retryCount >= maxRetries)
-                    {
-                        shouldRetry = false;
-                        MainFile.Logger.Info($"[AiRewardsScreenHandler] Reached max retries ({maxRetries}). Proceeding to next floor without backtracking.");
-                    }
-                    else if (!shouldRetry && retryCount > 0)
+                    if (!shouldRetry && retryCount > 0)
                     {
                         MainFile.Logger.Info($"[AiRewardsScreenHandler] HP loss is within median/Top 50%. Proceeding to next floor.");
                     }

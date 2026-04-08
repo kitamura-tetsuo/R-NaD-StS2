@@ -623,8 +623,9 @@ class BackupManager:
     def __init__(self, backup_root):
         self.backup_root = backup_root
         self.stack = [] # List of {path: str, retry_count: int, reward: float, trials: list, ...}
-        self.hp_loss_history = [] # Track HP loss for each trial (DEPRECATED in favor of per-backup win_hp_losses)
+        self.hp_loss_history = [] # Track HP loss for each trial
         self.current_trial_actions = [] # Actions taken since the last backup or restore
+        self.map_blacklist = {} # (floor, current_row, current_col) -> set of target_node_indices that failed
         if not os.path.exists(self.backup_root):
             os.makedirs(self.backup_root, exist_ok=True)
             
@@ -634,6 +635,7 @@ class BackupManager:
         self.stack = []
         self.hp_loss_history = []
         self.current_trial_actions = []
+        self.map_blacklist = {}
 
     def _are_saves_identical(self, backup_dir):
         """Compare current saves with a backup directory."""
@@ -659,7 +661,7 @@ class BackupManager:
             
         return True
 
-    def backup(self, current_reward, is_elite=False, is_boss=False, floor=0):
+    def backup(self, current_reward, is_elite=False, is_boss=False, floor=0, is_map_branch=False, next_nodes=None, current_row=-1, current_col=-1):
         """Create a backup if the state has changed."""
         if self.stack:
             last_backup = self.stack[-1]["path"]
@@ -685,7 +687,11 @@ class BackupManager:
                 "accumulated_reward": float(current_reward),
                 "is_elite": is_elite,
                 "is_boss": is_boss,
-                "floor": int(floor)
+                "floor": int(floor),
+                "is_map_branch": is_map_branch,
+                "next_nodes": next_nodes,
+                "current_row": current_row,
+                "current_col": current_col
             }
             with open(os.path.join(backup_dir, "metadata.json"), "w") as f:
                 json.dump(metadata, f)
@@ -698,7 +704,11 @@ class BackupManager:
                 "is_elite": is_elite,
                 "is_boss": is_boss,
                 "floor": int(floor),
-                "win_hp_losses": []
+                "win_hp_losses": [],
+                "is_map_branch": is_map_branch,
+                "next_nodes": next_nodes,
+                "current_row": current_row,
+                "current_col": current_col
             })
             log(f"[BackupManager] Created new backup at {backup_dir} (Elite={is_elite}, Boss={is_boss}, Floor={floor}). Stack size: {len(self.stack)}")
             # New backup point: clear path history so we diversify from this point onwards
@@ -839,12 +849,39 @@ class BackupManager:
                 else:
                     current_max = 10
 
+            log(f"[BackupManager] Restore attempt for floor {latest.get('floor')} (Retry {retry_count}/{current_max}). Force={force}")
             if retry_count < current_max or force:
                 # Perform restoration
                 retry_msg = f"Retry {retry_count+1}/{current_max}" if not force else "FORCED Retry"
                 log(f"[BackupManager] Restoring {os.path.basename(latest['path'])} ({retry_msg})")
                 
                 try:
+                    # Update Map Blacklist if backtracking from a map branch after a failed trial
+                    if latest.get("is_map_branch") and self.current_trial_actions:
+                        failed_route_idx = self.current_trial_actions[0]
+                        # Verify the first action was indeed a map node selection
+                        if failed_route_idx < 50: # Map node indices are 0-49
+                            floor = latest.get("floor")
+                            row = latest.get("current_row")
+                            col = latest.get("current_col")
+                            key = (floor, row, col)
+                            if key not in self.map_blacklist:
+                                self.map_blacklist[key] = set()
+                            
+                            if failed_route_idx not in self.map_blacklist[key]:
+                                log(f"[BackupManager] Blacklisting failed route index {failed_route_idx} for map node at floor {floor}, pos ({row}, {col}).")
+                                self.map_blacklist[key].add(failed_route_idx)
+                            
+                            # Check if all available next_nodes are now blacklisted
+                            next_nodes = latest.get("next_nodes", [])
+                            num_options = len(next_nodes)
+                            blacklisted_count = len(self.map_blacklist[key])
+                            
+                            if blacklisted_count >= num_options:
+                                log(f"[BackupManager] ALL {num_options} routes exhausted at floor {floor}, pos ({row}, {col}). Recursive backtracking...")
+                                self.stack.pop()
+                                continue # Recursive backtrack to next backup in stack
+                    
                     appdata_backup = os.path.join(latest["path"], "AppData")
                     userdata_backup = os.path.join(latest["path"], "UserData")
                     
@@ -859,7 +896,7 @@ class BackupManager:
                     log(f"[BackupManager] ERROR during restore: {e}")
                     return None
             else:
-                log(f"[BackupManager] Backup {os.path.basename(latest['path'])} exhausted (tried {retry_count} times, limit {current_max}). Backtracking...")
+                log(f"[BackupManager] !!! BACKTRACKING !!! Backup {os.path.basename(latest['path'])} exhausted (tried {retry_count} times, limit {current_max}). Popping current floor data and looking for previous saves...")
                 self.stack.pop()
         
         log(f"[BackupManager] FAILED: All backups exhausted or stack empty (stack size: {len(self.stack)}). Proceeding.")
@@ -875,15 +912,23 @@ def trigger_backup(info_str=None):
     is_elite = False
     is_boss = False
     floor = 0
+    is_map_branch = False
+    next_nodes = None
+    row = -1
+    col = -1
     if info_str:
         try:
             info = json.loads(info_str)
             is_elite = info.get("is_elite", False)
             is_boss = info.get("is_boss", False)
             floor = info.get("floor", 0)
+            is_map_branch = info.get("is_map_branch", False)
+            next_nodes = info.get("next_nodes")
+            row = info.get("row", -1)
+            col = info.get("col", -1)
         except:
             pass
-    return backup_manager.backup(reward_tracker.session_cumulative_reward, is_elite, is_boss, floor)
+    return backup_manager.backup(reward_tracker.session_cumulative_reward, is_elite, is_boss, floor, is_map_branch, next_nodes, row, col)
 
 def record_hp_loss(info_str):
     """Top-level function called from Rust bridge."""
@@ -2170,6 +2215,7 @@ class TrainingWorker(threading.Thread):
                 "master_bow": [],
                 "map": [],
                 "event": [],
+                "card_reward": [],
                 "state_type": [],
                 "head_type": []
             }
@@ -2183,7 +2229,7 @@ class TrainingWorker(threading.Thread):
             padded_done = []
             padded_next_obs_dict = {
                 "global": [], "combat": [], "draw_bow": [], "discard_bow": [],
-                "exhaust_bow": [], "master_bow": [], "map": [], "event": [], "state_type": [], "head_type": []
+                "exhaust_bow": [], "master_bow": [], "map": [], "event": [], "card_reward": [], "state_type": [], "head_type": []
             }
             padded_next_mask = []
             valid_mask = []
@@ -2215,8 +2261,14 @@ class TrainingWorker(threading.Thread):
                         val_traj = [o.get(key, default_val) for o in obs_traj]
                         val_traj += [default_val] * (max_len - l)
                     else:
-                        val_traj = [o[key] for o in obs_traj]
-                        val_traj += [np.zeros_like(val_traj[0])] * (max_len - l)
+                        # For card_reward or others that might be missing from old trajectories
+                        if key == "card_reward":
+                            default_v = np.zeros(128, dtype=np.float32)
+                            val_traj = [o.get(key, default_v) for o in obs_traj]
+                            val_traj += [default_v] * (max_len - l)
+                        else:
+                            val_traj = [o[key] for o in obs_traj]
+                            val_traj += [np.zeros_like(val_traj[0])] * (max_len - l)
                     
                     padded_obs_dict[key].append(val_traj)
 
@@ -2273,7 +2325,11 @@ class TrainingWorker(threading.Thread):
                         if default_val is not None:
                             padded_next_obs_dict[key].append(no.get(key, default_val))
                         else:
-                            padded_next_obs_dict[key].append(no[key])
+                            if key == "card_reward":
+                                default_v = np.zeros(128, dtype=np.float32)
+                                padded_next_obs_dict[key].append(no.get(key, default_v))
+                            else:
+                                padded_next_obs_dict[key].append(no[key])
                     padded_next_mask.append(next_step['mask'])
                 else:
                     # Episode end or no next step available
@@ -2415,6 +2471,7 @@ def load_model(checkpoint_path=None):
         "master_bow": jnp.zeros((1, 1, VOCAB_SIZE)),
         "map": jnp.zeros((1, 1, 2048)),
         "event": jnp.zeros((1, 1, 128)),
+        "card_reward": jnp.zeros((1, 1, 128)),
         "state_type": jnp.zeros((1, 1), dtype=jnp.int32),
         "head_type": jnp.zeros((1, 1), dtype=jnp.int32)
     }
@@ -2567,7 +2624,7 @@ def encode_state(state):
         "treasure": 2,
         "game_over": 2,
         "treasure_relics": 2,
-        "card_reward": 2,
+        "card_reward": 5,
         "grid_selection": 3,
         "hand_selection": 4,
         "combat_waiting": 0
@@ -2758,6 +2815,38 @@ def encode_state(state):
         
         log(f"[Python] Predicted Damage: {state.get('predicted_total_damage', 0)}, Predicted Block: {state.get('predicted_end_block', 0)}, Surplus: {state.get('surplus_block')}")
 
+    # --- Card Reward Features (Size 128) - Expert 5 ---
+    card_reward_vec = np.zeros(128, dtype=np.float32)
+    if st_idx == 5:
+        # Card Reward selection screen
+        cards = state.get("cards", [])
+        for i in range(min(len(cards), 5)):
+            card = cards[i]
+            base_idx = i * 20
+            card_reward_vec[base_idx] = 1.0 # Presence flag
+            
+            # Card ID index for pre-trained embedding
+            card_id = card.get("id") or card.get("name", "")
+            card_reward_vec[base_idx + 1] = get_card_idx(card_id)
+            
+            # Detailed features
+            card_reward_vec[base_idx + 2] = 1.0 if card.get("upgraded") else 0.0
+            card_reward_vec[base_idx + 3] = card.get("cost", 0) / 5.0
+            card_reward_vec[base_idx + 4] = card.get("baseDamage", 0) / 20.0
+            card_reward_vec[base_idx + 5] = card.get("baseBlock", 0) / 20.0
+            card_reward_vec[base_idx + 6] = card.get("magicNumber", 0) / 10.0
+            card_reward_vec[base_idx + 7] = card.get("currentDamage", 0) / 50.0
+            card_reward_vec[base_idx + 8] = card.get("currentBlock", 0) / 50.0
+            
+            # Color/Type/Rarity (Encoded as floats)
+            # Standard mapping for common types
+            type_map_card = {"Attack": 1, "Skill": 2, "Power": 3, "Status": 4, "Curse": 5}
+            card_reward_vec[base_idx + 9] = type_map_card.get(card.get("type", ""), 0) / 5.0
+            
+            rarity_map = {"Common": 1, "Uncommon": 2, "Rare": 3, "Special": 4, "Basic": 5}
+            card_reward_vec[base_idx + 10] = rarity_map.get(card.get("rarity", ""), 0) / 5.0
+
+
     # --- Map Features (Size 2048) ---
     map_vec = np.zeros(2048, dtype=np.float32)
     # Extract map data from root (if st_idx==1) or "map" field (if injected)
@@ -2848,6 +2937,7 @@ def encode_state(state):
         "master_bow": master_bow,
         "map": map_vec,
         "event": event_vec,
+        "card_reward": card_reward_vec,
         "state_type": np.int32(st_idx),
         "head_type": np.int32(head_idx)
     }
@@ -2928,7 +3018,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
         if reward_tracker.last_action_idx != 75:
             damage_reduction = reward_tracker.last_predicted_damage_to_player - current_pred_dmg_to_player
             if damage_reduction > 0:
-                reduction_reward = damage_reduction * 0.002
+                reduction_reward = damage_reduction * 0.004
                 intermediate_reward += reduction_reward
         
         # Enemy Defeat Reward: 0.01 per enemy defeated (HP <= 0 or removed)
@@ -3630,6 +3720,62 @@ def predict_action(state_json):
             
         # Record this action in the trial history for future diversification
         backup_manager.record_action(action_idx)
+
+        # --- MAP ROUTE RETRY LOGIC (Selection Override) ---
+        if state_type == "map":
+            next_nodes = state.get("next_nodes", [])
+            floor = state.get("floor", 0)
+            current_pos = state.get("current_pos") or {"row": -1, "col": -1}
+            row, col = current_pos.get("row", -1), current_pos.get("col", -1)
+            
+            # 1. Trigger Backup at Map Branches (if multiple choices and not already backed up here)
+            if len(next_nodes) > 1:
+                # Check if we already have a backup for this exact floor/position in the stack
+                already_backed_up = False
+                for b in backup_manager.stack:
+                    if b.get("is_map_branch") and b.get("floor") == floor and b.get("current_row") == row and b.get("current_col") == col:
+                        already_backed_up = True
+                        break
+                
+                if not already_backed_up:
+                    log(f"[Python] Map Branch detected at floor {floor}, pos ({row}, {col}). Triggering automatic backup.")
+                    backup_info = {
+                        "is_map_branch": True,
+                        "next_nodes": next_nodes,
+                        "floor": floor,
+                        "row": row,
+                        "col": col
+                    }
+                    trigger_backup(json.dumps(backup_info))
+
+            # 2. Check Blacklist and Override Choice
+            # Note: The user requested NOT to mask the logits, but override the selection if it maps to a blacklisted route.
+            key = (floor, row, col)
+            blacklist = backup_manager.map_blacklist.get(key)
+            if blacklist and action_idx in blacklist:
+                log(f"[Python] Map Route Override: Model selected blacklisted route index {action_idx} (pos {next_nodes[action_idx] if action_idx < len(next_nodes) else '?'}). Finding alternative...")
+                
+                # Find the best non-blacklisted alternative from the logits/probs
+                # We reuse the probs generated by the model.
+                best_alt_idx = -1
+                best_alt_prob = -1.0
+                
+                for i in range(len(next_nodes)):
+                    if i not in blacklist:
+                        if float(probs[i]) > best_alt_prob:
+                            best_alt_prob = float(probs[i])
+                            best_alt_idx = i
+                
+                if best_alt_idx != -1:
+                    log(f"[Python] Map Route Override: SUCCESS. Changing action_idx from {action_idx} to {best_alt_idx} (Prob={best_alt_prob:.4f}).")
+                    action_idx = best_alt_idx
+                    # Re-calculate log_prob for the actual action taken
+                    # We keep the original record_action as is, but we need to update the recorded index if we overrode it.
+                    if backup_manager.current_trial_actions:
+                        backup_manager.current_trial_actions[-1] = action_idx
+                else:
+                    log(f"[Python] Map Route Override: FAILED. No valid alternatives found for floor {floor}, pos ({row}, {col}).")
+        # --------------------------------------------------
 
         log_prob = jnp.log(jnp.maximum(probs[action_idx], 1e-9)).item()
         
