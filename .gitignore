@@ -11,6 +11,7 @@ R-NaD/tmp_venv/
 R-NaD/build/
 R-NaD/libpython_fixer.cpython-312-x86_64-linux-gnu.so
 mlflow.db
+mlflow.db-journal
 mlruns/
 
 .aider*
