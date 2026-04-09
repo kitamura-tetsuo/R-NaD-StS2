@@ -66,19 +66,4 @@ cp "$SRC_ROOT/GDExtension/target/debug/libai_bridge.so" "$BIN_DIR/"
 # .gdextension config (Root)
 cp "$SRC_ROOT/GDExtension/ai_bridge.gdextension" "$GAME_DIR/"
 
-# --- 4. Build and Copy recorder-mod files ---
-echo "Building recorder_mod..."
-cd "$SRC_ROOT/recorder-mod"
-dotnet publish -c Release
-
-echo "Deploying recorder_mod..."
-# For Godot.NET.Sdk, it puts it in similar publish folder
-DLL_RECORDER_PATH="$SRC_ROOT/recorder-mod/.godot/mono/temp/bin/Release/publish/recorder_mod.dll"
-# If not there, check standard bin
-if [ ! -f "$DLL_RECORDER_PATH" ]; then
-    DLL_RECORDER_PATH="$SRC_ROOT/recorder-mod/bin/Release/net9.0/publish/recorder_mod.dll"
-fi
-cp "$DLL_RECORDER_PATH" "$MODS_DIR/"
-cp "$SRC_ROOT/recorder-mod/recorder_mod.json" "$MODS_DIR/"
-
 echo "Deployment complete."
