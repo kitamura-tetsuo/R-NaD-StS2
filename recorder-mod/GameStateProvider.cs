@@ -93,7 +93,7 @@ public partial class MainFile : Node
         if (localPlayer != null && localPlayer.Creature != null && localPlayer.Creature.CurrentHp <= 0)
         {
             Logger.Info("[AutoAI] Manual HP check: Player HP is 0. Reporting game_over state.");
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, victory = false }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false }, JsonOptions);
         }
 
         // 1. Game Over Check (Screen or State)
@@ -106,7 +106,6 @@ public partial class MainFile : Node
                 type = "game_over",
                 floor = runState.TotalFloor,
                 seed = currentSeed,
-                is_gym = _gymMode,
                 victory = isVictory
             }, JsonOptions);
         }
@@ -114,7 +113,7 @@ public partial class MainFile : Node
         if (runState.IsGameOver)
         {
             Logger.Info("[AutoAI] RunState.IsGameOver is true (Death). Reporting game_over state.");
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, victory = false }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false }, JsonOptions);
         }
 
         // Prioritize Map if Screen is actually open OR if we are in a run but have no room yet (initial act start)
@@ -204,7 +203,6 @@ public partial class MainFile : Node
                 type = "rewards",
                 floor = runState.TotalFloor,
                 seed = currentSeed,
-                is_gym = _gymMode,
                 rewards = rewards,
                 has_open_potion_slots = hasOpenPotionSlots,
                 relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
@@ -263,7 +261,7 @@ public partial class MainFile : Node
                 }
             }
 
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, cards = cards, buttons = buttons, room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None" }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, seed = currentSeed, cards = cards, buttons = buttons, room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None" }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen chooseScreen)
         {
@@ -291,7 +289,6 @@ public partial class MainFile : Node
                 subtype = "choose_a_card",
                 floor = runState.TotalFloor,
                 seed = currentSeed,
-                is_gym = _gymMode,
                 cards = cards,
                 can_skip = canSkip,
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
@@ -376,7 +373,6 @@ public partial class MainFile : Node
                 subtype = gridSelection.GetType().Name,
                 floor = runState.TotalFloor,
                 seed = currentSeed,
-                is_gym = _gymMode,
                 cards = cards,
                 is_confirming = isConfirming,
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
@@ -419,7 +415,7 @@ public partial class MainFile : Node
         // 2. Room Logic
         if (currentRoom == null) {
              Logger.Info("[AutoAI] currentRoom is null. Reporting game_over (transition or end).");
-             return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, is_gym = _gymMode, victory = false, reason = "room_null" }, JsonOptions);
+             return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false, reason = "room_null" }, JsonOptions);
         }
 
         if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom combatRoom)
@@ -725,7 +721,6 @@ public partial class MainFile : Node
                 ["type"] = "combat",
                 ["floor"] = runState.TotalFloor,
                 ["seed"] = currentSeed,
-                ["is_gym"] = _gymMode,
                 ["can_proceed"] = canProceed,
                 ["actions_disabled"] = cm.PlayerActionsDisabled,
                 ["player"] = combatData.player,
@@ -1048,7 +1043,6 @@ public partial class MainFile : Node
             type = "map",
             floor = runState.TotalFloor,
             seed = runState.Rng.StringSeed,
-            is_gym = _gymMode,
             current_pos = currentPos.HasValue ? new { row = currentPos.Value.row, col = currentPos.Value.col } : null,
             next_nodes = nextNodes,
             nodes = nodes,

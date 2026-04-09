@@ -116,7 +116,7 @@ namespace recorder_mod
 
         private static void OnEventOptionChosenReflection(object __instance, int index)
         {
-            if (!MainFile.Instance.CollectionMode || Instance == null) return;
+            if (Instance == null) return;
             try {
                 var getLocalEventMethod = __instance.GetType().GetMethod("GetLocalEvent", BindingFlags.Instance | BindingFlags.Public);
                 var localEvent = getLocalEventMethod?.Invoke(__instance, null);
@@ -214,8 +214,6 @@ namespace recorder_mod
 
         public void RecordAction(GameAction? action)
         {
-            if (!MainFile.Instance.CollectionMode) return;
-            
             string actionType = action?.GetType().Name ?? "UIInteraction";
             string actionId = action?.Id.ToString() ?? "0";
             
