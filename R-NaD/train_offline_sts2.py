@@ -15,8 +15,15 @@ if R_NAD_DIR not in sys.path:
 
 # Standard imports after setting skip flag
 import rnad_bridge
+from download_human_data import download_human_data
 
 def main():
+    # Download latest human play data from Discord before starting
+    try:
+        download_human_data()
+    except Exception as e:
+        print(f"Warning: Failed to download human data: {e}")
+
     parser = argparse.ArgumentParser(description="Offline Training for R-NaD StS2")
     parser.add_argument("--checkpoint", type=str, help="Path to checkpoint .pkl to resume from")
     parser.add_argument("--epochs", type=int, default=100000, help="Number of passes through all found trajectories")

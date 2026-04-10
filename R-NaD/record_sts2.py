@@ -167,6 +167,15 @@ def wait_for_bridge_initialization(timeout=300):
         time.sleep(2)
     return False
 
+def get_step_from_path(path):
+    """Robustly extract step number from a path/filename."""
+    if not path:
+        return -1
+    basename = os.path.basename(path)
+    # Matches checkpoint_123.pkl, checkpoint_offline_123.pkl, or directory name step_123
+    match = re.search(r"(?:checkpoint_|step_)(?:offline_)?(\d+)", basename)
+    return int(match.group(1)) if match else -1
+
 def get_latest_local_checkpoint():
     search_dirs = [
         "/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints",
@@ -175,6 +184,9 @@ def get_latest_local_checkpoint():
     ]
     latest_file = None
     latest_mtime = 0
+    latest_step = -1
+    latest_run_id = None
+
     # Prioritize the main project checkpoints directory
     for base_dir in search_dirs:
         if not os.path.exists(base_dir):
@@ -185,72 +197,127 @@ def get_latest_local_checkpoint():
                 if file.endswith(".pkl") and ("checkpoint_" in file or "checkpoint_offline_" in file):
                     full_path = os.path.join(root, file)
                     try:
+                        step = get_step_from_path(full_path)
                         mtime = os.path.getmtime(full_path)
-                        if mtime > latest_mtime:
+                        # Primary: highest step, Secondary: newest mtime
+                        if step > latest_step or (step == latest_step and mtime > latest_mtime):
+                            latest_step = step
                             latest_mtime = mtime
                             latest_file = full_path
+                            
+                            # Extract run_id if available in the path
+                            match = re.search(r"checkpoints/([0-9a-f]{32})/", full_path)
+                            if match:
+                                latest_run_id = match.group(1)
+                            else:
+                                # Fallback regex for 32-char hex anywhere
+                                match_hex = re.search(r"([0-9a-f]{32})", full_path)
+                                if match_hex:
+                                    latest_run_id = match_hex.group(1)
                     except OSError:
                         continue
     
-    if latest_file:
-        run_id = None
-        # Robustly extract 32-char hex run_id from anywhere in the path
-        match = re.search(r"([0-9a-f]{32})", latest_file)
-        if match:
-            run_id = match.group(1)
-        return latest_file, run_id, latest_mtime
-    return None, None, 0
+    return latest_file, latest_run_id, latest_mtime, latest_step
 
-def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2"):
+def get_latest_mlflow_checkpoint(experiment_name="R-NaD-StS2", local_step=-1, local_run_id=None):
     mlflow.set_tracking_uri("sqlite:////home/ubuntu/src/R-NaD-StS2/mlflow.db")
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if not experiment:
-        return None, None, 0
-    latest_step_global = -1
-    latest_pkl_path = None
-    latest_run_id = None
-    latest_mtime = 0
+        return None, None, 0, -1
+    
+    best_candidate = {
+        "step": -1,
+        "run_id": None,
+        "art_path": None
+    }
+    
     try:
         runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id], order_by=["attributes.start_time DESC"], max_results=5)
         if runs.empty:
-            return None, None, 0
+            return None, None, 0, -1
+            
+        client = mlflow.tracking.MlflowClient()
         for _, run in runs.iterrows():
             run_id = run.run_id
-            client = mlflow.tracking.MlflowClient()
-            artifacts = client.list_artifacts(run_id, "checkpoints")
-            if artifacts:
+            try:
+                artifacts = client.list_artifacts(run_id, "checkpoints")
+                if not artifacts:
+                    continue
+                
                 for art in artifacts:
-                    match = re.search(r"step_(\d+)", art.path)
-                    if match:
-                        step = int(match.group(1))
-                        local_path = client.download_artifacts(run_id, art.path)
-                        pkl_files = glob.glob(os.path.join(local_path, "*.pkl"))
-                        if pkl_files:
-                            mtime = os.path.getmtime(pkl_files[0])
-                            if step > latest_step_global:
-                                latest_step_global = step
-                                latest_pkl_path = pkl_files[0]
-                                latest_run_id = run_id
-                                latest_mtime = mtime
-                if latest_pkl_path:
+                    step = get_step_from_path(art.path)
+                    if step > best_candidate["step"]:
+                        best_candidate["step"] = step
+                        best_candidate["run_id"] = run_id
+                        best_candidate["art_path"] = art.path
+                
+                # If we found checkpoints in the most recent run, we can stop searching older runs
+                if best_candidate["run_id"]:
                     break
-        return latest_pkl_path, latest_run_id, latest_mtime
-    except Exception:
-        return None, None, 0
+            except Exception:
+                continue
+        
+        # --- OPTIMIZATION: ONLY DOWNLOAD IF BETTER THAN LOCAL ---
+        if best_candidate["run_id"] and best_candidate["art_path"]:
+            if best_candidate["step"] <= local_step:
+                # Already have this step or better locally
+                return None, None, 0, -1
 
-def select_best_checkpoint():
-    local_ckpt, local_run_id, local_mtime = get_latest_local_checkpoint()
-    mlflow_ckpt, mlflow_run_id, mlflow_mtime = get_latest_mlflow_checkpoint()
+            # Download to a persistent local directory: checkpoints/<run_id>/
+            dst_dir = os.path.join(os.path.dirname(__file__), "checkpoints", best_candidate["run_id"])
+            if not os.path.exists(dst_dir):
+                os.makedirs(dst_dir, exist_ok=True)
+            
+            logging.info(f"Downloading newer MLflow checkpoint: Step {best_candidate['step']} (Run: {best_candidate['run_id']})")
+            local_path = client.download_artifacts(best_candidate["run_id"], best_candidate["art_path"], dst_path=dst_dir)
+            
+            # The download might be a directory 'step_N' containing pkl files
+            pkl_files = glob.glob(os.path.join(local_path, "*.pkl"))
+            if pkl_files:
+                # Sort by mtime just in case there are multiple, but usually there's one
+                pkl_files.sort(key=os.path.getmtime, reverse=True)
+                mtime = os.path.getmtime(pkl_files[0])
+                return pkl_files[0], best_candidate["run_id"], mtime, best_candidate["step"]
+                
+        return None, None, 0, -1
+    except Exception as e:
+        logging.debug(f"MLflow checkpoint retrieval failed: {e}")
+        return None, None, 0, -1
+
+
+_last_checkpoint_check_time = 0
+_cached_best_checkpoint = (None, None)
+
+def select_best_checkpoint(force_check=False):
+    global _last_checkpoint_check_time, _cached_best_checkpoint
+    now = time.time()
+    # Limit checkpoint checks to once every 30 seconds to avoid spamming MLflow/SQLite
+    if not force_check and now - _last_checkpoint_check_time < 30:
+        return _cached_best_checkpoint
+
+    local_ckpt, local_run_id, local_mtime, local_step = get_latest_local_checkpoint()
+    mlflow_ckpt, mlflow_run_id, mlflow_mtime, mlflow_step = get_latest_mlflow_checkpoint(local_step=local_step, local_run_id=local_run_id)
+    
+    result = (None, None)
     if local_ckpt and mlflow_ckpt:
-        if local_mtime >= mlflow_mtime:
-            return local_ckpt, local_run_id
+        # Prefer higher step count. If same, prefer newest mtime.
+        if local_step > mlflow_step:
+            result = (local_ckpt, local_run_id)
+        elif mlflow_step > local_step:
+            result = (mlflow_ckpt, mlflow_run_id)
         else:
-            return mlflow_ckpt, mlflow_run_id
+            if local_mtime >= mlflow_mtime:
+                result = (local_ckpt, local_run_id)
+            else:
+                result = (mlflow_ckpt, mlflow_run_id)
     elif local_ckpt:
-        return local_ckpt, local_run_id
+        result = (local_ckpt, local_run_id)
     elif mlflow_ckpt:
-        return mlflow_ckpt, mlflow_run_id
-    return None, None
+        result = (mlflow_ckpt, mlflow_run_id)
+    
+    _last_checkpoint_check_time = now
+    _cached_best_checkpoint = result
+    return result
 
 def take_screenshot(reason: str):
     try:
@@ -369,6 +436,8 @@ def main():
         last_activity_time = time.time()
         last_cleanup_time = 0
         last_new_game_time = time.time()
+        last_step_count = -1
+        last_step_change_time = time.time()
         
         while True:
             if time.time() - last_cleanup_time > 3600:
@@ -386,11 +455,32 @@ def main():
                 if resp.status_code == 200:
                     status_data = resp.json()
                     last_activity_time = status_data.get("last_activity_time", time.time())
+                    
+                    is_main_menu = status_data.get("can_continue") is False
+                    is_restoring = status_data.get("is_restoring") is True
+                    current_step_count = status_data.get("step_count", 0)
+
+                    if current_step_count != last_step_count:
+                        last_step_count = current_step_count
+                        last_step_change_time = time.time()
+
+                    # Existing 3-minute activity watchdog
                     if time.time() - last_activity_time > 180:
                         take_screenshot("record_stall_detected")
                         process, checkpoint = perform_restart(process, checkpoint, args)
+                        last_step_change_time = time.time() # Reset step timer on restart
                         continue
-                    logging.info(f"Recording... Traj: {status_data.get('traj_size', 0)}, Steps collected: {status_data.get('step_count', 0)}")
+                    
+                    # New 1-minute step-growth watchdog
+                    if time.time() - last_step_change_time > 60:
+                        if not is_main_menu and not is_restoring:
+                            logging.warning(f"Step count has not increased for 60 seconds (current: {current_step_count}). Assuming freeze.")
+                            take_screenshot("record_step_stall_detected")
+                            process, checkpoint = perform_restart(process, checkpoint, args)
+                            last_step_change_time = time.time() # Reset step timer on restart
+                            continue
+
+                    logging.info(f"Recording... Traj: {status_data.get('traj_size', 0)}, Steps collected: {current_step_count}")
 
                     # Continuous recording & Retry handling
                     is_main_menu = status_data.get("can_continue") is False
@@ -404,6 +494,7 @@ def main():
                             logging.info(f"New checkpoint detected during {reason}: {latest_ckpt}. Restarting game to load latest model...")
                             process, checkpoint = perform_restart(process, checkpoint, args)
                             last_new_game_time = time.time()
+                            last_step_change_time = time.time() # Reset step timer
                             continue
                         
                         if is_main_menu:

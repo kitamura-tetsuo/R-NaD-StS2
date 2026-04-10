@@ -1678,7 +1678,10 @@ def get_monster_idx(monster_id):
         monster_id = monster_id.get("id") or monster_id.get("name")
     if not monster_id:
         assert False, "monster_id is missing or empty after dict extraction"
-    mid = str(monster_id).upper().replace(" ", "_")
+    mid = str(monster_id).upper().replace(" ", "_").replace("-", "_")
+    # Remove punctuation for matching with vocab
+    for char in "!?.(),'":
+        mid = mid.replace(char, "")
     
     if mid in MONSTER_VOCAB:
         return MONSTER_VOCAB[mid]
@@ -1699,7 +1702,10 @@ def get_boss_idx(boss_id):
         boss_id = boss_id.get("id") or boss_id.get("name")
     if not boss_id:
         assert False, "boss_id is missing or empty after dict extraction"
-    bid = str(boss_id).upper().replace(" ", "_")
+    bid = str(boss_id).upper().replace(" ", "_").replace("-", "_")
+    # Remove punctuation for matching with vocab
+    for char in "!?.(),'":
+        bid = bid.replace(char, "")
     assert bid in BOSS_VOCAB, f"Unknown boss_id: {boss_id} (mapped to {bid})"
     return BOSS_VOCAB[bid]
 
@@ -1714,7 +1720,7 @@ def get_card_idx(card_id):
     # Clean up (e.g., remove name suffixes if any) and normalize spaces to underscores
     cid = str(card_id).split('+')[0].strip().upper().replace(" ", "_").replace("-", "_")
     # Remove punctuation for matching with vocab
-    for char in "!?.(),":
+    for char in "!?.(),'":
         cid = cid.replace(char, "")
     
     if cid in CARD_VOCAB:
@@ -1749,7 +1755,10 @@ def get_relic_idx(relic_id):
     if not relic_id:
         log("WARNING: relic_id is missing after dict extraction. Defaulting to 0.")
         return 0
-    rid = str(relic_id).upper().replace(" ", "_")
+    rid = str(relic_id).upper().replace(" ", "_").replace("-", "_")
+    # Remove punctuation for matching with vocab
+    for char in "!?.(),'":
+        rid = rid.replace(char, "")
     if rid not in RELIC_VOCAB:
         log(f"WARNING: Unknown relic_id: {relic_id} (mapped to {rid}). Defaulting to 0.")
         return 0
@@ -1764,7 +1773,10 @@ def get_power_idx(power_id):
     if not power_id:
         log("WARNING: power_id is missing after dict extraction. Defaulting to 0.")
         return 0
-    pid = str(power_id).upper().replace(" ", "_")
+    pid = str(power_id).upper().replace(" ", "_").replace("-", "_")
+    # Remove punctuation for matching with vocab
+    for char in "!?.(),'":
+        pid = pid.replace(char, "")
     if pid not in POWER_VOCAB:
         log(f"WARNING: Unknown power_id: {power_id} (mapped to {pid}). Defaulting to 0.")
         return 0
