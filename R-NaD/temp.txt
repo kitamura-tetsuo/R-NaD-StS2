@@ -1,9 +1,0 @@
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-Invoke-WebRequest -Uri "https://github.com/kitamura-tetsuo/R-NaD-StS2/releases/download/recorder_mod_v0.0.1/recorder_mod.dll" -OutFile "C:\recorder_mod.dll"
-Invoke-WebRequest -Uri "https://github.com/kitamura-tetsuo/R-NaD-StS2/releases/download/recorder_mod_v0.0.1/recorder_mod.json" -OutFile "C:\recorder_mod.json"
-
-(New-Object System.Net.WebClient).DownloadFile("https://curl.se/windows/latest.cgi?p=win64-mingw.zip", "C:\curl.zip")
-Expand-Archive -Path "C:\curl.zip" -DestinationPath "C:\curl"
-C:\curl\curl-*\bin\curl.exe --version
-C:\curl\curl-*\bin\curl.exe -L -o "C:\保存したいファイル名.exe" "ダウンロードしたいURL"

@@ -18,11 +18,7 @@ import rnad_bridge
 from download_human_data import download_human_data
 
 def main():
-    # Download latest human play data from Discord before starting
-    try:
-        download_human_data()
-    except Exception as e:
-        print(f"Warning: Failed to download human data: {e}")
+    # parser = argparse.ArgumentParser... (unchanged)
 
     parser = argparse.ArgumentParser(description="Offline Training for R-NaD StS2")
     parser.add_argument("--checkpoint", type=str, help="Path to checkpoint .pkl to resume from")
@@ -62,6 +58,12 @@ def main():
         # and runs the update loop.
         for epoch in range(args.epochs):
             print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
+            
+            # Download latest human play data from Discord before each epoch
+            try:
+                download_human_data()
+            except Exception as e:
+                print(f"Warning: Failed to download human data: {e}")
             
             # Save checkpoint every N epochs or on the last epoch
             should_save = ((epoch + 1) % args.save_interval == 0) or (epoch == args.epochs - 1)
