@@ -25,6 +25,8 @@ namespace recorder_mod
         private ActionExecutor? _lastExecutor;
         public bool IsInitialized { get; private set; } = false;
         private bool _hasUploaded = false;
+        private string? _lastCombatKey;
+        private long _lastCombatStartOffset = -1;
         private static readonly System.Net.Http.HttpClient _httpClient = new System.Net.Http.HttpClient();
         private const string DefaultWebhookUrl = "https://discord.com/api/webhooks/1491584705391231156/Q4_k5o5E9NS4Vq2kY3fNZ5JtwSeHESFCc0nTEb7aEp8DO_uMVHcunX3MUKg_l803tF6d";
 
@@ -194,7 +196,16 @@ namespace recorder_mod
             string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
             string dir = Path.Combine(OS.GetUserDataDir(), "logs");
             if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-            _logFilePath = Path.Combine(dir, $"human_play_{timestamp}.jsonl");
+            
+            // Try to get seed for better filename consistency
+            string seed = "default";
+            try {
+                var rmInstance = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
+                var runState = rmInstance?.DebugOnlyGetState();
+                if (runState != null) seed = runState.Rng.StringSeed;
+            } catch {}
+
+            _logFilePath = Path.Combine(dir, $"human_play_{seed}.jsonl");
             MainFile.Logger.Info($"[RecorderMod] New run started. Logging to {_logFilePath}");
             
             // Re-subscribe to executor as it might change
@@ -239,6 +250,35 @@ namespace recorder_mod
                     ["state"] = JsonDocument.Parse(stateJson).RootElement
                 };
 
+                // Truncation Logic
+                try {
+                    var root = (JsonElement)logEntry["state"];
+                    if (root.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "combat") {
+                        int floor = root.GetProperty("floor").GetInt32();
+                        string encounterId = root.GetProperty("encounter_id").GetString() ?? "unknown";
+                        int turn = root.GetProperty("turn").GetInt32();
+                        string currentCombatKey = $"{floor}_{encounterId}";
+
+                        string path = GetLogPath();
+                        if (_lastCombatKey != currentCombatKey) {
+                            _lastCombatKey = currentCombatKey;
+                            _lastCombatStartOffset = File.Exists(path) ? new FileInfo(path).Length : 0;
+                            MainFile.Logger.Info($"[RecorderData] New combat detected: {currentCombatKey}. Offset: {_lastCombatStartOffset}");
+                        } else if (turn == 1) {
+                            long currentOffset = File.Exists(path) ? new FileInfo(path).Length : 0;
+                            // If we have already recorded significant data for this turn 1, but we are back at turn 1, truncate.
+                            // However, we usually record the turn 1 start state FIRST. 
+                            // So if currentOffset is already much larger than _lastCombatStartOffset, it means we have recorded moves.
+                            if (_lastCombatStartOffset >= 0 && currentOffset > _lastCombatStartOffset + 100) {
+                                MainFile.Logger.Info($"[RecorderData] Combat reset detected for {currentCombatKey}. Truncating to {_lastCombatStartOffset}");
+                                TruncateLogFile(_lastCombatStartOffset);
+                            }
+                        }
+                    }
+                } catch (Exception ex) {
+                    MainFile.Logger.Error($"[RecorderData] Truncation Logic Error: {ex.Message}");
+                }
+
                 if (action is PlayCardAction pca) {
                      logEntry["card_id"] = pca.CardModelId.Entry;
                      logEntry["target_id"] = pca.TargetId;
@@ -261,8 +301,30 @@ namespace recorder_mod
             
             string dir = Path.Combine(OS.GetUserDataDir(), "logs");
             if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-            _logFilePath = Path.Combine(dir, "human_play_default.jsonl");
+
+            string seed = "default";
+            try {
+                var rmInstance = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
+                var runState = rmInstance?.DebugOnlyGetState();
+                if (runState != null) seed = runState.Rng.StringSeed;
+            } catch {}
+
+            _logFilePath = Path.Combine(dir, $"human_play_{seed}.jsonl");
             return _logFilePath;
+        }
+
+        private void TruncateLogFile(long offset)
+        {
+            try {
+                string path = GetLogPath();
+                if (!File.Exists(path)) return;
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Write)) {
+                    fs.SetLength(offset);
+                }
+                MainFile.Logger.Info($"[RecorderData] Successfully truncated log to {offset} bytes.");
+            } catch (Exception e) {
+                MainFile.Logger.Error($"[RecorderData] TruncateLogFile Error: {e.Message}");
+            }
         }
         
         public void Update()

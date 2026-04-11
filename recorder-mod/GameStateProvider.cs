@@ -14,6 +14,7 @@ public partial class MainFile : Node
     private static int _lastMapFloor = -1;
     private static string _lastMapBoss = "";
     private static (int row, int col)? _lastMapPos = null;
+    private static string _gameVersion = "unknown";
 
     // Combat Prediction Verification
     private static int _lastPredictedDamage = 0;
@@ -79,7 +80,13 @@ public partial class MainFile : Node
         if (runState == null) {
             // If runState is null, it means we are likely in the main menu or transitioning.
             // For the AI bridge, reporting this as game_over allows for a clean reset of trajectories.
-            return "{\"type\":\"game_over\", \"floor\": 0, \"victory\": false, \"reason\": \"main_menu\"}";
+            return System.Text.Json.JsonSerializer.Serialize(new { 
+                type = "game_over", 
+                floor = 0, 
+                victory = false, 
+                reason = "main_menu",
+                app_version = GetGameVersion()
+            }, JsonOptions);
         }
 
         string currentSeed = runState.Rng.StringSeed;
@@ -93,7 +100,7 @@ public partial class MainFile : Node
         if (localPlayer != null && localPlayer.Creature != null && localPlayer.Creature.CurrentHp <= 0)
         {
             Logger.Info("[AutoAI] Manual HP check: Player HP is 0. Reporting game_over state.");
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false, app_version = GetGameVersion() }, JsonOptions);
         }
 
         // 1. Game Over Check (Screen or State)
@@ -106,14 +113,15 @@ public partial class MainFile : Node
                 type = "game_over",
                 floor = runState.TotalFloor,
                 seed = currentSeed,
-                victory = isVictory
+                victory = isVictory,
+                app_version = GetGameVersion()
             }, JsonOptions);
         }
 
         if (runState.IsGameOver)
         {
             Logger.Info("[AutoAI] RunState.IsGameOver is true (Death). Reporting game_over state.");
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false, app_version = GetGameVersion() }, JsonOptions);
         }
 
         // Prioritize Map if Screen is actually open OR if we are in a run but have no room yet (initial act start)
@@ -207,7 +215,8 @@ public partial class MainFile : Node
                 has_open_potion_slots = hasOpenPotionSlots,
                 relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
-                can_proceed = proceedBtnEnabled || MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState)
+                can_proceed = proceedBtnEnabled || MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState),
+                app_version = GetGameVersion()
             }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardRewardSelectionScreen cardRewardScreen)
@@ -261,7 +270,7 @@ public partial class MainFile : Node
                 }
             }
 
-            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, seed = currentSeed, cards = cards, buttons = buttons, room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None" }, JsonOptions);
+            return System.Text.Json.JsonSerializer.Serialize(new { type = "card_reward", floor = runState.TotalFloor, seed = currentSeed, cards = cards, buttons = buttons, room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None", app_version = GetGameVersion() }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen chooseScreen)
         {
@@ -291,7 +300,8 @@ public partial class MainFile : Node
                 seed = currentSeed,
                 cards = cards,
                 can_skip = canSkip,
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                app_version = GetGameVersion()
             }, JsonOptions);
         }
         else if (topOverlay is MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NCardGridSelectionScreen gridSelection)
@@ -375,7 +385,8 @@ public partial class MainFile : Node
                 seed = currentSeed,
                 cards = cards,
                 is_confirming = isConfirming,
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                app_version = GetGameVersion()
             }, JsonOptions);
         }
 
@@ -407,7 +418,8 @@ public partial class MainFile : Node
                 {
                     type = "treasure_relics",
                     floor = runState.TotalFloor,
-                    relics = relics
+                    relics = relics,
+                    app_version = GetGameVersion()
                 }, JsonOptions);
             }
         }
@@ -415,7 +427,7 @@ public partial class MainFile : Node
         // 2. Room Logic
         if (currentRoom == null) {
              Logger.Info("[AutoAI] currentRoom is null. Reporting game_over (transition or end).");
-             return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false, reason = "room_null" }, JsonOptions);
+             return System.Text.Json.JsonSerializer.Serialize(new { type = "game_over", floor = runState.TotalFloor, seed = currentSeed, victory = false, reason = "room_null", app_version = GetGameVersion() }, JsonOptions);
         }
 
         if (currentRoom is MegaCrit.Sts2.Core.Rooms.CombatRoom combatRoom)
@@ -463,7 +475,8 @@ public partial class MainFile : Node
                         floor = runState.TotalFloor,
                         cards = cards,
                         is_confirming = isConfirming,
-                        mode = handNode.CurrentMode.ToString()
+                        mode = handNode.CurrentMode.ToString(),
+                        app_version = GetGameVersion()
                     }, JsonOptions);
                 }
             }
@@ -734,7 +747,10 @@ public partial class MainFile : Node
                 ["predicted_end_block"] = predictedEndBlock,
                 ["surplus_block"] = predictedEndBlock >= predictedTotalDamage,
                 ["room_type"] = runState.CurrentRoom?.RoomType.ToString() ?? "None",
-                ["retains_block"] = player != null && player.Creature.Powers.Any(p => p.Id.Entry == "Barricade" || p.Id.Entry == "Blur")
+                ["retains_block"] = player != null && player.Creature.Powers.Any(p => p.Id.Entry == "Barricade" || p.Id.Entry == "Blur"),
+                ["turn"] = GetPropValue<int>(cm, "TurnCount", 0),
+                ["encounter_id"] = GetEncounterId(combatRoom),
+                ["app_version"] = GetGameVersion()
             };
 
             var result = System.Text.Json.JsonSerializer.Serialize(resultDict, JsonOptions);
@@ -755,7 +771,7 @@ public partial class MainFile : Node
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.EventRoom er)
         {
             var ev = er.LocalMutableEvent;
-            if (ev == null) return "{\"type\":\"event_none\"}";
+            if (ev == null) return System.Text.Json.JsonSerializer.Serialize(new { type = "event_none", app_version = GetGameVersion() }, JsonOptions);
 
             var options = new List<object>();
             var modelOptions = ev.CurrentOptions;
@@ -800,7 +816,8 @@ public partial class MainFile : Node
                 title = ev.Title.GetRawText(),
                 options = options,
                 can_proceed = canProceed,
-                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None"
+                room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
+                app_version = GetGameVersion()
             }, JsonOptions);
         }
         else if (currentRoom is MegaCrit.Sts2.Core.Rooms.RestSiteRoom rsr)
@@ -1047,7 +1064,8 @@ public partial class MainFile : Node
             next_nodes = nextNodes,
             nodes = nodes,
             edges = edges,
-            boss = currentBoss
+            boss = currentBoss,
+            app_version = GetGameVersion()
         }, JsonOptions);
         
         _lastMapFloor = runState.TotalFloor;
@@ -1071,5 +1089,39 @@ public partial class MainFile : Node
             } catch {}
         }
         return defaultValue;
+    }
+
+    private string GetEncounterId(object combatRoom)
+    {
+        if (combatRoom == null) return "unknown";
+        var idObj = GetPropValue<object>(combatRoom, "EncounterId", null);
+        if (idObj != null)
+        {
+            var entryProp = idObj.GetType().GetProperty("Entry", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            return entryProp?.GetValue(idObj) as string ?? "unknown";
+        }
+        return "unknown";
+    }
+
+    private string GetGameVersion()
+    {
+        if (_gameVersion != "unknown") return _gameVersion;
+        try {
+            foreach (var assembly in System.AppDomain.CurrentDomain.GetAssemblies()) {
+                if (assembly.FullName.Contains("sts2")) {
+                    var type = assembly.GetType("MegaCrit.Sts2.Core.Models.GameVersion") 
+                            ?? assembly.GetType("MegaCrit.Sts2.Core.Context.Version");
+                    if (type != null) {
+                         var prop = type.GetProperty("String", BindingFlags.Public | BindingFlags.Static)
+                                 ?? type.GetProperty("Current", BindingFlags.Public | BindingFlags.Static);
+                         if (prop != null) {
+                             _gameVersion = prop.GetValue(null)?.ToString() ?? "unknown";
+                             return _gameVersion;
+                         }
+                    }
+                }
+            }
+        } catch {}
+        return _gameVersion;
     }
 }
