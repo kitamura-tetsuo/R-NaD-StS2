@@ -2,12 +2,6 @@
 
 set -e
 
-# --- 0. Cleanup existing processes ---
-echo "=== Cleaning up existing processes ==="
-pkill -9 SlayTheSpire2 || true
-pkill -9 python3 || true
-sleep 1
-
 # --- Configuration ---
 GAME_DIR="/home/ubuntu/.steam/steam/steamapps/common/Slay the Spire 2"
 MODS_DIR="$GAME_DIR/mods"

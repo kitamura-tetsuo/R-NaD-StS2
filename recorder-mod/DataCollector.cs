@@ -199,8 +199,8 @@ namespace recorder_mod
             
             // Try to get seed for better filename consistency
             string seed = "default";
+            var rmInstance = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
             try {
-                var rmInstance = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
                 var runState = rmInstance?.DebugOnlyGetState();
                 if (runState != null) seed = runState.Rng.StringSeed;
             } catch {}
@@ -209,7 +209,6 @@ namespace recorder_mod
             MainFile.Logger.Info($"[RecorderMod] New run started. Logging to {_logFilePath}");
             
             // Re-subscribe to executor as it might change
-            var rmInstance = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
             if (rmInstance != null) SubscribeToExecutorReflection(rmInstance);
 
             _hasUploaded = false;
@@ -318,7 +317,7 @@ namespace recorder_mod
             try {
                 string path = GetLogPath();
                 if (!File.Exists(path)) return;
-                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Write)) {
+                using (var fs = new FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Write)) {
                     fs.SetLength(offset);
                 }
                 MainFile.Logger.Info($"[RecorderData] Successfully truncated log to {offset} bytes.");
