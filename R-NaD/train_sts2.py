@@ -75,6 +75,10 @@ def launch_game(checkpoint=None, seed=None, no_speedup=False, route=False, headl
         env["RNAD_MULTIPLE_MOVE"] = "true"
         logging.info("Setting RNAD_MULTIPLE_MOVE environment variable to: true")
 
+    # Disable recorder-mod when launched from training script
+    env["STS2_DISABLE_RECORDER_MOD"] = "true"
+    logging.info("Setting STS2_DISABLE_RECORDER_MOD=true")
+
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)

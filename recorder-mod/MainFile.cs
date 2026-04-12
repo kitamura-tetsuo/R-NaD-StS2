@@ -84,6 +84,16 @@ namespace recorder_mod
         private void DoInitialize()
         {
             Logger.Info("[Recorder] MainFile.Initialize called");
+
+            // Check if we should disable the recorder (e.g. when launched from AI training scripts)
+            string? disableEnv = System.Environment.GetEnvironmentVariable("STS2_DISABLE_RECORDER_MOD");
+            if (disableEnv == "true")
+            {
+                Logger.Info("[Recorder] STS2_DISABLE_RECORDER_MOD=true detected. Recorder-mod is DISABLED.");
+                CollectionMode = false;
+                return;
+            }
+
             CollectionMode = true;
             _dataCollector = new DataCollector();
             Logger.Info("[Recorder] Initialized in passive mode.");
