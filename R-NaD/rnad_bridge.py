@@ -3250,13 +3250,23 @@ def get_action_mask(state, masked_reward_indices=None):
     elif state_type == "rewards":
         rewards = state.get("rewards", [])
         has_open_potion_slots = state.get("has_open_potion_slots", True)
+        potion_reward_handled = False
         for i in range(min(len(rewards), 10)):
             if masked_reward_indices and i in masked_reward_indices:
                 continue
             
-            # Mask potion acquisition if slots are full
             reward = rewards[i]
-            if reward.get("type") == "Potion" and not has_open_potion_slots:
+            # Mask potion acquisition if slots are full
+            if "Potion" in reward.get("type", "") and not has_open_potion_slots:
+                if not potion_reward_handled:
+                    # Enable discard indices for occupied slots
+                    potions = state.get("potions", [])
+                    for j in range(min(len(potions), 5)):
+                        if potions[j].get("id") != "empty":
+                            mask[94 + j] = True
+                    # Enable skip index 99
+                    mask[99] = True
+                    potion_reward_handled = True
                 continue
 
             mask[76 + i] = True
@@ -3346,8 +3356,10 @@ def get_action_mask(state, masked_reward_indices=None):
         if potions[i].get("id") != "empty":
             mask[94 + i] = True
 
-    # Action 99 (Wait) is disabled since waiting is handled in C#
-    mask[99] = False
+    # Action 99 (Wait/Skip)
+    # If it was already enabled (e.g., skip potion), keep it.
+    if not mask[99]:
+        mask[99] = False # Explicitly disabled by default
     
     if not np.any(mask):
         # If no actions are possible, we MUST allow WAIT to let the game progress (e.g., during animations)
@@ -3948,8 +3960,18 @@ def predict_action(state_json):
         action = {"action": "wait"} # Default
         
         if action_idx == 99:
-            pass # already wait
-        
+            # Special case: skip potion reward if full
+            if state_type == "rewards" and not state.get("has_open_potion_slots", True):
+                rewards = state.get("rewards", [])
+                for i in range(min(len(rewards), 10)):
+                    if i in reward_tracker.skipped_reward_indices: continue
+                    reward = rewards[i]
+                    if "Potion" in reward.get("type", ""):
+                        log(f"[Python] Skip Potion Reward: adding index {i} to skipped_reward_indices")
+                        reward_tracker.skipped_reward_indices.add(i)
+                        break
+            return json.dumps({"action": "wait"})
+            
         elif action_idx == 90:
             # confirm_selection / skip / click_proceed_button
             # Used in grid_selection, hand_selection, card_reward, etc.
@@ -3959,6 +3981,23 @@ def predict_action(state_json):
             action = {"action": "open_chest"}
             
         elif 94 <= action_idx <= 98:
+            # Check if this is a discard-and-take scenario in rewards screen
+            if state_type == "rewards" and not state.get("has_open_potion_slots", True):
+                rewards = state.get("rewards", [])
+                for i in range(min(len(rewards), 10)):
+                    if i in reward_tracker.skipped_reward_indices: continue
+                    reward = rewards[i]
+                    if "Potion" in reward.get("type", ""):
+                        discard_idx = action_idx - 94
+                        reward_idx = reward.get("index") # C# side index
+                        log(f"[Python] Discard-and-Take Potion Reward: slot {discard_idx}, reward {reward_idx}")
+                        reward_tracker.skipped_reward_indices.add(i)
+                        return json.dumps({
+                            "action": "discard_and_take_potion",
+                            "discard_index": discard_idx,
+                            "reward_index": reward_idx
+                        })
+            
             action = {"action": "discard_potion", "index": action_idx - 94}
         
         elif state_type == "combat":
@@ -4200,6 +4239,7 @@ class CommandHandler(BaseHTTPRequestHandler):
                 "queue_size": total_queue_size,
                 "has_deferred": deferred_chunk is not None,
                 "traj_size": len(current_trajectory),
+                "trajectory_step": raw_logger.step_id,
                 "unroll_length": config.unroll_length if config else 0,
                 "batch_size": config.batch_size if config else 0,
                 "step_count": training_worker.step_count if training_worker else 0,

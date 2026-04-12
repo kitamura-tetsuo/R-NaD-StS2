@@ -436,7 +436,7 @@ def main():
         last_activity_time = time.time()
         last_cleanup_time = 0
         last_new_game_time = time.time()
-        last_step_count = -1
+        last_traj_step = -1
         last_step_change_time = time.time()
         
         while True:
@@ -458,10 +458,11 @@ def main():
                     
                     is_main_menu = status_data.get("can_continue") is False
                     is_restoring = status_data.get("is_restoring") is True
+                    current_traj_step = status_data.get("trajectory_step", 0)
                     current_step_count = status_data.get("step_count", 0)
 
-                    if current_step_count != last_step_count:
-                        last_step_count = current_step_count
+                    if current_traj_step != last_traj_step:
+                        last_traj_step = current_traj_step
                         last_step_change_time = time.time()
 
                     # Existing 3-minute activity watchdog
@@ -471,16 +472,16 @@ def main():
                         last_step_change_time = time.time() # Reset step timer on restart
                         continue
                     
-                    # New 1-minute step-growth watchdog
+                    # New 1-minute trajectory-step-growth watchdog
                     if time.time() - last_step_change_time > 60:
                         if not is_main_menu and not is_restoring:
-                            logging.warning(f"Step count has not increased for 60 seconds (current: {current_step_count}). Assuming freeze.")
+                            logging.warning(f"Trajectory step has not increased for 60 seconds (current: {current_traj_step}). Assuming freeze.")
                             take_screenshot("record_step_stall_detected")
                             process, checkpoint = perform_restart(process, checkpoint, args)
                             last_step_change_time = time.time() # Reset step timer on restart
                             continue
 
-                    logging.info(f"Recording... Traj: {status_data.get('traj_size', 0)}, Steps collected: {current_step_count}")
+                    logging.info(f"Recording... Traj: {status_data.get('traj_size', 0)}, Traj Step: {current_traj_step}, Training Step: {current_step_count}")
 
                     # Continuous recording & Retry handling
                     is_main_menu = status_data.get("can_continue") is False

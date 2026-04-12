@@ -229,6 +229,14 @@ public partial class MainFile : Node
                 player = GetPlayerSummary(player),
                 rewards = rewards,
                 has_open_potion_slots = hasOpenPotionSlots,
+                potions = player?.PotionSlots.Select((p, i) => new
+                {
+                    index = i,
+                    id = p?.Id.Entry ?? "empty",
+                    name = p?.Title.GetRawText() ?? "Empty Slot",
+                    canUse = p != null && p.PassesCustomUsabilityCheck && (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.AnyTime || (p.Usage == MegaCrit.Sts2.Core.Entities.Potions.PotionUsage.CombatOnly && MegaCrit.Sts2.Core.Combat.CombatManager.Instance.IsInProgress)),
+                    targetType = p?.TargetType.ToString() ?? "None"
+                }).ToList(),
                 relics = player?.Relics.Select(r => r.Id.Entry).ToList() ?? new List<string>(),
                 room_type = runState.CurrentRoom?.RoomType.ToString() ?? "None",
                 can_proceed = proceedBtnEnabled || MegaCrit.Sts2.Core.Hooks.Hook.ShouldProceedToNextMapPoint(runState),
@@ -581,9 +589,29 @@ public partial class MainFile : Node
 
             var combatNode = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
             
+            // Collect any event options present in the combat room
+            var eventOptions = new List<object>();
+            if (combatNode != null)
+            {
+                var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(combatNode)
+                    .Where(b => b.IsVisibleInTree() && b.IsEnabled)
+                    .OrderBy(b => b.GlobalPosition.Y)
+                    .ToList();
+                
+                for (int i = 0; i < buttons.Count; i++)
+                {
+                    var opt = buttons[i].Option;
+                    eventOptions.Add(new {
+                        index = i,
+                        title = opt?.Title.GetRawText() ?? "Proceed",
+                        is_locked = opt?.IsLocked ?? false
+                    });
+                }
+            }
+
             // Check for proceed button or dialogue hitboxes that block combat
-            bool canProceed = combatNode?.ProceedButton?.IsEnabled ?? false;
-            if (!canProceed && combatNode != null)
+            bool canProceed = (combatNode?.ProceedButton?.IsEnabled ?? false) && eventOptions.Count == 0;
+            if (!canProceed && combatNode != null && eventOptions.Count == 0)
             {
                 // 1. Check for Ancient Dialogue Hitbox (Local to combat room)
                 var ancientHitbox = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NAncientDialogueHitbox>(combatNode);
@@ -593,18 +621,7 @@ public partial class MainFile : Node
                     canProceed = true;
                 }
 
-                // 2. Check for Event Option Buttons (e.g. "FIGHT!" in a combat event, Local to combat room)
-                if (!canProceed)
-                {
-                    var eventOption = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(combatNode);
-                    if (eventOption != null && eventOption.IsVisibleInTree() && eventOption.IsEnabled)
-                    {
-                        Logger.Info("[AutoAI] Detected active EventOptionButton in CombatRoom. Setting can_proceed=true.");
-                        canProceed = true;
-                    }
-                }
-
-                // 3. Check for generic NDivinationButton (e.g. Wheel of Change, Local to combat room)
+                // 2. Check for generic NDivinationButton (e.g. Wheel of Change, Local to combat room)
                 if (!canProceed)
                 {
                     var divButton = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NDivinationButton>(combatNode);
@@ -801,6 +818,7 @@ public partial class MainFile : Node
                 ["hand"] = combatData.hand,
                 ["potions"] = combatData.potions,
                 ["enemies"] = combatData.enemies,
+                ["event_options"] = eventOptions,
                 ["predicted_total_damage"] = predictedTotalDamage,
                 ["predicted_end_block"] = predictedEndBlock,
                 ["surplus_block"] = predictedEndBlock >= predictedTotalDamage,

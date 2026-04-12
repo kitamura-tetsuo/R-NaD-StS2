@@ -35,6 +35,7 @@ public partial class MainFile : Node
             case "proceed": await HandleProceed(dict); break;
             case "open_chest": await HandleOpenChest(dict); break;
             case "discard_potion": await HandleDiscardPotion(dict); break;
+            case "discard_and_take_potion": await HandleDiscardAndTakePotion(dict); break;
             case "select_treasure_relic": await HandleSelectTreasureRelic(dict); break;
             default: Logger.Warn($"[AutoAI] Unhandled universal action: {action}"); break;
         }
@@ -128,6 +129,7 @@ public partial class MainFile : Node
             case "select_reward": await HandleSelectReward(dict); break;
             case "select_reward_card": await HandleSelectRewardCard(dict); break;
             case "click_reward_button": await HandleClickRewardButton(dict); break;
+            case "discard_and_take_potion": await HandleDiscardAndTakePotion(dict); break;
             case "proceed": await HandleProceed(dict); break;
             default: Logger.Warn($"[AutoAI] Unhandled reward action: {action}"); break;
         }
@@ -297,35 +299,41 @@ public partial class MainFile : Node
     public async Task HandleSelectEventOption(Godot.Collections.Dictionary dict)
     {
         int index = (int)dict["index"].AsInt64();
-        var eventRoom = MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance;
+        var nEventRoom = MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Instance;
+        Node? eventNode = nEventRoom as Node ?? MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
+
         var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
         var runState = rm.DebugOnlyGetState();
         
-        if (eventRoom != null)
+        if (eventNode != null)
         {
-            var er = runState?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.EventRoom;
-            var ev = er?.LocalMutableEvent;
-
-            if (ev != null)
+            if (nEventRoom != null)
             {
-                if (ev.IsFinished)
-                {
-                    Logger.Info("[AutoAI] Event is finished, triggering proceed via NEventRoom.");
-                    await MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Proceed();
-                    return;
-                }
+                var er = runState?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.EventRoom;
+                var ev = er?.LocalMutableEvent;
 
-                var options = ev.CurrentOptions;
-                if (index >= 0 && index < options.Count)
+                if (ev != null)
                 {
-                    var option = options[index];
-                    Logger.Info($"[AutoAI] Selecting event option [{index}]: {option.Title.GetFormattedText()}");
-                    eventRoom.OptionButtonClicked(option, index);
-                    return;
+                    if (ev.IsFinished)
+                    {
+                        Logger.Info("[AutoAI] Event is finished, triggering proceed via NEventRoom.");
+                        await MegaCrit.Sts2.Core.Nodes.Rooms.NEventRoom.Proceed();
+                        return;
+                    }
+
+                    var options = ev.CurrentOptions;
+                    if (index >= 0 && index < options.Count)
+                    {
+                        var option = options[index];
+                        Logger.Info($"[AutoAI] Selecting event option [{index}]: {option.Title.GetFormattedText()}");
+                        nEventRoom.OptionButtonClicked(option, index);
+                        return;
+                    }
                 }
             }
 
-            var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(eventRoom)
+            var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(eventNode)
+                .Where(b => b.IsVisibleInTree() && b.IsEnabled)
                 .OrderBy(b => b.GlobalPosition.Y)
                 .ToList();
 
@@ -333,8 +341,8 @@ public partial class MainFile : Node
             {
                 var btn = buttons[index];
                 Logger.Info($"[AutoAI] Selecting event option via UI button index {index} (Button: {btn.Name})");
-                if (btn.Option != null) {
-                    eventRoom.OptionButtonClicked(btn.Option, index);
+                if (btn.Option != null && nEventRoom != null) {
+                    nEventRoom.OptionButtonClicked(btn.Option, index);
                 } else {
                     btn.Call("OnReleased"); 
                 }
@@ -342,7 +350,7 @@ public partial class MainFile : Node
             }
         }
         
-        Logger.Error($"[AutoAI] Could not find event option index {index} on {eventRoom?.GetType().Name ?? "null"}");
+        Logger.Error($"[AutoAI] Could not find event option index {index} on {eventNode?.GetType().Name ?? "null"}");
     }
 
     public async Task HandleSelectMapNode(Godot.Collections.Dictionary dict)
@@ -886,16 +894,7 @@ public partial class MainFile : Node
                     return;
                 }
 
-                // 2. Check for Event Option Buttons
-                var eventOption = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(GetTree().Root);
-                if (eventOption != null && eventOption.IsVisibleInTree() && eventOption.IsEnabled)
-                {
-                    Logger.Info("[AutoAI] Clicking EventOptionButton in CombatRoom.");
-                    eventOption.Call("ForceClick");
-                    return;
-                }
-
-                // 3. Check for Divination Button
+                // 2. Check for Divination Button
                 var divButton = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NDivinationButton>(GetTree().Root);
                 if (divButton != null && divButton.IsVisibleInTree() && divButton.IsEnabled)
                 {
@@ -956,6 +955,23 @@ public partial class MainFile : Node
                 }
             }
         }
+    }
+    
+    public async Task HandleDiscardAndTakePotion(Godot.Collections.Dictionary dict)
+    {
+        int discardIndex = (int)dict["discard_index"].AsInt64();
+        int rewardIndex = (int)dict["reward_index"].AsInt64();
+        
+        Logger.Info($"[AutoAI] HandleDiscardAndTakePotion: discarding slot {discardIndex}, taking reward {rewardIndex}");
+        
+        // 1. Discard
+        await HandleDiscardPotion(new Godot.Collections.Dictionary { ["index"] = discardIndex });
+        
+        // 2. Small delay to allow game state / UI to update
+        await Task.Delay(100); 
+        
+        // 3. Select reward
+        await HandleSelectReward(new Godot.Collections.Dictionary { ["index"] = rewardIndex });
     }
 
     public async Task HandleSelectTreasureRelic(Godot.Collections.Dictionary dict)

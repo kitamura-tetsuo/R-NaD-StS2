@@ -372,8 +372,13 @@ public partial class MainFile : Node
             if (!AiSlayer.IsActive && currentTime - _lastIdleStepTime > 500)
             {
                 _lastIdleStepTime = currentTime;
-                // Handle actions (like Proceed/MainMenu) even in idle state to prevent hangs
-                _ = StepAI(ExecuteUniversalAction); 
+                // Handle actions in idle state only for Main Menu (to allow auto-start/load)
+                // In-run auto-stepping is disabled to avoid interfering with manual play (e.g. Recorder)
+                var rm = MegaCrit.Sts2.Core.Runs.RunManager.Instance;
+                if (rm?.DebugOnlyGetState() == null)
+                {
+                    _ = StepAI(ExecuteUniversalAction); 
+                }
             }
         }
         

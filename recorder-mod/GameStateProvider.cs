@@ -527,9 +527,29 @@ public partial class MainFile : Node
 
             var combatNode = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;
             
+            // Collect any event options present in the combat room
+            var eventOptions = new List<object>();
+            if (combatNode != null)
+            {
+                var buttons = FindNodesByType<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(combatNode)
+                    .Where(b => b.IsVisibleInTree() && b.IsEnabled)
+                    .OrderBy(b => b.GlobalPosition.Y)
+                    .ToList();
+                
+                for (int i = 0; i < buttons.Count; i++)
+                {
+                    var opt = buttons[i].Option;
+                    eventOptions.Add(new {
+                        index = i,
+                        title = opt?.Title.GetRawText() ?? "Proceed",
+                        is_locked = opt?.IsLocked ?? false
+                    });
+                }
+            }
+
             // Check for proceed button or dialogue hitboxes that block combat
-            bool canProceed = combatNode?.ProceedButton?.IsEnabled ?? false;
-            if (!canProceed)
+            bool canProceed = (combatNode?.ProceedButton?.IsEnabled ?? false) && eventOptions.Count == 0;
+            if (!canProceed && eventOptions.Count == 0)
             {
                 // 1. Check for Ancient Dialogue Hitbox
                 var ancientHitbox = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NAncientDialogueHitbox>(GetTree().Root);
@@ -539,18 +559,7 @@ public partial class MainFile : Node
                     canProceed = true;
                 }
 
-                // 2. Check for Event Option Buttons (e.g. "FIGHT!" in a combat event)
-                if (!canProceed)
-                {
-                    var eventOption = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NEventOptionButton>(GetTree().Root);
-                    if (eventOption != null && eventOption.IsVisibleInTree() && eventOption.IsEnabled)
-                    {
-                        Logger.Info("[AutoAI] Detected active EventOptionButton in CombatRoom. Setting can_proceed=true.");
-                        canProceed = true;
-                    }
-                }
-
-                // 3. Check for generic NDivinationButton (e.g. Wheel of Change)
+                // 2. Check for generic NDivinationButton (e.g. Wheel of Change)
                 if (!canProceed)
                 {
                     var divButton = UiHelper.FindFirst<MegaCrit.Sts2.Core.Nodes.Events.NDivinationButton>(GetTree().Root);
@@ -743,6 +752,7 @@ public partial class MainFile : Node
                 ["hand"] = combatData.hand,
                 ["potions"] = combatData.potions,
                 ["enemies"] = combatData.enemies,
+                ["event_options"] = eventOptions,
                 ["predicted_total_damage"] = predictedTotalDamage,
                 ["predicted_end_block"] = predictedEndBlock,
                 ["surplus_block"] = predictedEndBlock >= predictedTotalDamage,
