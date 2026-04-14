@@ -1085,6 +1085,7 @@ class RewardTracker:
         log(f"RewardTracker: Combat initialized (Player HP: {hp}, Enemy HP: {enemy_hp}, Count: {enemy_count}, PredDamage: {predicted_damage_to_player})")
 
 # Preserve RewardTracker state across re-imports
+# Preserve RewardTracker state across re-imports
 if 'rnad_bridge' in sys.modules:
     old_mod = sys.modules['rnad_bridge']
     if hasattr(old_mod, 'reward_tracker'):
@@ -1101,10 +1102,9 @@ if 'rnad_bridge' in sys.modules:
         reward_tracker.combat_initialized = getattr(old_tracker, 'combat_initialized', False)
         reward_tracker.last_enemy_count = getattr(old_tracker, 'last_enemy_count', -1)
         log("Preserved RewardTracker state.")
+    else:
+        reward_tracker = RewardTracker()
 
-# Preserve BackupManager state across re-imports
-if 'rnad_bridge' in sys.modules:
-    old_mod = sys.modules['rnad_bridge']
     if hasattr(old_mod, 'backup_manager'):
         old_bm = old_mod.backup_manager
         backup_manager.total_retry_count = getattr(old_bm, 'total_retry_count', 0)
@@ -1112,8 +1112,6 @@ if 'rnad_bridge' in sys.modules:
         backup_manager.hp_loss_history = getattr(old_bm, 'hp_loss_history', [])
         backup_manager.map_blacklist = getattr(old_bm, 'map_blacklist', {})
         log(f"Preserved BackupManager state (total_retry_count: {backup_manager.total_retry_count}).")
-    else:
-        reward_tracker = RewardTracker()
 else:
     reward_tracker = RewardTracker()
 
