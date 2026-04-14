@@ -512,6 +512,22 @@ def main():
                                 last_new_game_time = time.time()
                             except Exception as e:
                                 logging.error(f"Failed to trigger new game: {e}")
+                    
+                    # New: Check for excessive retries in a single run
+                    total_retries = status_data.get("total_retry_count", 0)
+                    if total_retries >= 100:
+                        logging.warning(f"Retry count for this run exceeded 100 ({total_retries}). Starting a fresh game...")
+                        new_game_url = f"{BRIDGE_URL}/new_game"
+                        if args.seed:
+                            new_game_url += f"?seed={args.seed}"
+                        try:
+                            # Take a screenshot before resetting
+                            take_screenshot("record_retry_limit_reached")
+                            requests.get(new_game_url, timeout=5)
+                            last_new_game_time = time.time()
+                            last_step_change_time = time.time()
+                        except Exception as e:
+                            logging.error(f"Failed to trigger new game after retry limit: {e}")
 
             except Exception as e:
                 logging.debug(f"Status check failed: {e}")

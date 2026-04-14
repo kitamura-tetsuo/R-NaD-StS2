@@ -873,7 +873,24 @@ def main():
                         last_traj_size = -1
                         continue
 
-                    logging.info(f"Training Status: Step {step_count}/{args.max_steps}, Queue: {queue_size}/{batch_size}, Traj: {traj_size}/{unroll_length}")
+                    # New: Check for excessive retries in a single run
+                    total_retries = status_data.get("total_retry_count", 0)
+                    if total_retries >= 100:
+                        logging.warning(f"Retry count for this run exceeded 100 ({total_retries}). Starting a fresh game...")
+                        new_game_url = f"{BRIDGE_URL}/new_game"
+                        if args.seed:
+                            new_game_url += f"?seed={args.seed}"
+                        try:
+                            # Take a screenshot before resetting
+                            take_screenshot("train_retry_limit_reached")
+                            requests.get(new_game_url, timeout=5)
+                            # Reset traj progress timer as we are starting fresh
+                            last_traj_progress_time = time.time()
+                            last_traj_size = -1
+                        except Exception as e:
+                            logging.error(f"Failed to trigger new game after retry limit: {e}")
+
+                    logging.info(f"Training Status: Step {step_count}/{args.max_steps}, Queue: {queue_size}/{batch_size}, Traj: {traj_size}/{unroll_length}, Total Retries: {total_retries}")
                     
                     if step_count >= args.max_steps:
                         logging.info("Max steps reached. Training complete.")

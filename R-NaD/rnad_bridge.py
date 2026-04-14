@@ -641,16 +641,18 @@ class BackupManager:
         self.hp_loss_history = [] # Track HP loss for each trial
         self.current_trial_actions = [] # Actions taken since the last backup or restore
         self.map_blacklist = {} # (floor, current_row, current_col) -> set of target_node_indices that failed
+        self.total_retry_count = 0 # Total retries within a single game run
         if not os.path.exists(self.backup_root):
             os.makedirs(self.backup_root, exist_ok=True)
             
     def clear(self):
-        """Clear all backups in the stack."""
+        """Clear all backups in the stack and reset total retry count."""
         log(f"[BackupManager] Clearing stack of size {len(self.stack)}")
         self.stack = []
         self.hp_loss_history = []
         self.current_trial_actions = []
         self.map_blacklist = {}
+        self.total_retry_count = 0
 
     def _are_saves_identical(self, backup_dir):
         """Compare current saves with a backup directory."""
@@ -906,6 +908,7 @@ class BackupManager:
                         shutil.copytree(userdata_backup, SOURCE_B, dirs_exist_ok=True)
                     
                     latest["retry_count"] += 1
+                    self.total_retry_count += 1
                     return latest["reward"]
                 except Exception as e:
                     log(f"[BackupManager] ERROR during restore: {e}")
@@ -1098,6 +1101,17 @@ if 'rnad_bridge' in sys.modules:
         reward_tracker.combat_initialized = getattr(old_tracker, 'combat_initialized', False)
         reward_tracker.last_enemy_count = getattr(old_tracker, 'last_enemy_count', -1)
         log("Preserved RewardTracker state.")
+
+# Preserve BackupManager state across re-imports
+if 'rnad_bridge' in sys.modules:
+    old_mod = sys.modules['rnad_bridge']
+    if hasattr(old_mod, 'backup_manager'):
+        old_bm = old_mod.backup_manager
+        backup_manager.total_retry_count = getattr(old_bm, 'total_retry_count', 0)
+        backup_manager.stack = getattr(old_bm, 'stack', [])
+        backup_manager.hp_loss_history = getattr(old_bm, 'hp_loss_history', [])
+        backup_manager.map_blacklist = getattr(old_bm, 'map_blacklist', {})
+        log(f"Preserved BackupManager state (total_retry_count: {backup_manager.total_retry_count}).")
     else:
         reward_tracker = RewardTracker()
 else:
@@ -4249,6 +4263,7 @@ class CommandHandler(BaseHTTPRequestHandler):
                 "update_total": training_worker.update_total if training_worker else 0,
                 "initialized": initialized,
                 "is_restoring": is_restoring,
+                "total_retry_count": backup_manager.total_retry_count,
                 "last_activity_time": last_activity_time
             }).encode())
             
