@@ -485,6 +485,15 @@ def main():
                             last_step_change_time = time.time() # Reset step timer on restart
                             continue
 
+                    # New 100-retry-limit watchdog
+                    total_retry_count = status_data.get("total_retry_count", 0)
+                    if total_retry_count > 100:
+                        logging.warning(f"Total retry count ({total_retry_count}) exceeded 100. Starting new game...")
+                        take_screenshot("record_retry_limit_exceeded")
+                        process, checkpoint = perform_restart(process, checkpoint, args)
+                        last_step_change_time = time.time()
+                        continue
+
                     logging.info(f"Recording... Traj: {status_data.get('traj_size', 0)}, Traj Step: {current_traj_step}, Training Step: {current_step_count}")
 
                     # Continuous recording & Retry handling

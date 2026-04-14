@@ -873,6 +873,16 @@ def main():
                         last_traj_size = -1
                         continue
 
+                    # New 100-retry-limit watchdog
+                    total_retry_count = status_data.get("total_retry_count", 0)
+                    if total_retry_count > 100:
+                        logging.warning(f"Total retry count ({total_retry_count}) exceeded 100. Starting new game...")
+                        take_screenshot("train_retry_limit_exceeded")
+                        process, checkpoint = perform_restart(process, checkpoint, args)
+                        last_traj_progress_time = time.time()
+                        last_traj_size = -1
+                        continue
+
                     logging.info(f"Training Status: Step {step_count}/{args.max_steps}, Queue: {queue_size}/{batch_size}, Traj: {traj_size}/{unroll_length}")
                     
                     if step_count >= args.max_steps:
