@@ -12,8 +12,7 @@ class ExperimentManager:
             # Default to a project-local absolute path to avoid saving in game folder
             checkpoint_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 
-        self.last_checkpoint_path: str | None = None
-        self.last_checkpoint_step: int | None = None
+        self.checkpoint_history = [] # List of {'path': str, 'step': int}
         # Ensure logs go to the project root regardless of CWD
         mlflow.set_tracking_uri("sqlite:////home/ubuntu/src/R-NaD-StS2/mlflow.db")
         self.client = mlflow.tracking.MlflowClient()
@@ -133,27 +132,37 @@ class ExperimentManager:
 
     def log_checkpoint_artifact(self, step: int, ckpt_path: str):
         """Logs the .pkl checkpoint as an MLflow artifact and cleans up the previous one."""
-        # Cleanup PREVIOUS local checkpoint if it exists and is different from the current one
-        if self.last_checkpoint_path and os.path.exists(self.last_checkpoint_path) and self.last_checkpoint_path != ckpt_path:
-            try:
-                os.remove(self.last_checkpoint_path)
-                logging.info(f"Cleaned up previous local checkpoint: {self.last_checkpoint_path}")
-            except Exception as e:
-                logging.warning(f"Failed to cleanup previous local checkpoint {self.last_checkpoint_path}: {e}")
+        # Keep track of local checkpoint history
+        self.checkpoint_history.append({'path': ckpt_path, 'step': step})
 
-        # Cleanup PREVIOUS MLflow artifact if enabled
-        if self.log_checkpoints and self.last_checkpoint_step is not None:
-            try:
-                run = mlflow.get_run(self.run_id)
-                artifact_uri = run.info.artifact_uri
-                if artifact_uri.startswith("file://"):
-                    local_artifact_root = artifact_uri[7:]
-                    old_artifact_dir = os.path.join(local_artifact_root, "checkpoints", f"step_{self.last_checkpoint_step}")
-                    if os.path.exists(old_artifact_dir):
-                        shutil.rmtree(old_artifact_dir)
-                        logging.info(f"Cleaned up previous MLflow artifact directory: {old_artifact_dir}")
-            except Exception as e:
-                logging.warning(f"Failed to cleanup previous MLflow artifact for step {self.last_checkpoint_step}: {e}")
+        # Cleanup old local checkpoints if history exceeds keep_count
+        keep_count = 2
+        while len(self.checkpoint_history) > keep_count:
+            oldest = self.checkpoint_history.pop(0)
+            old_path = oldest['path']
+            old_step = oldest['step']
+
+            # 1. Cleanup local file
+            if os.path.exists(old_path) and old_path != ckpt_path:
+                try:
+                    os.remove(old_path)
+                    logging.info(f"Cleaned up old local checkpoint: {old_path}")
+                except Exception as e:
+                    logging.warning(f"Failed to cleanup old local checkpoint {old_path}: {e}")
+
+            # 2. Cleanup MLflow artifact if enabled
+            if self.log_checkpoints:
+                try:
+                    run = mlflow.get_run(self.run_id)
+                    artifact_uri = run.info.artifact_uri
+                    if artifact_uri.startswith("file://"):
+                        local_artifact_root = artifact_uri[7:]
+                        old_artifact_dir = os.path.join(local_artifact_root, "checkpoints", f"step_{old_step}")
+                        if os.path.exists(old_artifact_dir):
+                            shutil.rmtree(old_artifact_dir)
+                            logging.info(f"Cleaned up old MLflow artifact directory: {old_artifact_dir}")
+                except Exception as e:
+                    logging.warning(f"Failed to cleanup old MLflow artifact for step {old_step}: {e}")
 
         if self.log_checkpoints and os.path.exists(ckpt_path):
             # Log the directory as an artifact in a 'checkpoints' folder in MLflow
@@ -164,6 +173,3 @@ class ExperimentManager:
         else:
             logging.warning(f"Checkpoint path {ckpt_path} does not exist.")
         
-        # Update last checkpoint info
-        self.last_checkpoint_path = ckpt_path
-        self.last_checkpoint_step = step

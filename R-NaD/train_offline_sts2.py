@@ -56,6 +56,7 @@ def main():
         # 3. Trigger offline training
         # Note: TrainingWorker.perform_offline_training() loads trajectories/human replays
         # and runs the update loop.
+        last_save_time = time.time()
         for epoch in range(args.epochs):
             print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
             
@@ -65,9 +66,20 @@ def main():
             except Exception as e:
                 print(f"Warning: Failed to download human data: {e}")
             
-            # Save checkpoint every N epochs or on the last epoch
-            should_save = ((epoch + 1) % args.save_interval == 0) or (epoch == args.epochs - 1)
+            # Save checkpoint every hour (3600s) or on the last epoch
+            current_time = time.time()
+            elapsed = current_time - last_save_time
+            should_save = (elapsed >= 3600) or (epoch == args.epochs - 1)
+            
+            if should_save:
+                last_save_time = current_time
+                print(f"Time since last save: {elapsed:.2f}s. Triggering checkpoint save.")
+
             rnad_bridge.training_worker.perform_offline_training(save_checkpoint=should_save)
+            
+            # Increment step_count after saving so next save has a unique filename step index
+            if should_save:
+                rnad_bridge.training_worker.step_count += 1
         
         print("\n--- Offline Training Finished Successfully ---")
 
