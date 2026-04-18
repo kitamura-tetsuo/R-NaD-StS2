@@ -1348,7 +1348,11 @@ if os.path.exists(GAME_IDS_PATH):
         log(f"Expanded vocabularies from {GAME_IDS_PATH}")
         log(f"CARD_VOCAB: {len(CARD_VOCAB)}, MONSTER_VOCAB: {len(MONSTER_VOCAB)}")
     except Exception as e:
-        log(f"Error expanding vocabularies: {e}")
+        log(f"ERROR: Failed to load {GAME_IDS_PATH}: {e}")
+
+# --- Tracking for duplicate warnings ---
+REPORTED_UNKNOWN_RELICS = set()
+REPORTED_UNKNOWN_POWERS = set()
 
 # Re-calculate or fix vocab sizes for the model
 VOCAB_SIZE = max(max(CARD_VOCAB.values()) + 1, 600)
@@ -1759,6 +1763,7 @@ def get_card_idx(card_id):
     return CARD_VOCAB[cid]
 
 def get_relic_idx(relic_id):
+    global REPORTED_UNKNOWN_RELICS
     if not relic_id:
         log("WARNING: relic_id is missing or empty. Defaulting to 0.")
         return 0
@@ -1772,11 +1777,14 @@ def get_relic_idx(relic_id):
     for char in "!?.(),'":
         rid = rid.replace(char, "")
     if rid not in RELIC_VOCAB:
-        log(f"WARNING: Unknown relic_id: {relic_id} (mapped to {rid}). Defaulting to 0.")
+        if rid not in REPORTED_UNKNOWN_RELICS:
+            log(f"WARNING: Unknown relic_id: {relic_id} (mapped to {rid}). Defaulting to 0.")
+            REPORTED_UNKNOWN_RELICS.add(rid)
         return 0
     return RELIC_VOCAB[rid]
 
 def get_power_idx(power_id):
+    global REPORTED_UNKNOWN_POWERS
     if not power_id:
         log("WARNING: power_id is missing or empty. Defaulting to 0.")
         return 0
@@ -1790,7 +1798,9 @@ def get_power_idx(power_id):
     for char in "!?.(),'":
         pid = pid.replace(char, "")
     if pid not in POWER_VOCAB:
-        log(f"WARNING: Unknown power_id: {power_id} (mapped to {pid}). Defaulting to 0.")
+        if pid not in REPORTED_UNKNOWN_POWERS:
+            log(f"WARNING: Unknown power_id: {power_id} (mapped to {pid}). Defaulting to 0.")
+            REPORTED_UNKNOWN_POWERS.add(pid)
         return 0
     return POWER_VOCAB[pid]
 
