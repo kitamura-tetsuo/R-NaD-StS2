@@ -5,7 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Existing human play history location
-REPLAY_DIR = Path("/mnt/nas/StS2/replay")
+DEFAULT_REPLAY_DIR = Path("/mnt/nas/StS2/replay")
 CHANNEL_ID = "1491584922530484375" # record channel
 
 def cleanup_manual_retires(file_path: Path):
@@ -66,12 +66,16 @@ def cleanup_manual_retires(file_path: Path):
     except Exception as e:
         print(f"Error cleaning up {file_path.name}: {e}")
 
-def download_human_data():
+def download_human_data(replay_dir=None):
     """
     Downloads human_play_*.jsonl files from the Discord 'record' channel
-    and saves them to the REPLAY_DIR if they don't already exist.
+    and saves them to the replay_dir if they don't already exist.
     Also cleans up manual retires in the downloaded files.
     """
+    if replay_dir is None:
+        replay_dir = DEFAULT_REPLAY_DIR
+    else:
+        replay_dir = Path(replay_dir)
     # Load .env from root or parent directory
     # Based on the research, .env is in the project root.
     # Current file is in R-NaD/, so look in parent.
@@ -89,9 +93,9 @@ def download_human_data():
         print("Error: DISVORD_BOT_TOKEN not found in environment or .env")
         return
 
-    if not REPLAY_DIR.exists():
-        print(f"Creating directory: {REPLAY_DIR}")
-        REPLAY_DIR.mkdir(parents=True, exist_ok=True)
+    if not replay_dir.exists():
+        print(f"Creating directory: {replay_dir}")
+        replay_dir.mkdir(parents=True, exist_ok=True)
 
     headers = {
         "Authorization": f"Bot {token}",
@@ -107,8 +111,8 @@ def download_human_data():
     cleanup_count = 0
 
     try:
-        # First, run cleanup on existing files in REPLAY_DIR
-        for p in REPLAY_DIR.glob("human_play_*.jsonl"):
+        # First, run cleanup on existing files in replay_dir
+        for p in replay_dir.glob("human_play_*.jsonl"):
             cleanup_manual_retires(p)
 
         with httpx.Client(timeout=30.0) as client:
@@ -126,7 +130,7 @@ def download_human_data():
                 for att in attachments:
                     filename = att.get("filename", "")
                     if filename.startswith("human_play_") and filename.endswith(".jsonl"):
-                        target_path = REPLAY_DIR / filename
+                        target_path = replay_dir / filename
                         if target_path.exists():
                             # Skip if already downloaded
                             skip_count += 1
@@ -153,4 +157,8 @@ def download_human_data():
     print(f"Finished. Downloaded: {download_count}, Skipped: {skip_count}")
 
 if __name__ == "__main__":
-    download_human_data()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--replay_dir", type=str, help="Directory to save downloaded replays")
+    args = parser.parse_args()
+    download_human_data(replay_dir=args.replay_dir)

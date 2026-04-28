@@ -1,0 +1,46 @@
+FROM python:3.12-slim
+
+# 1. Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # JAX optimizations
+    XLA_PYTHON_CLIENT_PREALLOCATE=false \
+    TF_CPP_MIN_LOG_LEVEL=2 \
+    # LD_LIBRARY_PATH for GPU
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/cuda/lib64
+
+# 2. System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    libgomp1 \
+    ca-certificates \
+    libpython3.12-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 3. Rust installation (for battle_simulator)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# 4. Working directory and source code
+WORKDIR /app
+COPY . /app/
+
+# 5. Build native extensions
+# Build battle_simulator (Rust)
+RUN cd battle_simulator && cargo build --release \
+    && cp target/release/libbattle_simulator.so /app/R-NaD/battle_simulator.so
+
+# Build libpython_fixer (C)
+RUN cd R-NaD && python3 setup.py build_ext --inplace
+
+# 6. Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r R-NaD/requirements.txt && \
+    pip install --no-cache-dir mlflow google-cloud-storage
+
+# 7. Entrypoint
+# We use the R-NaD/train_offline_sts2.py script directly
+ENTRYPOINT ["python", "R-NaD/train_offline_sts2.py"]

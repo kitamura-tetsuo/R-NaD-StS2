@@ -1,0 +1,21 @@
+workerPoolSpecs:
+  - machineSpec:
+      machineType: g2-standard-8
+      acceleratorType: NVIDIA_L4
+      acceleratorCount: 1
+    replicaCount: 1
+    containerSpec:
+      # This imageUri will be updated by the submission script or manually
+      imageUri: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/YOUR_REPO/rnad-sts2-offline:latest
+      args:
+        - "--epochs"
+        - "100"
+        - "--save_interval"
+        - "1"
+        - "--data_dir"
+        - "/data"  # This should match where you mount or download data
+        - "--jax_platform"
+        - "gpu"
+
+scheduling:
+  strategy: SPOT

@@ -28,7 +28,7 @@ else:
 
 # Ensure stdout/stderr are unbuffered and also log to a file
 import io
-BRIDGE_DIR = "/home/ubuntu/src/R-NaD-StS2/R-NaD"
+BRIDGE_DIR = os.environ.get("RNAD_BRIDGE_DIR", os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(BRIDGE_DIR, "logs")
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -37,7 +37,7 @@ LOG_FILE = os.path.join(LOG_DIR, "rnad_bridge.log")
 MAX_LOG_SIZE = 10 * 1024 * 1024 # 10MB
 BACKUP_COUNT = 3
 
-DISCREPANCY_LOG_DIR = "/home/ubuntu/src/R-NaD-StS2/battle_simulator/discrepancy_logs"
+DISCREPANCY_LOG_DIR = os.path.join(os.path.dirname(BRIDGE_DIR), "battle_simulator/discrepancy_logs")
 if not os.path.exists(DISCREPANCY_LOG_DIR):
     os.makedirs(DISCREPANCY_LOG_DIR, exist_ok=True)
 
@@ -111,11 +111,10 @@ log(f"--- Bridge starting at {time.ctime() if 'time' in sys.modules else 'unknow
 log(f"sys.path: {sys.path[:3]}")
 
 # Add bridge directory to sys.path so we can import our fixer
-BRIDGE_DIR = "/home/ubuntu/src/R-NaD-StS2/R-NaD"
 if BRIDGE_DIR not in sys.path:
     sys.path.insert(0, BRIDGE_DIR)
 
-VENV_PATH = "/home/ubuntu/src/R-NaD-StS2/R-NaD/venv/lib/python3.12/site-packages"
+VENV_PATH = os.path.join(BRIDGE_DIR, "venv/lib/python3.12/site-packages")
 if VENV_PATH not in sys.path:
     # Insert the virtualenv right after the local directory so it takes precedence over system packages
     sys.path.insert(1, VENV_PATH)
@@ -1861,7 +1860,8 @@ VALID_TRAJECTORY_STATES = {
 }
 
 # Raw Trajectory Logging
-TRAJECTORY_DIR = "/home/ubuntu/src/R-NaD-StS2/R-NaD/trajectories"
+TRAJECTORY_DIR = os.environ.get("RNAD_TRAJECTORY_DIR", os.path.join(BRIDGE_DIR, "trajectories"))
+REPLAY_DIR = os.environ.get("RNAD_REPLAY_DIR", "/mnt/nas/StS2/replay")
 if not os.path.exists(TRAJECTORY_DIR):
     os.makedirs(TRAJECTORY_DIR, exist_ok=True)
 
@@ -2068,7 +2068,7 @@ class TrainingWorker(threading.Thread):
             import glob
             files = glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json"))
             random.shuffle(files)
-            human_files = glob.glob("/mnt/nas/StS2/replay/human_play_*.jsonl")
+            human_files = glob.glob(os.path.join(REPLAY_DIR, "human_play_*.jsonl"))
             random.shuffle(human_files)
             
             with self.lock:
@@ -2079,6 +2079,7 @@ class TrainingWorker(threading.Thread):
             if files:
                 for filepath in files:
                     try:
+                        reward_tracker.reset_for_new_run()
                         with open(filepath, "r") as f:
                             data = json.load(f)
                             steps = data.get("steps", [])
@@ -2128,11 +2129,21 @@ class TrainingWorker(threading.Thread):
                                             "obs": next_s_dict,
                                             "mask": np.array(next_s_raw["mask"], dtype=np.float32)
                                         }
-                                    trajectories.append({"steps": list(traj_segment), "next_step": next_step})
+                                    trajectories.append({
+                                        "steps": list(traj_segment), 
+                                        "next_step": next_step,
+                                        "source": filepath,
+                                        "range": (idx - len(traj_segment) + 1, idx)
+                                    })
                                     traj_segment = []
                             
                             if traj_segment:
-                                trajectories.append({"steps": list(traj_segment), "next_step": None})
+                                trajectories.append({
+                                    "steps": list(traj_segment), 
+                                    "next_step": None,
+                                    "source": filepath,
+                                    "range": (len(steps) - len(traj_segment), len(steps) - 1)
+                                })
                     except Exception as e:
                         log(f"[Python] Error processing {filepath}: {e}")
                     with self.lock:
@@ -2141,9 +2152,10 @@ class TrainingWorker(threading.Thread):
             # Now parse human replays
             human_trajectories = []
             if human_files:
-                log(f"[Python] Starting offline training from {len(human_files)} human play files in /mnt/nas/StS2/replay...")
+                log(f"[Python] Starting offline training from {len(human_files)} human play files in {REPLAY_DIR}...")
                 for filepath in human_files:
                     try:
+                        reward_tracker.reset_for_new_run()
                         with open(filepath, "r") as f:
                             lines = f.readlines()
                             
@@ -2213,11 +2225,21 @@ class TrainingWorker(threading.Thread):
                                         "obs": next_s_dict,
                                         "mask": np.array(next_mask, dtype=np.float32)
                                     }
-                                human_trajectories.append({"steps": list(traj_segment), "next_step": next_step})
+                                human_trajectories.append({
+                                    "steps": list(traj_segment), 
+                                    "next_step": next_step,
+                                    "source": filepath,
+                                    "range": (idx - len(traj_segment) + 1, idx)
+                                })
                                 traj_segment = []
                                 
                         if traj_segment:
-                            human_trajectories.append({"steps": list(traj_segment), "next_step": None})
+                            human_trajectories.append({
+                                "steps": list(traj_segment), 
+                                "next_step": None,
+                                "source": filepath,
+                                "range": (len(steps) - len(traj_segment), len(steps) - 1)
+                            })
                     except Exception as e:
                         log(f"[Python] Error processing human replay {filepath}: {e}")
                     with self.lock:
@@ -2281,7 +2303,7 @@ class TrainingWorker(threading.Thread):
                 self.update_progress = 0
                 self.update_total = 0
 
-    def perform_update(self, batch, increment_step=True, reset_updating=True):
+    def perform_update(self, batch_items, increment_step=True, reset_updating=True):
         with self.lock:
             self.is_updating = True
             if increment_step:
@@ -2327,7 +2349,7 @@ class TrainingWorker(threading.Thread):
             padded_next_mask = []
             valid_mask = []
 
-            for traj_item in batch:
+            for traj_item in batch_items:
                 # traj_item can be a list of steps (old) or dict with 'steps' and 'next_step' (new)
                 if isinstance(traj_item, dict) and "steps" in traj_item:
                     traj = traj_item["steps"]
@@ -2475,8 +2497,27 @@ class TrainingWorker(threading.Thread):
             print(f"[Python] TrainingWorker: Batch built. Shape: T={batch['rew'].shape[0]}, B={batch['rew'].shape[1]}")
 
             t_start = time.time()
+            
+            # Check for NaNs in input rewards or log_probs which are common sources of trouble
+            if jnp.isnan(batch['rew']).any() or jnp.isnan(batch['log_prob']).any():
+                log(f"[Python] CRITICAL: NaN detected in batch inputs before update! rew_has_nan={jnp.isnan(batch['rew']).any()}, lp_has_nan={jnp.isnan(batch['log_prob']).any()}")
+                for idx, item in enumerate(batch_items):
+                    if isinstance(item, dict) and "source" in item:
+                        log(f"  Batch index {idx}: source={item['source']}, range={item['range']}")
+
             metrics = self.learner.update(batch, self.step_count)
             t_end = time.time()
+
+            if jnp.isnan(metrics.get('loss', 0.0)):
+                log(f"[Python] CRITICAL: Loss is NaN at step {self.step_count}!")
+                log(f"  Metrics: {metrics}")
+                # Log the source of all items in this batch
+                for idx, item in enumerate(batch_items):
+                    if isinstance(item, dict) and "source" in item:
+                        log(f"  Batch index {idx}: source={item['source']}, range={item['range']}")
+                
+                # Check for extreme values in rewards
+                log(f"  Batch Reward Stats: min={batch['rew'].min()}, max={batch['rew'].max()}, mean={batch['rew'].mean()}")
 
             print(f"[Python] TrainingWorker: Update done in {t_end - t_start:.2f}s.")
 

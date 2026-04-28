@@ -8,6 +8,8 @@ import traceback
 # Set environment variable to skip default R-NaD initialization
 os.environ["SKIP_RNAD_INIT"] = "1"
 
+# os.environ["JAX_PLATFORMS"] = "cpu"
+
 # Add the R-NaD directory to sys.path
 R_NAD_DIR = os.path.dirname(os.path.abspath(__file__))
 if R_NAD_DIR not in sys.path:
@@ -24,13 +26,29 @@ def main():
     parser.add_argument("--checkpoint", type=str, help="Path to checkpoint .pkl to resume from")
     parser.add_argument("--epochs", type=int, default=100000, help="Number of passes through all found trajectories")
     parser.add_argument("--save_interval", type=int, default=1, help="Frequency (in epochs) to save checkpoints and log to MLflow")
+    parser.add_argument("--data_dir", type=str, help="Directory containing human play data (.jsonl)")
+    parser.add_argument("--checkpoint_dir", type=str, help="Directory to search for/save checkpoints")
+    parser.add_argument("--jax_platform", type=str, choices=["cpu", "gpu", "tpu"], help="JAX platform to use")
     args = parser.parse_args()
+
+    # Apply environment overrides based on arguments
+    if args.data_dir:
+        os.environ["RNAD_REPLAY_DIR"] = os.path.abspath(args.data_dir)
+        print(f"Setting RNAD_REPLAY_DIR to: {os.environ['RNAD_REPLAY_DIR']}")
+    
+    if args.jax_platform:
+        os.environ["JAX_PLATFORMS"] = args.jax_platform
+        print(f"Setting JAX_PLATFORMS to: {os.environ['JAX_PLATFORMS']}")
+    elif "JAX_PLATFORMS" not in os.environ:
+        # Default to gpu if not set, instead of hardcoded cpu in the original script
+        os.environ["JAX_PLATFORMS"] = "gpu"
+        print(f"JAX_PLATFORMS not set, defaulting to: {os.environ['JAX_PLATFORMS']}")
 
     print(f"--- Starting Offline Training (Epochs: {args.epochs}) ---")
     
     # Auto-detect latest checkpoint if not specified
     if args.checkpoint is None:
-        checkpoint_dir = os.path.join(R_NAD_DIR, "checkpoints")
+        checkpoint_dir = args.checkpoint_dir if args.checkpoint_dir else os.path.join(R_NAD_DIR, "checkpoints")
         if os.path.exists(checkpoint_dir):
             # Recursively search for checkpoint_*.pkl
             checkpoints = glob.glob(os.path.join(checkpoint_dir, "**", "checkpoint_*.pkl"), recursive=True)
@@ -39,7 +57,7 @@ def main():
                 args.checkpoint = max(checkpoints, key=os.path.getmtime)
                 print(f"Auto-detected latest checkpoint: {args.checkpoint}")
             else:
-                print("No checkpoints found in 'checkpoints/' directory.")
+                print(f"No checkpoints found in '{checkpoint_dir}' directory.")
         else:
             print(f"Checkpoint directory not found: {checkpoint_dir}")
 
