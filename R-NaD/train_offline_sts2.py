@@ -15,18 +15,13 @@ R_NAD_DIR = os.path.dirname(os.path.abspath(__file__))
 if R_NAD_DIR not in sys.path:
     sys.path.insert(0, R_NAD_DIR)
 
-# Standard imports after setting skip flag
-import rnad_bridge
-from download_human_data import download_human_data
-
 def main():
-    # parser = argparse.ArgumentParser... (unchanged)
-
     parser = argparse.ArgumentParser(description="Offline Training for R-NaD StS2")
     parser.add_argument("--checkpoint", type=str, help="Path to checkpoint .pkl to resume from")
     parser.add_argument("--epochs", type=int, default=100000, help="Number of passes through all found trajectories")
     parser.add_argument("--save_interval", type=int, default=1, help="Frequency (in epochs) to save checkpoints and log to MLflow")
     parser.add_argument("--data_dir", type=str, help="Directory containing human play data (.jsonl)")
+    parser.add_argument("--trajectory_dir", type=str, help="Directory containing machine trajectories (.json)")
     parser.add_argument("--checkpoint_dir", type=str, help="Directory to search for/save checkpoints")
     parser.add_argument("--jax_platform", type=str, choices=["cpu", "gpu", "tpu"], help="JAX platform to use")
     args = parser.parse_args()
@@ -36,6 +31,10 @@ def main():
         os.environ["RNAD_REPLAY_DIR"] = os.path.abspath(args.data_dir)
         print(f"Setting RNAD_REPLAY_DIR to: {os.environ['RNAD_REPLAY_DIR']}")
     
+    if args.trajectory_dir:
+        os.environ["RNAD_TRAJECTORY_DIR"] = os.path.abspath(args.trajectory_dir)
+        print(f"Setting RNAD_TRAJECTORY_DIR to: {os.environ['RNAD_TRAJECTORY_DIR']}")
+    
     if args.jax_platform:
         os.environ["JAX_PLATFORMS"] = args.jax_platform
         print(f"Setting JAX_PLATFORMS to: {os.environ['JAX_PLATFORMS']}")
@@ -43,6 +42,10 @@ def main():
         # Default to gpu if not set, instead of hardcoded cpu in the original script
         os.environ["JAX_PLATFORMS"] = "gpu"
         print(f"JAX_PLATFORMS not set, defaulting to: {os.environ['JAX_PLATFORMS']}")
+
+    # Standard imports after setting environment variables
+    import rnad_bridge
+    from download_human_data import download_human_data
 
     print(f"--- Starting Offline Training (Epochs: {args.epochs}) ---")
     
@@ -80,7 +83,7 @@ def main():
             
             # Download latest human play data from Discord before each epoch
             try:
-                download_human_data()
+                download_human_data(replay_dir=args.data_dir)
             except Exception as e:
                 print(f"Warning: Failed to download human data: {e}")
             
