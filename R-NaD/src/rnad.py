@@ -102,6 +102,8 @@ def loss_fn(params, fixed_params, batch, apply_fn, config: RNaDConfig, alpha_rna
     obs = batch['obs'] # Dictionary (PyTree) of (T, B, ...)
     act = batch['act'] # (T, B)
     rew = batch['rew'] # (T, B)
+    # Clip rewards to prevent numerical instability from extreme values
+    rew = jnp.clip(rew, -10.0, 10.0)
     mask = batch['mask'] # (T, B, num_actions)
     log_prob_bhv = batch['log_prob'] # (T, B)
     

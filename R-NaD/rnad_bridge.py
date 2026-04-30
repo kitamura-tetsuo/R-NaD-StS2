@@ -2215,6 +2215,7 @@ class TrainingWorker(threading.Thread):
                         lines = f.readlines()
                     
                     steps = []
+                    last_was_terminal = False
                     for line in lines:
                         line = line.strip()
                         if not line: continue
@@ -2222,10 +2223,17 @@ class TrainingWorker(threading.Thread):
                         state = step_data.get("state")
                         if not state or step_data.get("action_id") is None: continue
                         
+                        # Reset RewardTracker if the previous step was terminal or if floor dropped (new run)
+                        current_floor = state.get("floor", 0)
+                        if last_was_terminal or (current_floor < reward_tracker.last_processed_floor and current_floor <= 1):
+                            reward_tracker.reset_for_new_run()
+                        
                         action_idx = int(step_data["action_id"])
                         state_type = state.get("type", "unknown")
                         reward = compute_reward(state, state_type) + compute_intermediate_reward(state, state_type, action_idx)
-                        steps.append({"state": state, "action_idx": action_idx, "reward": reward, "terminal": (state_type == "game_over")})
+                        is_terminal = (state_type == "game_over")
+                        steps.append({"state": state, "action_idx": action_idx, "reward": reward, "terminal": is_terminal})
+                        last_was_terminal = is_terminal
                     
                     traj_segment = []
                     for idx, step in enumerate(steps):
@@ -2899,12 +2907,13 @@ def encode_state(state):
     
     # Global features (Size 512)
     global_vec = np.zeros(512, dtype=np.float32)
-    global_vec[0] = state.get("floor", 0) / 50.0
-    global_vec[1] = state.get("gold", 0) / 500.0
+    # SAFETY: Clip values to avoid network explosion from extreme/debug values
+    global_vec[0] = np.clip(state.get("floor", 0), 0, 100) / 50.0
+    global_vec[1] = np.clip(state.get("gold", 0), 0, 10000) / 500.0
     
-    player = state.get("player", {})
-    global_vec[2] = player.get("hp", 0) / 100.0
-    global_vec[3] = player.get("maxHp", 100) / 100.0
+    player = state.get("player", {}) or {}
+    global_vec[2] = np.clip(player.get("hp", 0), 0, 1000) / 100.0
+    global_vec[3] = np.clip(player.get("maxHp", 100), 1, 1000) / 100.0
     global_vec[4] = player.get("block", 0) / 50.0
     global_vec[5] = player.get("energy", 0) / 5.0
     global_vec[6] = player.get("stars", 0) / 10.0
@@ -2994,9 +3003,9 @@ def encode_state(state):
             combat_vec[base_idx] = 1.0 # Alive flag restored
             combat_vec[base_idx + 1] = get_monster_idx(enemy.get("id")) # Enemy ID shifted
             combat_vec[base_idx + 2] = 1.0 if enemy.get("isMinion") else 0.0 # Minion flag shifted
-            combat_vec[base_idx + 3] = enemy.get("hp", 0) / 200.0
-            combat_vec[base_idx + 4] = enemy.get("maxHp", 1) / 200.0
-            combat_vec[base_idx + 5] = enemy.get("block", 0) / 50.0
+            combat_vec[base_idx + 3] = np.clip(enemy.get("hp", 0), 0, 2000) / 200.0
+            combat_vec[base_idx + 4] = np.clip(enemy.get("maxHp", 1), 1, 2000) / 200.0
+            combat_vec[base_idx + 5] = np.clip(enemy.get("block", 0), 0, 500) / 50.0
             
             intents = get_list_robust(enemy, "intents")
             for j in range(min(len(intents), 2)):
@@ -3027,9 +3036,9 @@ def encode_state(state):
                     log(f"[Python] Warning: intent type: {it_type} not in it_map, falling back to Unknown")
                     it_type = "Unknown"
                 combat_vec[intent_idx] = it_map[it_type] / 10.0
-                combat_vec[intent_idx + 1] = intent.get("damage", 0) / 50.0
-                combat_vec[intent_idx + 2] = intent.get("repeats", 1) / 5.0
-                combat_vec[intent_idx + 3] = intent.get("count", 0) / 10.0
+                combat_vec[intent_idx + 1] = np.clip(intent.get("damage", 0), 0, 500) / 50.0
+                combat_vec[intent_idx + 2] = np.clip(intent.get("repeats", 1), 0, 50) / 5.0
+                combat_vec[intent_idx + 3] = np.clip(intent.get("count", 0), 0, 100) / 10.0
                 # log(f"[Python] Debug Enemy {i}: ID={enemy.get('id')}, Alive={combat_vec[base_idx]}, Minion={combat_vec[base_idx+2]}, Intent={it_type}")
                 
         # Powers (starting at 200)
@@ -3052,8 +3061,8 @@ def encode_state(state):
                 combat_vec[idx + 1] = p.get("amount", 0) / 10.0
                 
         # --- Predicted Features (starting at 320) ---
-        combat_vec[320] = state.get("predicted_total_damage", 0) / 50.0
-        combat_vec[321] = state.get("predicted_end_block", 0) / 50.0
+        combat_vec[320] = np.clip(state.get("predicted_total_damage", 0), 0, 500) / 50.0
+        combat_vec[321] = np.clip(state.get("predicted_end_block", 0), 0, 500) / 50.0
         combat_vec[322] = 1.0 if state.get("surplus_block") else 0.0
         
         # log(f"[Python] Predicted Damage: {state.get('predicted_total_damage', 0)}, Predicted Block: {state.get('predicted_end_block', 0)}, Surplus: {state.get('surplus_block')}")
@@ -3280,7 +3289,7 @@ def compute_intermediate_reward(state, state_type, action_idx):
             reward_tracker.was_elite = True
         elif room_type == "Boss":
             reward_tracker.was_boss = True
-
+            
         # Update trackers for next step
         reward_tracker.last_player_hp = current_hp
         reward_tracker.last_total_enemy_hp = current_enemy_hp
@@ -3298,11 +3307,11 @@ def compute_intermediate_reward(state, state_type, action_idx):
         if reward_tracker.was_boss:
             intermediate_reward += 0.5
             # log("Extra reward for BOSS defeat: +0.5")
+        
+        # Reset combat-specific trackers after clear
         reward_tracker.was_elite = False
         reward_tracker.was_boss = False
 
-    # Card / Potion Acquisition Reward (+0.01)
-    # Potions Count
     potions = state.get("potions", [])
     current_potion_count = sum(1 for p in potions if p.get("id") != "empty")
     if reward_tracker.last_potion_count != -1:
@@ -3350,8 +3359,12 @@ def compute_intermediate_reward(state, state_type, action_idx):
         reward_tracker.last_upgraded_count = -1
 
     reward_tracker.last_state_type = state_type
+    
+    # SAFETY: Clip intermediate rewards to prevent extreme values from God Mode enemies
+    # Standard rewards are < 1.0, so 10.0 is a very safe upper bound.
+    clippped_reward = float(np.clip(intermediate_reward, -10.0, 10.0))
         
-    return intermediate_reward
+    return clippped_reward
 
 def needs_target(card):
     """Returns True if the card requires a specific enemy or ally target."""
