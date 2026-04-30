@@ -646,7 +646,6 @@ class BackupManager:
             
     def clear(self):
         """Clear all backups in the stack and reset total retry count."""
-        log(f"[BackupManager] Clearing stack of size {len(self.stack)}")
         self.stack = []
         self.hp_loss_history = []
         self.current_trial_actions = []
@@ -1062,7 +1061,6 @@ class RewardTracker:
         self.was_elite = False
         self.was_boss = False
         backup_manager.clear()
-        log("RewardTracker: Full reset for new run.")
 
     def reset_for_next_episode(self):
         """Reset per-episode flags but maybe keep some session info if needed."""
@@ -1081,7 +1079,6 @@ class RewardTracker:
         self.last_predicted_damage_to_player = predicted_damage_to_player
         self.last_action_idx = -1
         self.combat_initialized = True
-        log(f"RewardTracker: Combat initialized (Player HP: {hp}, Enemy HP: {enemy_hp}, Count: {enemy_count}, PredDamage: {predicted_damage_to_player})")
 
 # Preserve RewardTracker state across re-imports
 # Preserve RewardTracker state across re-imports
@@ -2054,6 +2051,65 @@ class TrainingWorker(threading.Thread):
             self.episode_game_overed_rewards.append(reward)
             print(f"[Python] Recorded game over at floor {floor}, reward {reward:.2f}. Count: {len(self.episode_game_overed_floors)}")
 
+    def consolidate_trajectories(self):
+        """Bundle groups of 1000 individual trajectory files into single files."""
+        log(f"[Python] Checking for trajectory consolidation in {TRAJECTORY_DIR}...")
+        try:
+            import glob
+            import json
+            import os
+            import datetime
+            
+            # Find all individual trajectory files (starting with traj_)
+            # We exclude bundled_*.json by only picking those starting with traj_
+            all_files = glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json"))
+            files = sorted([f for f in all_files if os.path.basename(f).startswith("traj_")])
+            
+            if len(files) < 1000:
+                log(f"[Python] Not enough trajectories to consolidate ({len(files)} < 1000).")
+                return
+
+            batch_size = 1000
+            # We only bundle complete batches of 1000 to maintain consistency
+            num_batches = len(files) // batch_size
+            log(f"[Python] Consolidating {num_batches * batch_size} files into {num_batches} bundles...")
+            
+            for i in range(num_batches):
+                batch = files[i * batch_size : (i + 1) * batch_size]
+                
+                # Use a timestamp and index for uniqueness
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                bundle_filename = f"bundled_{timestamp}_{i}.json"
+                bundle_path = os.path.join(TRAJECTORY_DIR, bundle_filename)
+                
+                bundled_data = []
+                for filepath in batch:
+                    try:
+                        with open(filepath, "r") as f:
+                            bundled_data.append(json.load(f))
+                    except Exception as e:
+                        log(f"[Python] Error reading {filepath} for bundling: {e}")
+                
+                if bundled_data:
+                    try:
+                        with open(bundle_path, "w") as f:
+                            json.dump(bundled_data, f)
+                        log(f"[Python] Successfully bundled {len(bundled_data)} trajectories into {bundle_path}")
+                        
+                        # Delete original single files after successful bundle write
+                        for filepath in batch:
+                            try:
+                                os.remove(filepath)
+                            except Exception as e:
+                                log(f"[Python] Error deleting {filepath} after bundling: {e}")
+                    except Exception as e:
+                        log(f"[Python] Error writing bundle {bundle_path}: {e}")
+                        
+            log("[Python] Trajectory consolidation complete.")
+        except Exception as e:
+            log(f"[Python] Error during trajectory consolidation: {e}")
+            traceback.print_exc()
+
     def perform_offline_training(self, save_checkpoint=True):
         with self.lock:
             if self.is_updating:
@@ -2062,11 +2118,17 @@ class TrainingWorker(threading.Thread):
             self.is_updating = True
         
         do_deferred_imports()
+        
+        # Consolidate trajectories before loading
+        self.consolidate_trajectories()
+
         log(f"[Python] Starting offline training from trajectories in {TRAJECTORY_DIR}...")
         
         try:
             import glob
-            files = glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json"))
+            # Match both single trajectory files and bundled ones
+            files = glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json")) + \
+                    glob.glob(os.path.join(TRAJECTORY_DIR, "bundled_*.json"))
             random.shuffle(files)
             human_files = glob.glob(os.path.join(REPLAY_DIR, "human_play_*.jsonl"))
             random.shuffle(human_files)
@@ -2079,10 +2141,18 @@ class TrainingWorker(threading.Thread):
             if files:
                 for filepath in files:
                     try:
-                        reward_tracker.reset_for_new_run()
                         with open(filepath, "r") as f:
                             data = json.load(f)
-                            steps = data.get("steps", [])
+                        
+                        # Support both single trajectory (dict) and bundled trajectories (list)
+                        if isinstance(data, list):
+                            traj_list = data
+                        else:
+                            traj_list = [data]
+
+                        for traj_data in traj_list:
+                            reward_tracker.reset_for_new_run()
+                            steps = traj_data.get("steps", [])
                             traj_segment = []
                             for idx, step in enumerate(steps):
                                 state_json = step["state_json"]
