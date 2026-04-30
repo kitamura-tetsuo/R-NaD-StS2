@@ -30,3 +30,5 @@ recorder-mod/.godot/
 tmp/
 R-NaD/logs/
 combat_dumps/
+replays/
+x/
