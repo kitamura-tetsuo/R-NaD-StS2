@@ -53,11 +53,11 @@ class RNaDConfig(NamedTuple):
     log_interval: int = 1
     save_interval: int = 1
     model_type: str = "transformer" # "mlp" or "transformer"
-    num_heads: int = 6
-    num_blocks: int = 6
-    seq_len: int = 8
+    num_heads: int = 5
+    num_blocks: int = 5
+    seq_len: int = 2
     hidden_size: int = 256
-    unroll_length: int = 48
+    unroll_length: int = 24
     card_vocab_size: int = 100
     monster_vocab_size: int = 40
     relic_vocab_size: int = 300

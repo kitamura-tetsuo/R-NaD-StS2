@@ -107,6 +107,27 @@ def log(msg):
     # Use direct file write if stdout is weird, but print should be fine now
     print(f"[Python][SM:{id(sys.modules)}][P:{os.getpid()}] {msg}")
 
+def get_memory_info():
+    try:
+        import psutil
+        process = psutil.Process()
+        mem = process.memory_info()
+        return f"RSS: {mem.rss / 1024 / 1024:.2f}MB, VMS: {mem.vms / 1024 / 1024:.2f}MB"
+    except Exception:
+        # Fallback to /proc if psutil is not available or fails
+        try:
+            with open('/proc/self/status') as f:
+                for line in f:
+                    if line.startswith('VmRSS:'):
+                        rss = int(line.split()[1]) / 1024
+                        return f"RSS: {rss:.2f}MB (via proc)"
+        except:
+            return "Memory info N/A"
+    return "Memory info N/A"
+
+def memory_log(msg):
+    log(f"[Memory] {msg} | {get_memory_info()}")
+
 log(f"--- Bridge starting at {time.ctime() if 'time' in sys.modules else 'unknown'} ---")
 log(f"sys.path: {sys.path[:3]}")
 
@@ -522,8 +543,8 @@ sim_manager = SimulatorManager(BRIDGE_DIR)
 import datetime
 
 # Configure JAX to not preallocate all memory and force CPU if needed
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-# os.environ["JAX_PLATFORMS"] = "cpu"
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["JAX_PLATFORMS"] = "cpu"
 
 # Debug MLflow environment variables
 log(f"[Python] Debug: RNAD_RUN_ID={os.environ.get('RNAD_RUN_ID')}")
@@ -550,17 +571,23 @@ RNaDLearner = None
 RNaDConfig = None
 ExperimentManager = None
 load_pretrained_embeddings = None
+array_record = None
+grain = None
+pickle = None
 initialization_event = threading.Event()
 initialization_lock = threading.Lock()
 
 def do_deferred_imports():
-    global jax, jnp, np, RNaDLearner, RNaDConfig, ExperimentManager, load_pretrained_embeddings
+    global jax, jnp, np, RNaDLearner, RNaDConfig, ExperimentManager, load_pretrained_embeddings, array_record, grain, pickle
     if jax is None:
         import numpy as np_mod
         import jax as jax_mod
         import jax.numpy as jnp_mod
         from src.rnad import RNaDLearner as Learner, RNaDConfig as Config, load_pretrained_embeddings
         from experiment import ExperimentManager as ExpManager
+        import array_record.python.array_record_module as ar_mod
+        import grain.python as grain_mod
+        import pickle as pickle_mod
         
         jax = jax_mod
         jnp = jnp_mod
@@ -568,6 +595,9 @@ def do_deferred_imports():
         RNaDLearner = Learner
         RNaDConfig = Config
         ExperimentManager = ExpManager
+        array_record = ar_mod
+        grain = grain_mod
+        pickle = pickle_mod
         # Also need to assign the imported function to the global variable
         # Since it was imported as its original name in the from src.rnad import line,
         # and we didn't alias it, it's already in the local scope, but we need
@@ -1859,6 +1889,7 @@ VALID_TRAJECTORY_STATES = {
 # Raw Trajectory Logging
 TRAJECTORY_DIR = os.environ.get("RNAD_TRAJECTORY_DIR", os.path.join(BRIDGE_DIR, "trajectories"))
 REPLAY_DIR = os.environ.get("RNAD_REPLAY_DIR", "/mnt/nas/StS2/replay")
+ARRAY_RECORD_DIR = os.path.join(TRAJECTORY_DIR, "array_record")
 if not os.path.exists(TRAJECTORY_DIR):
     os.makedirs(TRAJECTORY_DIR, exist_ok=True)
 
@@ -2110,6 +2141,178 @@ class TrainingWorker(threading.Thread):
             log(f"[Python] Error during trajectory consolidation: {e}")
             traceback.print_exc()
 
+    def _get_segments_from_raw_files(self, files, is_human):
+        """Generator that yields encoded trajectory segments from raw files."""
+        if not is_human:
+            for filepath in files:
+                try:
+                    with open(filepath, "r") as f:
+                        data = json.load(f)
+                    
+                    traj_list = data if isinstance(data, list) else [data]
+                    for traj_data in traj_list:
+                        reward_tracker.reset_for_new_run()
+                        steps = traj_data.get("steps", [])
+                        traj_segment = []
+                        for idx, step in enumerate(steps):
+                            state = json.loads(step["state_json"])
+                            state_dict = encode_state(state)
+                            
+                            # Recalculate reward
+                            state_type = state.get("type", "unknown")
+                            action_idx = step["action_idx"]
+                            reward = compute_reward(state, state_type) + compute_intermediate_reward(state, state_type, action_idx)
+                            
+                            log_p = step.get("log_prob")
+                            if log_p is None:
+                                if "probs" in step and action_idx < len(step["probs"]):
+                                    log_p = float(np.log(max(step["probs"][action_idx], 1e-10)))
+                                else:
+                                    log_p = 0.0
+                                    
+                            traj_step = {
+                                "obs": state_dict,
+                                "act": action_idx,
+                                "rew": reward,
+                                "mask": np.array(step["mask"], dtype=np.float32),
+                                "log_prob": log_p,
+                                "probs_dist": np.array(step.get("probs", np.zeros(100)), dtype=np.float32),
+                                "predicted_v": float(step.get("predicted_v", 0.0)),
+                                "is_human": 0.0,
+                                "done": 1.0 if step.get("terminal") else 0.0
+                            }
+                            traj_segment.append(traj_step)
+                            
+                            if len(traj_segment) >= self.config.unroll_length:
+                                next_step = None
+                                if idx + 1 < len(steps):
+                                    next_s_raw = steps[idx + 1]
+                                    next_s_dict = encode_state(json.loads(next_s_raw["state_json"]))
+                                    next_step = {"obs": next_s_dict, "mask": np.array(next_s_raw["mask"], dtype=np.float32)}
+                                
+                                yield {
+                                    "steps": list(traj_segment), 
+                                    "next_step": next_step,
+                                    "source": filepath,
+                                    "range": (idx - len(traj_segment) + 1, idx)
+                                }
+                                traj_segment = []
+                        
+                        if traj_segment:
+                            yield {
+                                "steps": list(traj_segment), 
+                                "next_step": None,
+                                "source": filepath,
+                                "range": (len(steps) - len(traj_segment), len(steps) - 1)
+                            }
+                except Exception as e:
+                    log(f"[Python] Error processing machine trajectory {filepath}: {e}")
+        else:
+            for filepath in files:
+                try:
+                    reward_tracker.reset_for_new_run()
+                    with open(filepath, "r") as f:
+                        lines = f.readlines()
+                    
+                    steps = []
+                    for line in lines:
+                        line = line.strip()
+                        if not line: continue
+                        step_data = json.loads(line)
+                        state = step_data.get("state")
+                        if not state or step_data.get("action_id") is None: continue
+                        
+                        action_idx = int(step_data["action_id"])
+                        state_type = state.get("type", "unknown")
+                        reward = compute_reward(state, state_type) + compute_intermediate_reward(state, state_type, action_idx)
+                        steps.append({"state": state, "action_idx": action_idx, "reward": reward, "terminal": (state_type == "game_over")})
+                    
+                    traj_segment = []
+                    for idx, step in enumerate(steps):
+                        state_dict = encode_state(step["state"])
+                        mask = get_action_mask(step["state"])
+                        probs_placeholder = np.zeros(100, dtype=np.float32)
+                        valid_indices = np.where(mask > 0)[0]
+                        if len(valid_indices) > 0:
+                            probs_placeholder[valid_indices] = 1.0 / len(valid_indices)
+
+                        traj_step = {
+                            "obs": state_dict, "act": step["action_idx"], "rew": step["reward"],
+                            "mask": np.array(mask, dtype=np.float32), "log_prob": 0.0,
+                            "probs_dist": probs_placeholder, "predicted_v": 0.0, "is_human": 1.0,
+                            "done": 1.0 if step["terminal"] else 0.0
+                        }
+                        traj_segment.append(traj_step)
+                        
+                        if len(traj_segment) >= self.config.unroll_length or step["terminal"]:
+                            next_step = None
+                            if not step["terminal"] and idx + 1 < len(steps):
+                                next_s = steps[idx + 1]["state"]
+                                next_step = {"obs": encode_state(next_s), "mask": np.array(get_action_mask(next_s), dtype=np.float32)}
+                            
+                            yield {
+                                "steps": list(traj_segment), 
+                                "next_step": next_step,
+                                "source": filepath,
+                                "range": (idx - len(traj_segment) + 1, idx)
+                            }
+                            traj_segment = []
+                            
+                    if traj_segment:
+                        yield {
+                            "steps": list(traj_segment), 
+                            "next_step": None,
+                            "source": filepath,
+                            "range": (len(steps) - len(traj_segment), len(steps) - 1)
+                        }
+                except Exception as e:
+                    log(f"[Python] Error processing human replay {filepath}: {e}")
+
+    def _write_records(self, files, output_path, is_human):
+        """Write segments to an ArrayRecord file."""
+        log(f"[Python] Writing segments to {output_path}...")
+        writer = array_record.ArrayRecordWriter(output_path, options="zstd,group_size:1")
+        count = 0
+        for segment in self._get_segments_from_raw_files(files, is_human):
+            writer.write(pickle.dumps(segment))
+            count += 1
+        writer.close()
+        log(f"[Python] Successfully wrote {count} segments to {output_path}")
+
+    def convert_to_array_record(self, force=False):
+        """Orchestrate the conversion of raw data to ArrayRecord format."""
+        if not os.path.exists(ARRAY_RECORD_DIR):
+            os.makedirs(ARRAY_RECORD_DIR, exist_ok=True)
+        
+        # Machine trajectories
+        machine_record = os.path.join(ARRAY_RECORD_DIR, "machine_data.array_record")
+        machine_files = glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json")) + \
+                        glob.glob(os.path.join(TRAJECTORY_DIR, "bundled_*.json"))
+        
+        latest_machine = 0
+        if machine_files:
+            latest_machine = max(os.path.getmtime(f) for f in machine_files)
+        
+        if force or not os.path.exists(machine_record) or os.path.getmtime(machine_record) < latest_machine:
+            log(f"[Python] Machine data update detected. Starting conversion...")
+            self._write_records(machine_files, machine_record, is_human=False)
+        else:
+            log(f"[Python] Machine data ArrayRecord is up to date.")
+
+        # Human trajectories
+        human_record = os.path.join(ARRAY_RECORD_DIR, "human_data.array_record")
+        human_files = glob.glob(os.path.join(REPLAY_DIR, "human_play_*.jsonl"))
+        
+        latest_human = 0
+        if human_files:
+            latest_human = max(os.path.getmtime(f) for f in human_files)
+        
+        if force or not os.path.exists(human_record) or os.path.getmtime(human_record) < latest_human:
+            log(f"[Python] Human data update detected. Starting conversion...")
+            self._write_records(human_files, human_record, is_human=True)
+        else:
+            log(f"[Python] Human data ArrayRecord is up to date.")
+
     def perform_offline_training(self, save_checkpoint=True):
         with self.lock:
             if self.is_updating:
@@ -2119,239 +2322,64 @@ class TrainingWorker(threading.Thread):
         
         do_deferred_imports()
         
-        # Consolidate trajectories before loading
+        # Consolidate trajectories before conversion
         self.consolidate_trajectories()
+        
+        # Ensure data is converted to ArrayRecord
+        self.convert_to_array_record()
 
-        log(f"[Python] Starting offline training from trajectories in {TRAJECTORY_DIR}...")
+        log(f"[Python] Starting offline training using Grain from {ARRAY_RECORD_DIR}...")
         
         try:
-            import glob
-            # Match both single trajectory files and bundled ones
-            files = glob.glob(os.path.join(TRAJECTORY_DIR, "traj_*.json")) + \
-                    glob.glob(os.path.join(TRAJECTORY_DIR, "bundled_*.json"))
-            random.shuffle(files)
-            human_files = glob.glob(os.path.join(REPLAY_DIR, "human_play_*.jsonl"))
-            random.shuffle(human_files)
+            machine_record = os.path.join(ARRAY_RECORD_DIR, "machine_data.array_record")
+            human_record = os.path.join(ARRAY_RECORD_DIR, "human_data.array_record")
             
-            with self.lock:
-                self.update_total = len(files) + len(human_files)
-                self.update_progress = 0
-
-            trajectories = []
-            if files:
-                for filepath in files:
-                    try:
-                        with open(filepath, "r") as f:
-                            data = json.load(f)
-                        
-                        # Support both single trajectory (dict) and bundled trajectories (list)
-                        if isinstance(data, list):
-                            traj_list = data
-                        else:
-                            traj_list = [data]
-
-                        for traj_data in traj_list:
-                            reward_tracker.reset_for_new_run()
-                            steps = traj_data.get("steps", [])
-                            traj_segment = []
-                            for idx, step in enumerate(steps):
-                                state_json = step["state_json"]
-                                state = json.loads(state_json)
-                                state_dict = encode_state(state)
-                                
-                                # Recalculate reward
-                                state_type = state.get("type", "unknown")
-                                action_idx = step["action_idx"]
-                                base_reward = compute_reward(state, state_type)
-                                intermediate_reward = compute_intermediate_reward(state, state_type, action_idx)
-                                reward = base_reward + intermediate_reward
-                                
-                                # Fallback for older trajectories missing log_prob
-                                log_p = step.get("log_prob")
-                                if log_p is None:
-                                    # Calculate from probs if available
-                                    if "probs" in step and action_idx < len(step["probs"]):
-                                        log_p = float(np.log(max(step["probs"][action_idx], 1e-10)))
-                                    else:
-                                        log_p = 0.0 # Default fallback
-                                        
-                                traj_step = {
-                                    "obs": state_dict,
-                                    "act": action_idx,
-                                    "rew": reward,
-                                    "mask": np.array(step["mask"], dtype=np.float32),
-                                    "log_prob": log_p,
-                                    "probs_dist": np.array(step.get("probs", np.zeros(100)), dtype=np.float32),
-                                    "predicted_v": float(step.get("predicted_v", 0.0)),
-                                    "is_human": 0.0,
-                                    "done": 1.0 if step.get("terminal") else 0.0
-                                }
-                                traj_segment.append(traj_step)
-                                
-                                if len(traj_segment) >= self.config.unroll_length:
-                                    # Look ahead for bootstrapping step
-                                    next_step = None
-                                    if idx + 1 < len(steps):
-                                        next_s_raw = steps[idx + 1]
-                                        next_s_json = next_s_raw["state_json"]
-                                        next_s_dict = encode_state(json.loads(next_s_json))
-                                        next_step = {
-                                            "obs": next_s_dict,
-                                            "mask": np.array(next_s_raw["mask"], dtype=np.float32)
-                                        }
-                                    trajectories.append({
-                                        "steps": list(traj_segment), 
-                                        "next_step": next_step,
-                                        "source": filepath,
-                                        "range": (idx - len(traj_segment) + 1, idx)
-                                    })
-                                    traj_segment = []
-                            
-                            if traj_segment:
-                                trajectories.append({
-                                    "steps": list(traj_segment), 
-                                    "next_step": None,
-                                    "source": filepath,
-                                    "range": (len(steps) - len(traj_segment), len(steps) - 1)
-                                })
-                    except Exception as e:
-                        log(f"[Python] Error processing {filepath}: {e}")
-                    with self.lock:
-                        self.update_progress += 1
-
-            # Now parse human replays
-            human_trajectories = []
-            if human_files:
-                log(f"[Python] Starting offline training from {len(human_files)} human play files in {REPLAY_DIR}...")
-                for filepath in human_files:
-                    try:
-                        reward_tracker.reset_for_new_run()
-                        with open(filepath, "r") as f:
-                            lines = f.readlines()
-                            
-                        # process human steps...
-                        steps = []
-                        for line in lines:
-                            line = line.strip()
-                            if not line: continue
-                            step_data = json.loads(line)
-                            state = step_data.get("state")
-                            if not state: continue
-                            action_id = step_data.get("action_id")
-                            if action_id is None: continue
-                            
-                            try:
-                                action_idx = int(action_id)
-                            except ValueError:
-                                continue # skip invalid actions
-                                
-                            state_type = state.get("type", "unknown")
-                            reward = compute_reward(state, state_type) + compute_intermediate_reward(state, state_type, action_idx)
-                            
-                            terminal = (state_type == "game_over")
-                            
-                            steps.append({
-                                "state": state,
-                                "action_idx": action_idx,
-                                "reward": reward,
-                                "terminal": terminal
-                            })
-                            
-                        # convert to trajectories
-                        traj_segment = []
-                        for idx, step in enumerate(steps):
-                            state = step["state"]
-                            state_dict = encode_state(state)
-                            action_idx = step["action_idx"]
-                            
-                            mask = get_action_mask(state)
-                            
-                            # For human data, we create a uniform distribution over valid actions for probs_dist placeholder
-                            probs_placeholder = np.zeros(100, dtype=np.float32)
-                            valid_indices = np.where(mask > 0)[0]
-                            if len(valid_indices) > 0:
-                                probs_placeholder[valid_indices] = 1.0 / len(valid_indices)
-
-                            traj_step = {
-                                "obs": state_dict,
-                                "act": action_idx,
-                                "rew": step["reward"],
-                                "mask": np.array(mask, dtype=np.float32),
-                                "log_prob": 0.0, # Human data has fixed log prob 0
-                                "probs_dist": probs_placeholder,
-                                "predicted_v": 0.0,
-                                "is_human": 1.0,
-                                "done": 1.0 if step["terminal"] else 0.0
-                            }
-                            traj_segment.append(traj_step)
-                            
-                            if len(traj_segment) >= self.config.unroll_length or step["terminal"]:
-                                next_step = None
-                                if not step["terminal"] and idx + 1 < len(steps):
-                                    next_s = steps[idx + 1]["state"]
-                                    next_s_dict = encode_state(next_s)
-                                    next_mask = get_action_mask(next_s)
-                                    next_step = {
-                                        "obs": next_s_dict,
-                                        "mask": np.array(next_mask, dtype=np.float32)
-                                    }
-                                human_trajectories.append({
-                                    "steps": list(traj_segment), 
-                                    "next_step": next_step,
-                                    "source": filepath,
-                                    "range": (idx - len(traj_segment) + 1, idx)
-                                })
-                                traj_segment = []
-                                
-                        if traj_segment:
-                            human_trajectories.append({
-                                "steps": list(traj_segment), 
-                                "next_step": None,
-                                "source": filepath,
-                                "range": (len(steps) - len(traj_segment), len(steps) - 1)
-                            })
-                    except Exception as e:
-                        log(f"[Python] Error processing human replay {filepath}: {e}")
-                    with self.lock:
-                        self.update_progress += 1
-
-            all_updates = []
+            paths = []
+            if os.path.exists(machine_record):
+                paths.append(machine_record)
+                log(f"[Python] Adding machine dataset to training pool.")
             
-            # Combine standard trajectories
-            if trajectories:
-                all_updates.extend(trajectories)
+            if os.path.exists(human_record):
+                # 5 passes for human data by repeating the path in the list
+                paths.extend([human_record] * 5)
+                log(f"[Python] Adding human dataset (5x) to training pool.")
                 
-            # Multiple passes for human data
-            if human_trajectories:
-                log(f"[Python] Enhancing {len(human_trajectories)} human play segments with multiple passes.")
-                for epoch in range(5):
-                    all_updates.extend(human_trajectories)
-
-            if all_updates:
-                random.shuffle(all_updates)
-                log(f"[Python] Shuffled {len(all_updates)} total trajectory segments.")
-
-            if not all_updates:
-                log("[Python] No valid trajectory segments found for offline training.")
+            if not paths:
+                log("[Python] No valid ArrayRecord files found for offline training.")
                 return
 
-            log(f"[Python] Found {len(all_updates)} total trajectory segments. Performing updates...")
+            # Shuffling and Batching
+            dataset = grain.MapDataset.source(grain.ArrayRecordDataSource(paths))
+            dataset = dataset.map(lambda x: pickle.loads(x))
+            dataset = dataset.shuffle(seed=int(time.time()))
             
             batch_size = self.config.batch_size
-            total_batches = len(all_updates) // batch_size
+            total_segments = len(dataset)
+            total_batches = total_segments // batch_size
+            
+            log(f"[Python] Total segments to process: {total_segments} (~{total_batches} batches).")
+
             with self.lock:
                 self.update_total = total_batches
                 self.update_progress = 0
-            for i in range(0, len(all_updates), batch_size):
-                batch = all_updates[i : i + batch_size]
-                if len(batch) < batch_size:
-                    continue 
-                
-                self.perform_update(batch, increment_step=False, reset_updating=False)
-                
-                log(f"[Python] Offline update {i // batch_size + 1}/{(len(all_updates) // batch_size)} done.")
-                with self.lock:
-                    self.update_progress += 1
+
+            # Iterate through the dataset manually to keep batch items as a list of dicts
+            # This allows reusing perform_update without modification.
+            batch = []
+            batch_count = 0
+            
+            memory_log("Starting Grain iteration")
+            
+            for item in dataset:
+                batch.append(item)
+                if len(batch) >= batch_size:
+                    self.perform_update(batch, increment_step=False, reset_updating=False)
+                    batch = []
+                    batch_count += 1
+                    with self.lock:
+                        self.update_progress = batch_count
+                    if batch_count % 10 == 0:
+                        log(f"[Python] Offline update {batch_count}/{total_batches} done.")
 
             log("[Python] Offline training complete.")
             
@@ -2366,7 +2394,9 @@ class TrainingWorker(threading.Thread):
                 if self.experiment_manager:
                     self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
 
-
+        except Exception as e:
+            log(f"[Python] Error during offline training: {e}")
+            traceback.print_exc()
         finally:
             with self.lock:
                 self.is_updating = False
@@ -2528,6 +2558,7 @@ class TrainingWorker(threading.Thread):
                     padded_next_mask.append(np.zeros_like(padded_mask[0][0]))
 
             print("[Python] TrainingWorker: Padding done.")
+            memory_log("Padding done")
 
             # Build JAX-ready obs dictionary
             # Each element should be (T, B, dim) - currently (B, T, dim)
@@ -2535,6 +2566,7 @@ class TrainingWorker(threading.Thread):
                 k: jnp.array(np.array(v).transpose(1, 0, *range(2, np.array(v).ndim)))
                 for k, v in padded_obs_dict.items()
             }
+            memory_log("jax_obs built")
             
             act = np.array(padded_act)
             rew = np.array(padded_rew)
@@ -2565,6 +2597,7 @@ class TrainingWorker(threading.Thread):
             }
 
             print(f"[Python] TrainingWorker: Batch built. Shape: T={batch['rew'].shape[0]}, B={batch['rew'].shape[1]}")
+            memory_log("Batch built")
 
             t_start = time.time()
             
@@ -2577,6 +2610,7 @@ class TrainingWorker(threading.Thread):
 
             metrics = self.learner.update(batch, self.step_count)
             t_end = time.time()
+            memory_log("Update done")
 
             if jnp.isnan(metrics.get('loss', 0.0)):
                 log(f"[Python] CRITICAL: Loss is NaN at step {self.step_count}!")

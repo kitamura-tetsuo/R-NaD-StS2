@@ -16,4 +16,4 @@ if [ ! -f "$PYTHON_BIN" ]; then
 fi
 
 echo "Running Offline Training for StS2..."
-"$PYTHON_BIN" "$R_NAD_DIR/train_offline_sts2.py" "$@"
+"$PYTHON_BIN" "$R_NAD_DIR/train_offline_sts2.py" --jax_platform=cpu "$@"

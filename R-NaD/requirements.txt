@@ -3,7 +3,9 @@ aiofiles==25.1.0
 annotated-doc==0.0.4
 anyio==4.13.0
 attrs==26.1.0
+array-record==0.8.3
 certifi==2026.2.25
+grain==0.2.16
 chex==0.1.85
 click==8.3.1
 cloudpickle==3.1.2
