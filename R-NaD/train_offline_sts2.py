@@ -72,7 +72,6 @@ def main():
             print("Error: TrainingWorker failed to initialize.")
             return
 
-        last_save_time = time.time()
         for epoch in range(args.epochs):
             print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
             
@@ -81,18 +80,8 @@ def main():
             except Exception as e:
                 print(f"Warning: Failed to download human data: {e}")
             
-            current_time = time.time()
-            elapsed = current_time - last_save_time
-            should_save = (elapsed >= 3600) or (epoch == args.epochs - 1)
-            
-            if should_save:
-                last_save_time = current_time
-                print(f"Time since last save: {elapsed:.2f}s. Triggering checkpoint save.")
-
-            rnad_bridge.training_worker.perform_offline_training(save_checkpoint=should_save)
-            
-            if should_save:
-                rnad_bridge.training_worker.step_count += 1
+            # Perform offline training (will save checkpoint every hour or at the end of epoch)
+            rnad_bridge.training_worker.perform_offline_training(save_checkpoint=True)
         
         print("\n--- Offline Training Finished Successfully ---")
 

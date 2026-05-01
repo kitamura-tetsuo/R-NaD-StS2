@@ -2047,6 +2047,7 @@ class TrainingWorker(threading.Thread):
         self.is_updating = False
         self.update_progress = 0
         self.update_total = 0
+        self.last_checkpoint_time = time.time()
 
     def run(self):
         print("[Python] TrainingWorker started.")
@@ -2388,6 +2389,20 @@ class TrainingWorker(threading.Thread):
                         self.update_progress = batch_count
                     if batch_count % 10 == 0:
                         log(f"[Python] Offline update {batch_count}/{total_batches} done.")
+                    
+                    # Check for 1 hour interval
+                    current_time = time.time()
+                    if current_time - self.last_checkpoint_time >= 3600:
+                        checkpoint_path = f"/home/ubuntu/src/R-NaD-StS2/R-NaD/checkpoints/checkpoint_offline_{self.step_count}.pkl"
+                        if self.experiment_manager:
+                            checkpoint_path = os.path.join(self.experiment_manager.checkpoint_dir, f"checkpoint_offline_{self.step_count}.pkl")
+                        
+                        self.learner.save_checkpoint(checkpoint_path, self.step_count)
+                        log(f"[Python] 1 hour elapsed. Saved intermediate offline training checkpoint to {checkpoint_path}")
+                        if self.experiment_manager:
+                            self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
+                        
+                        self.last_checkpoint_time = current_time
 
             log("[Python] Offline training complete.")
             
@@ -2401,6 +2416,9 @@ class TrainingWorker(threading.Thread):
                 log(f"[Python] Saved offline training checkpoint to {checkpoint_path}")
                 if self.experiment_manager:
                     self.experiment_manager.log_checkpoint_artifact(self.step_count, checkpoint_path)
+                
+                self.step_count += 1
+                self.last_checkpoint_time = time.time()
 
         except Exception as e:
             log(f"[Python] Error during offline training: {e}")
