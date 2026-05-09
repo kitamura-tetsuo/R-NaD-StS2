@@ -31,11 +31,16 @@
 
     <!-- Linux -->
     <PropertyGroup Condition="'$(IsLinux)' == 'true'">
-        <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">$(HOME)/.local/share/Steam/steamapps/</SteamLibraryPath>
+        <SteamLibraryPath Condition="'$(SteamLibraryPath)' == ''">$(HOME)/.local/share/Steam/steamapps</SteamLibraryPath>
         <Sts2Path Condition="'$(Sts2Path)' == ''">$(SteamLibraryPath)/common/Slay the Spire 2</Sts2Path>
         <Sts2DataDir Condition="'$(Sts2DataDir)' == ''">$(Sts2Path)/data_sts2_linuxbsd_x86_64</Sts2DataDir>
         <GodotPath Condition="'$(GodotPath)' == ''">$(HOME)/.local/share/megadot/MegaDot_v4.5.1-stable_mono_linux.x86_64</GodotPath>
     </PropertyGroup>
+
+    <Target Name="CheckDll" BeforeTargets="ResolveAssemblyReferences">
+        <Error Condition="!Exists('$(Sts2DataDir)/sts2.dll')" 
+               Text="Could not find sts2.dll at $(Sts2DataDir)/sts2.dll. Please ensure Slay the Spire 2 is installed or set Sts2Path property in your environment or csproj." />
+    </Target>
     <!-- // NOTE: Megadot is version 4.5.1, and the game won't load pck if godot is newer. -->
 
     <!-- macOS // TODO -->
@@ -53,20 +58,19 @@
         </Reference>
         <Reference Include="sts2">
             <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>
-            <Publicize>False</Publicize> <!--Allows private/protected field references but may cause errors.-->
         </Reference>
 
         <PackageReference Include="Alchyr.Sts2.BaseLib" Version="0.1.5"/>
         <PackageReference Include="Alchyr.Sts2.ModAnalyzers" Version="0.1.4"/>
-        <AdditionalFiles Include="communication_mod\localization\**\*.json"/>
+        <AdditionalFiles Include="communication-mod\localization\**\*.json"/>
     </ItemGroup>
 
     <ItemGroup>
-        <Compile Remove="communication_mod\**"/>
+        <Compile Remove="communication-mod\**"/>
         <Compile Remove="materials\**"/>
         <Compile Remove="shaders\**"/>
         <Compile Remove="images\**"/>
-        <EmbeddedResource Remove="communication_mod\**"/>
+        <EmbeddedResource Remove="communication-mod\**"/>
         <EmbeddedResource Remove="materials\**"/>
         <EmbeddedResource Remove="shaders\**"/>
         <EmbeddedResource Remove="images\**"/>
@@ -76,7 +80,7 @@
         <None Include=".gitignore"/>
         <None Include="communication_mod.json"/>
         <None Include="project.godot"/>
-        <None Include="communication_mod\**"/>
+        <None Include="communication-mod\**"/>
     </ItemGroup>
 
     <ItemGroup>
